@@ -564,7 +564,9 @@ async function deliverToAgent(
     startTypingRefresh(session.id, session.agent_group_id, event.channelType, event.platformId, event.threadId);
     const freshSession = getSession(session.id);
     if (freshSession) {
+      const endWake = startTimer('wake');
       const woke = await wakeContainer(freshSession);
+      endWake();
       // wakeContainer never throws — it returns false on transient spawn
       // failure (host-sweep retries). Stop the typing indicator we just
       // started so it doesn't leak; the inbound row stays pending.
