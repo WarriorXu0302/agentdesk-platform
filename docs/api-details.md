@@ -1,10 +1,10 @@
-# NanoClaw API Details
+# FrontLane API Details
 
 Implementation-level details for the architecture. See [architecture.md](architecture.md) for the high-level design.
 
 ## Channel Adapter Interface
 
-### NanoClaw Channel Interface
+### FrontLane Channel Interface
 
 ```typescript
 interface ChannelSetup {
@@ -46,7 +46,7 @@ interface ChannelAdapter {
 interface InboundMessage {
   id: string;
   kind: 'chat' | 'chat-sdk';
-  content: unknown;       // JSON blob — NanoClaw chat format or Chat SDK SerializedMessage
+  content: unknown;       // JSON blob — FrontLane chat format or Chat SDK SerializedMessage
   timestamp: string;
 }
 
@@ -59,7 +59,7 @@ interface OutboundMessage {
 
 ### Chat SDK Bridge
 
-Wraps a Chat SDK adapter + Chat instance to conform to the NanoClaw ChannelAdapter interface. Trunk ships the bridge and the channel registry only — platform-specific Chat SDK adapters (Discord, Slack, Telegram, etc.) and native adapters (WhatsApp/Baileys) are installed by the `/add-<channel>` skills from the `channels` branch.
+Wraps a Chat SDK adapter + Chat instance to conform to the FrontLane ChannelAdapter interface. Trunk ships the bridge and the channel registry only — platform-specific Chat SDK adapters (Discord, Slack, Telegram, etc.) and native adapters (WhatsApp/Baileys) are installed by the `/add-<channel>` skills from the `channels` branch.
 
 ```typescript
 function createChatSdkBridge(
@@ -168,7 +168,7 @@ function createChatSdkBridge(
 }
 ```
 
-### Native NanoClaw Channel (no Chat SDK)
+### Native FrontLane Channel (no Chat SDK)
 
 Native channels implement the ChannelAdapter interface directly. The WhatsApp/Baileys adapter is the canonical example — it ships via the `/add-whatsapp` skill, not in trunk:
 
@@ -235,7 +235,7 @@ function createWhatsAppChannel(): ChannelAdapter {
 
 ### messages_in content examples
 
-**`chat`** — simple NanoClaw format:
+**`chat`** — simple FrontLane format:
 ```json
 {
   "sender": "John",

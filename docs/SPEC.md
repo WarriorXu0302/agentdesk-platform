@@ -227,6 +227,4 @@ FrontLane does not try to be:
 
 ## Naming and Compatibility
 
-This codebase originated from a NanoClaw fork. Some low-level script names, migration notes, historical commands, and test paths still retain `nanoclaw` identifiers for compatibility.
-
-That legacy naming should be treated as transitional. The active product identity, default enterprise topology, and current docs are all based on `FrontLane`.
+Some low-level script names, env vars, metric names, and migration notes still use legacy identifiers inherited from the original fork history. Those are treated as transitional — the active product identity, default enterprise topology, and current docs all use `FrontLane`.

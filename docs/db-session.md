@@ -1,4 +1,4 @@
-# NanoClaw — Per-Session DB Schema
+# FrontLane — Per-Session DB Schema
 
 Reference for the two SQLite files each session owns: `inbound.db` (host writes, container reads) and `outbound.db` (container writes, host reads). Start with [db.md](db.md) for the three-DB overview, the single-writer rule, and the cross-mount visibility constraints.
 
