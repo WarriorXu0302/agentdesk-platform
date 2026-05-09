@@ -31,6 +31,7 @@ import { log } from '../../log.js';
 import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { hasDestination } from './db/agent-destinations.js';
+import { resolveOriginUserId } from './origin-user.js';
 
 export { isSafeAttachmentName };
 
@@ -200,6 +201,22 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   // read the bytes — they live in a session dir it doesn't mount.
   const forwardedContent = forwardFileAttachments(msg, a2aMsgId, session, targetAgentGroupId, targetSession.id);
 
+  // Propagate the origin user so the worker can attribute ERP calls to the
+  // real employee instead of falling back to agent-asserted. Pulled from
+  // the source session's most recent chat row (or its origin_user_id, for
+  // N-deep chains). session.owner_user_id is a per-user session pin, not
+  // strictly the originator — but covers the common case when sourceDb is
+  // empty (e.g. cold fresh session). Falls back to null when neither is
+  // present; downstream handling is unchanged.
+  const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
+  let originUserId: string | null;
+  try {
+    originUserId = resolveOriginUserId(srcDbForOrigin);
+  } finally {
+    srcDbForOrigin.close();
+  }
+  if (!originUserId) originUserId = session.owner_user_id ?? null;
+
   writeSessionMessage(targetAgentGroupId, targetSession.id, {
     id: a2aMsgId,
     kind: 'chat',
@@ -209,6 +226,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     threadId: null,
     content: forwardedContent,
     sourceSessionId: session.id,
+    originUserId,
   });
   log.info('Agent message routed', {
     from: session.agent_group_id,
@@ -216,6 +234,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     targetSession: targetSession.id,
     a2aMsgId,
     forwardedFileCount: countForwardedFiles(forwardedContent),
+    originUserId,
   });
   const fresh = getSession(targetSession.id);
   if (fresh) await wakeContainer(fresh);

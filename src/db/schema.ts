@@ -183,7 +183,14 @@ CREATE TABLE IF NOT EXISTS messages_in (
   -- the reply routes back to this exact session, not to the source agent
   -- group's "newest" session. NULL on channel-side inbound and on a2a rows
   -- written before this column existed.
-  source_session_id TEXT
+  source_session_id TEXT,
+  -- For agent-to-agent inbound rows: the namespaced user id of the human
+  -- employee who ultimately triggered the delegation chain. Enables worker
+  -- sessions to attribute downstream ERP calls to the real employee rather
+  -- than falling back to agent-asserted identity. NULL on channel-side
+  -- inbound (senderId embedded in content is authoritative) and on
+  -- pre-migration rows.
+  origin_user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_in_series ON messages_in(series_id);
 

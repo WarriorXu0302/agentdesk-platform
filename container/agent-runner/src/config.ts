@@ -13,6 +13,12 @@ export interface EnterpriseGatewayConfig {
   baseUrl: string;
   timeoutMs?: number;
   defaultHeaders?: Record<string, string>;
+  signingKey?: string;
+  signingHeaders?: {
+    timestamp?: string;
+    nonce?: string;
+    signature?: string;
+  };
 }
 
 export type MemoryMode = 'workspace' | 'erp';

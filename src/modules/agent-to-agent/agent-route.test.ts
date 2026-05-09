@@ -41,13 +41,16 @@ function writeGroupConfig(folder: string, config: Record<string, unknown>): void
 function readInbound(agentGroupId: string, sessionId: string) {
   const db = new Database(inboundDbPath(agentGroupId, sessionId), { readonly: true });
   const rows = db
-    .prepare('SELECT id, platform_id, channel_type, content, source_session_id FROM messages_in ORDER BY seq')
+    .prepare(
+      'SELECT id, platform_id, channel_type, content, source_session_id, origin_user_id FROM messages_in ORDER BY seq',
+    )
     .all() as Array<{
     id: string;
     platform_id: string | null;
     channel_type: string | null;
     content: string;
     source_session_id: string | null;
+    origin_user_id: string | null;
   }>;
   db.close();
   return rows;
@@ -277,6 +280,81 @@ describe('routeAgentMessage return-path', () => {
     expect(sharedRows).toHaveLength(0);
     expect(rootRows).toHaveLength(1);
     expect(JSON.parse(rootRows[0].content).text).toBe('route to isolated worker lane');
+  });
+
+  it('propagates origin_user_id from the source session into the target a2a inbound row', async () => {
+    // Seed S1's inbound with a chat message that carries the real employee id.
+    writeSessionMessage(A, S1.id, {
+      id: 'chat-from-employee',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: 'feishu:p2p:ou_employee',
+      channelType: 'feishu',
+      threadId: null,
+      content: JSON.stringify({ senderId: 'ou_employee', text: 'please handle INV-001' }),
+    });
+
+    // A.S1 (frontdesk) delegates to B (worker).
+    await routeAgentMessage(
+      {
+        id: 'msg-from-A-to-B',
+        platform_id: B,
+        content: JSON.stringify({ text: 'handle this' }),
+        in_reply_to: null,
+      },
+      S1,
+    );
+
+    const bRows = readInbound(B, SB.id);
+    expect(bRows).toHaveLength(1);
+    // Host namespaces bare ids to `<channel>:<id>` so worker-side identity
+    // resolution doesn't need to know which channel produced the hop.
+    expect(bRows[0].origin_user_id).toBe('feishu:ou_employee');
+  });
+
+  it('propagates origin_user_id across N-deep chains', async () => {
+    // Hop 1: employee → A.S1
+    writeSessionMessage(A, S1.id, {
+      id: 'chat-from-employee',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: 'feishu:p2p:ou_employee',
+      channelType: 'feishu',
+      threadId: null,
+      content: JSON.stringify({ senderId: 'ou_employee' }),
+    });
+
+    // Hop 2: A.S1 → B
+    await routeAgentMessage(
+      {
+        id: 'a-to-b',
+        platform_id: B,
+        content: JSON.stringify({ text: 'delegate' }),
+        in_reply_to: null,
+      },
+      S1,
+    );
+
+    // Hop 3: B → A (simulating a secondary worker further in the chain).
+    // Use SB as source; its inbound now has an a2a row with origin_user_id set.
+    await routeAgentMessage(
+      {
+        id: 'b-to-a',
+        platform_id: A,
+        content: JSON.stringify({ text: 'question' }),
+        in_reply_to: null,
+      },
+      SB,
+    );
+
+    // The resulting inbound on A.S2 (newest session, fallback wins in absence
+    // of in_reply_to / source_session_id for this test) should still carry
+    // the original employee id — origin_user_id carried across.
+    const s2Rows = readInbound(A, S2.id);
+    const aRows = s2Rows.length > 0 ? s2Rows : readInbound(A, S1.id);
+    const a2aRow = aRows.find((r) => r.channel_type === 'agent');
+    expect(a2aRow).toBeDefined();
+    expect(a2aRow!.origin_user_id).toBe('feishu:ou_employee');
   });
 
   it('peer-affinity fallback: with no in_reply_to, routes to most recent peer-source session', async () => {

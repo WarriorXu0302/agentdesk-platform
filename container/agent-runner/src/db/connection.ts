@@ -183,20 +183,22 @@ export function initTestSessionDb(): { inbound: Database; outbound: Database } {
   _inbound.exec('PRAGMA foreign_keys = ON');
   _inbound.exec(`
     CREATE TABLE messages_in (
-      id             TEXT PRIMARY KEY,
-      seq            INTEGER UNIQUE,
-      kind           TEXT NOT NULL,
-      timestamp      TEXT NOT NULL,
-      status         TEXT DEFAULT 'pending',
-      process_after  TEXT,
-      recurrence     TEXT,
-      series_id      TEXT,
-      tries          INTEGER DEFAULT 0,
-      trigger        INTEGER NOT NULL DEFAULT 1,
-      platform_id    TEXT,
-      channel_type   TEXT,
-      thread_id      TEXT,
-      content        TEXT NOT NULL
+      id               TEXT PRIMARY KEY,
+      seq              INTEGER UNIQUE,
+      kind             TEXT NOT NULL,
+      timestamp        TEXT NOT NULL,
+      status           TEXT DEFAULT 'pending',
+      process_after    TEXT,
+      recurrence       TEXT,
+      series_id        TEXT,
+      tries            INTEGER DEFAULT 0,
+      trigger          INTEGER NOT NULL DEFAULT 1,
+      platform_id      TEXT,
+      channel_type     TEXT,
+      thread_id        TEXT,
+      content          TEXT NOT NULL,
+      source_session_id TEXT,
+      origin_user_id   TEXT
     );
     CREATE TABLE delivered (
       message_out_id      TEXT PRIMARY KEY,

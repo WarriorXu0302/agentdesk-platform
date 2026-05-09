@@ -31,6 +31,25 @@ export interface EnterpriseGatewayConfig {
   timeoutMs?: number;
   /** Static headers to send on every ERP gateway request. */
   defaultHeaders?: Record<string, string>;
+  /**
+   * Optional HMAC signing key. When set, every gateway request is signed:
+   * `x-frontlane-timestamp`, `x-frontlane-nonce`, and
+   * `x-frontlane-signature = HMAC-SHA256(key, timestamp + "." + nonce + "." + body)`.
+   * Gateways that validate signatures can then reject requests that didn't
+   * come from a host-provisioned container. Pair with a short clock-skew
+   * window (e.g. ±5 minutes) and a replay cache on the gateway side.
+   */
+  signingKey?: string;
+  /**
+   * Overrides for the three signing header names. Leave unset to use the
+   * defaults above — only set this if the gateway you're fronting has
+   * mandatory header naming rules.
+   */
+  signingHeaders?: {
+    timestamp?: string;
+    nonce?: string;
+    signature?: string;
+  };
 }
 
 export type MemoryMode = 'workspace' | 'erp';

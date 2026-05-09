@@ -25,6 +25,13 @@ export interface MessageInRow {
   channel_type: string | null;
   thread_id: string | null;
   content: string;
+  /**
+   * For a2a inbound rows: the namespaced user id of the human employee
+   * who ultimately kicked off the chain. Host-written on insert, so the
+   * container can't forge it. NULL on channel-side inbound (in which
+   * case the senderId inside content is authoritative).
+   */
+  origin_user_id?: string | null;
 }
 
 // Cap on how many messages reach the agent in one prompt. Read from

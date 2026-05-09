@@ -114,15 +114,23 @@ export function insertMessage(
      * path for the target's reply. NULL on channel-side inbound.
      */
     sourceSessionId?: string | null;
+    /**
+     * Namespaced user id of the human ultimately responsible for this
+     * message. Populated for a2a inbound (copied from source session) and
+     * left NULL for channel-side inbound (the user id is already in the
+     * content payload's senderId).
+     */
+    originUserId?: string | null;
   },
 ): void {
   db.prepare(
-    `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content, process_after, recurrence, series_id, trigger, source_session_id)
-     VALUES (@id, @seq, @kind, @timestamp, 'pending', @platformId, @channelType, @threadId, @content, @processAfter, @recurrence, @id, @trigger, @sourceSessionId)`,
+    `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content, process_after, recurrence, series_id, trigger, source_session_id, origin_user_id)
+     VALUES (@id, @seq, @kind, @timestamp, 'pending', @platformId, @channelType, @threadId, @content, @processAfter, @recurrence, @id, @trigger, @sourceSessionId, @originUserId)`,
   ).run({
     ...message,
     trigger: message.trigger ?? 1,
     sourceSessionId: message.sourceSessionId ?? null,
+    originUserId: message.originUserId ?? null,
     seq: nextEvenSeq(db),
   });
 }
@@ -317,6 +325,14 @@ export function migrateMessagesInTable(db: Database.Database): void {
     // For agent-to-agent return-path routing. NULL on existing rows is fine —
     // their replies fall back to the legacy "newest active session" lookup.
     db.prepare('ALTER TABLE messages_in ADD COLUMN source_session_id TEXT').run();
+  }
+  if (!cols.has('origin_user_id')) {
+    // For agent-to-agent identity propagation. Carries the namespaced user
+    // id of the human who originated the request, so worker sessions can
+    // attribute ERP calls to the real employee rather than falling back to
+    // agent-asserted identity. NULL on channel-side inbound (where the
+    // user id is already in the content payload) and on pre-migration rows.
+    db.prepare('ALTER TABLE messages_in ADD COLUMN origin_user_id TEXT').run();
   }
 }
 

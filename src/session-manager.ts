@@ -260,6 +260,13 @@ export function writeSessionMessage(
      * path so the target's reply routes back to that exact session.
      */
     sourceSessionId?: string | null;
+    /**
+     * For agent-to-agent inbound: the namespaced user id of the employee
+     * who ultimately triggered the chain. Propagates identity into worker
+     * sessions so downstream ERP calls don't fall back to agent-asserted.
+     * NULL on channel-side inbound (senderId already embedded in content).
+     */
+    originUserId?: string | null;
   },
 ): void {
   // Extract base64 attachment data, save to inbox, replace with file paths
@@ -279,6 +286,7 @@ export function writeSessionMessage(
       recurrence: message.recurrence ?? null,
       trigger: message.trigger ?? 1,
       sourceSessionId: message.sourceSessionId ?? null,
+      originUserId: message.originUserId ?? null,
     });
   } finally {
     db.close();

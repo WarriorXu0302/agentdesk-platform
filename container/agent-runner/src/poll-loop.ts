@@ -14,6 +14,8 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
+import { clearRequestIdentity, setRequestIdentity } from './request-context.js';
+import { resolveBatchIdentity } from './request-identity.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -192,6 +194,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
+    // Publish the batch's trusted requester identity so MCP tools (e.g.
+    // ERP gateway) can attribute calls to the actual human employee
+    // instead of whatever the agent asserts. Identity is derived from the
+    // batch — not from "the latest inbound row at call time" — to avoid
+    // cross-user misattribution in group/shared sessions.
+    setRequestIdentity(resolveBatchIdentity(keep));
     try {
       const result = await processQuery(query, routing, processingIds, config.providerName);
       if (result.continuation && result.continuation !== continuation) {
@@ -222,6 +230,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       });
     } finally {
       clearCurrentInReplyTo();
+      clearRequestIdentity();
     }
 
     // Ensure completed even if processQuery ended without a result event
