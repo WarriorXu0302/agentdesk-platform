@@ -1,0 +1,160 @@
+import fs from 'fs';
+import path from 'path';
+
+import { DATA_DIR, GROUPS_DIR } from './config.js';
+import { initContainerConfig, readContainerConfig } from './container-config.js';
+import { log } from './log.js';
+import type { AgentGroup } from './types.js';
+
+function buildDefaultSettingsJson(disableAutoMemory: boolean): string {
+  return (
+    JSON.stringify(
+      {
+        env: {
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: disableAutoMemory ? '1' : '0',
+        },
+        hooks: {
+          PreCompact: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'bun /app/src/compact-instructions.ts',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    ) + '\n'
+  );
+}
+
+/**
+ * Initialize the on-disk filesystem state for an agent group. Idempotent —
+ * every step is gated on the target not already existing, so re-running on
+ * an already-initialized group is a no-op.
+ *
+ * Called once per group lifetime at creation, or defensively from
+ * `buildMounts()` for groups that pre-date this code path.
+ *
+ * Source code and skills are shared RO mounts — not copied per-group.
+ * Skill symlinks are synced at spawn time by container-runner.ts.
+ *
+ * The composed `CLAUDE.md` is NOT written here — it's regenerated on every
+ * spawn by `composeGroupClaudeMd()` (see `claude-md-compose.ts`). Initial
+ * per-group instructions (if provided) seed `CLAUDE.local.md`.
+ */
+export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: string }): void {
+  const initialized: string[] = [];
+  const disableAutoMemory = readContainerConfig(group.folder).memoryMode === 'erp';
+
+  // 1. groups/<folder>/ — group memory + working dir
+  const groupDir = path.resolve(GROUPS_DIR, group.folder);
+  if (!fs.existsSync(groupDir)) {
+    fs.mkdirSync(groupDir, { recursive: true });
+    initialized.push('groupDir');
+  }
+
+  // groups/<folder>/CLAUDE.local.md — per-group agent memory, auto-loaded by
+  // Claude Code. Seeded with caller-provided instructions on first creation.
+  const claudeLocalFile = path.join(groupDir, 'CLAUDE.local.md');
+  if (!fs.existsSync(claudeLocalFile)) {
+    const body = opts?.instructions ? opts.instructions + '\n' : '';
+    fs.writeFileSync(claudeLocalFile, body);
+    initialized.push('CLAUDE.local.md');
+  }
+
+  // groups/<folder>/container.json — empty container config, replaces the
+  // former agent_groups.container_config DB column. Self-modification flows
+  // read and write this file directly.
+  if (initContainerConfig(group.folder)) {
+    initialized.push('container.json');
+  }
+
+  // 2. data/v2-sessions/<id>/.claude-shared/ — Claude state + per-group skills
+  const claudeDir = path.join(DATA_DIR, 'v2-sessions', group.id, '.claude-shared');
+  if (!fs.existsSync(claudeDir)) {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    initialized.push('.claude-shared');
+  }
+
+  const settingsFile = path.join(claudeDir, 'settings.json');
+  if (!fs.existsSync(settingsFile)) {
+    fs.writeFileSync(settingsFile, buildDefaultSettingsJson(disableAutoMemory));
+    initialized.push('settings.json');
+  } else {
+    ensureClaudeSettings(settingsFile, disableAutoMemory, initialized);
+  }
+
+  // Skills directory — created empty here; symlinks are synced at spawn
+  // time by container-runner.ts based on container.json skills selection.
+  const skillsDst = path.join(claudeDir, 'skills');
+  if (!fs.existsSync(skillsDst)) {
+    fs.mkdirSync(skillsDst, { recursive: true });
+    initialized.push('skills/');
+  }
+
+  if (initialized.length > 0) {
+    log.info('Initialized group filesystem', {
+      group: group.name,
+      folder: group.folder,
+      id: group.id,
+      steps: initialized,
+    });
+  }
+}
+
+const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';
+const CLAUDE_AUTO_MEMORY_ENV_KEY = 'CLAUDE_CODE_DISABLE_AUTO_MEMORY';
+
+/**
+ * Patch an existing settings.json to add the PreCompact hook if missing.
+ * Runs on every group init so pre-existing groups pick up the hook.
+ */
+function ensureClaudeSettings(settingsFile: string, disableAutoMemory: boolean, initialized: string[]): void {
+  try {
+    const raw = fs.readFileSync(settingsFile, 'utf-8');
+    const settings = JSON.parse(raw);
+    let changed = false;
+
+    if (!settings.env || typeof settings.env !== 'object') {
+      settings.env = {};
+      changed = true;
+    }
+    const expectedAutoMemory = disableAutoMemory ? '1' : '0';
+    if (settings.env[CLAUDE_AUTO_MEMORY_ENV_KEY] !== expectedAutoMemory) {
+      settings.env[CLAUDE_AUTO_MEMORY_ENV_KEY] = expectedAutoMemory;
+      changed = true;
+    }
+
+    // Check if there's already a PreCompact hook with our command.
+    const existing = settings.hooks?.PreCompact as unknown[] | undefined;
+    if (existing && JSON.stringify(existing).includes(PRE_COMPACT_COMMAND)) {
+      if (changed) {
+        fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+        initialized.push('settings.json (memory policy sync)');
+      }
+      return;
+    }
+
+    // Add the hook, preserving existing hooks.
+    if (!settings.hooks) settings.hooks = {};
+    if (!settings.hooks.PreCompact) settings.hooks.PreCompact = [];
+    settings.hooks.PreCompact.push({
+      hooks: [{ type: 'command', command: PRE_COMPACT_COMMAND }],
+    });
+    changed = true;
+
+    if (changed) {
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+      initialized.push('settings.json (sync hooks/memory policy)');
+    }
+  } catch {
+    // Don't break init if settings.json is malformed — it'll use whatever's there.
+  }
+}
