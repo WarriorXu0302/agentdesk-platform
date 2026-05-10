@@ -35,6 +35,7 @@ function seedSession(args: {
   lastActive?: string | null;
   containerStatus?: 'running' | 'idle' | 'stopped';
   status?: 'active' | 'archived' | 'closed';
+  archivedAt?: string | null;
 }): void {
   createSession({
     id: args.id,
@@ -47,6 +48,7 @@ function seedSession(args: {
     status: args.status ?? 'active',
     container_status: args.containerStatus ?? 'stopped',
     last_active: args.lastActive ?? null,
+    archived_at: args.archivedAt ?? null,
     created_at: now(),
   });
   // drop some dummy content in the session dir so tar has something to capture
@@ -150,20 +152,63 @@ describe('runSessionLifecycleSweep', () => {
     expect(result.archived).toBe(0);
   });
 
-  it('hard-deletes after FRONTLANE_ARCHIVE_HARD_DELETE_DAYS', async () => {
-    // Single sweep with both TTLs configured: the same row passes the
-    // archive threshold AND the hard-delete threshold, so the sweep
-    // archives it then hard-deletes it within the same tick.
+  it('does NOT hard-delete a session the same tick it was archived', async () => {
+    // An ancient-but-only-just-archived session must get the full
+    // FRONTLANE_ARCHIVE_HARD_DELETE_DAYS retention window starting from
+    // archive time — not immediately unlinked because its last_active is
+    // already older than the hard-delete threshold. This is the bug the
+    // `archived_at` column fixes.
     process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
     process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
-    const ancient = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    const ancient = new Date(Date.now() - 365 * 86_400_000).toISOString();
 
     seedSession({ id: 's-old', agentGroupId: 'ag-1', lastActive: ancient });
 
     const result = await runSessionLifecycleSweep();
     expect(result.archived).toBe(1);
+    expect(result.hardDeleted).toBe(0);
+    const row = getSession('s-old')!;
+    expect(row.status).toBe('archived');
+    expect(row.archived_at).toBeTruthy();
+  });
+
+  it('hard-deletes archived sessions once their retention window elapses', async () => {
+    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
+    process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
+
+    // Seed a row already in the archived state with an archived_at that's
+    // older than the retention window. Simulates a session archived by a
+    // past sweep tick.
+    const archivedAt = new Date(Date.now() - 60 * 86_400_000).toISOString();
+    seedSession({
+      id: 's-old-archived',
+      agentGroupId: 'ag-1',
+      status: 'archived',
+      lastActive: archivedAt,
+      archivedAt,
+    });
+
+    const result = await runSessionLifecycleSweep();
     expect(result.hardDeleted).toBe(1);
-    expect(getSession('s-old')).toBeUndefined();
+    expect(getSession('s-old-archived')).toBeUndefined();
+  });
+
+  it('does NOT hard-delete an archived session whose retention window has not elapsed', async () => {
+    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
+    process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
+
+    const archivedAt = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    seedSession({
+      id: 's-recent-archived',
+      agentGroupId: 'ag-1',
+      status: 'archived',
+      lastActive: archivedAt,
+      archivedAt,
+    });
+
+    const result = await runSessionLifecycleSweep();
+    expect(result.hardDeleted).toBe(0);
+    expect(getSession('s-recent-archived')).toBeDefined();
   });
 
   it('reports counts for the sweep result', async () => {

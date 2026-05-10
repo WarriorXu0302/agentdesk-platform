@@ -18,6 +18,7 @@ export interface MessageOutRow {
   channel_type: string | null;
   thread_id: string | null;
   content: string;
+  origin_user_id: string | null;
 }
 
 export interface WriteMessageOut {
@@ -30,6 +31,14 @@ export interface WriteMessageOut {
   channel_type?: string | null;
   thread_id?: string | null;
   content: string;
+  /**
+   * Namespaced user id of the human whose turn produced this outbound.
+   * Set by send_message / send_file when they detect an a2a destination,
+   * so the host-side a2a router can attribute delegation to the originator
+   * at *emit time*, not at delivery time. Left null for channel-delivered
+   * outbound — the host already has that identity from the inbound side.
+   */
+  origin_user_id?: string | null;
 }
 
 /**
@@ -57,8 +66,8 @@ export function writeMessageOut(msg: WriteMessageOut): number {
   // in the JS object keys (better-sqlite3 auto-stripped it, bun:sqlite does not).
   outbound
     .prepare(
-      `INSERT INTO messages_out (id, seq, in_reply_to, timestamp, deliver_after, recurrence, kind, platform_id, channel_type, thread_id, content)
-     VALUES ($id, $seq, $in_reply_to, datetime('now'), $deliver_after, $recurrence, $kind, $platform_id, $channel_type, $thread_id, $content)`,
+      `INSERT INTO messages_out (id, seq, in_reply_to, timestamp, deliver_after, recurrence, kind, platform_id, channel_type, thread_id, content, origin_user_id)
+     VALUES ($id, $seq, $in_reply_to, datetime('now'), $deliver_after, $recurrence, $kind, $platform_id, $channel_type, $thread_id, $content, $origin_user_id)`,
     )
     .run({
       $id: msg.id,
@@ -71,6 +80,7 @@ export function writeMessageOut(msg: WriteMessageOut): number {
       $channel_type: msg.channel_type ?? null,
       $thread_id: msg.thread_id ?? null,
       $content: msg.content,
+      $origin_user_id: msg.origin_user_id ?? null,
     });
 
   return nextSeq;

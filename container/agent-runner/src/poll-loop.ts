@@ -1,5 +1,11 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
-import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
+import {
+  getPendingMessages,
+  markProcessing,
+  markCompleted,
+  releaseProcessing,
+  type MessageInRow,
+} from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
@@ -14,7 +20,7 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
-import { clearRequestIdentity, setRequestIdentity } from './request-context.js';
+import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
 import { resolveBatchIdentity } from './request-identity.js';
 
 const POLL_INTERVAL_MS = 1000;
@@ -38,6 +44,26 @@ function generateId(): string {
 export function shouldExitIdle(idleExitMs: number, lastWorkAt: number, now: number = Date.now()): boolean {
   if (idleExitMs <= 0) return false;
   return now - lastWorkAt >= idleExitMs;
+}
+
+/**
+ * Pure decision for the follow-up identity guard. Returns true when the
+ * incoming follow-up batch's identity disagrees with the current turn's
+ * identity in a way that would corrupt attribution (e.g. Alice's turn is
+ * active and Bob's message just landed). Callers end the stream and let
+ * the outer poll loop start a new turn with a fresh identity.
+ *
+ * Exported for unit testing — the caller in the poll-loop wires in the
+ * actual current + incoming identities and the release-claim path.
+ */
+export function shouldEndForIdentityChange(
+  current: { userId: string | null; source: 'session' | 'agent-asserted' } | null,
+  incoming: { userId: string | null; source: 'session' | 'agent-asserted' },
+): boolean {
+  if (!current) return false;
+  if (current.source !== 'session' || !current.userId) return false;
+  if (incoming.source !== 'session' || !incoming.userId) return false;
+  return current.userId !== incoming.userId;
 }
 
 function formatUserFacingError(errMsg: string): string {
@@ -390,6 +416,35 @@ async function processQuery(
         // was awaited. Pushing into a closed stream is wasted work; the
         // claimed messages get released by the host's processing-claim sweep.
         if (done) return;
+
+        // Identity guard: if the follow-up batch belongs to a different
+        // (trusted) user than the turn's current RequestIdentity, we can't
+        // safely push — the active turn's ERP tool calls would still be
+        // attributed to the original user. End the stream, release the
+        // claim, and let the outer loop pick the message up with a fresh
+        // identity. Without this, Alice's long turn would accept Bob's
+        // message mid-stream and any subsequent tool call fires under
+        // Alice's identity.
+        //
+        // Only trip when both current and incoming are 'session'-sourced
+        // and the userIds actually differ — agent-asserted or null sides
+        // degrade to the existing behavior (no identity drift risk; the
+        // tool handlers already tag those as agent-asserted to the ERP
+        // backend).
+        const current = getRequestIdentity();
+        const incoming = resolveBatchIdentity(keep);
+        if (shouldEndForIdentityChange(current, incoming)) {
+          log(
+            `Identity change mid-turn (${current?.userId ?? 'unknown'} -> ${incoming.userId}) — ending stream so outer loop can start a fresh turn`,
+          );
+          // Release the claim on the new messages so the outer loop can
+          // re-claim them with the correct identity. markCompleted would
+          // be wrong — they haven't been processed.
+          releaseProcessing(keep.map((m) => m.id));
+          endedForCommand = true;
+          query.end();
+          return;
+        }
 
         const keptIds = keep.map((m) => m.id);
         const prompt = formatMessages(keep);

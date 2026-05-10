@@ -111,6 +111,16 @@ export interface RoutableAgentMessage {
    * reply back to the originating session — see `resolveTargetSession`.
    */
   in_reply_to: string | null;
+  /**
+   * Namespaced user id of the human whose turn produced this delegation,
+   * stamped by the container at emit time. Preferred over
+   * `resolveOriginUserId(sourceInboundDb)` because it was captured when
+   * the turn was actually running — the source session's "most recent
+   * chat" may already belong to a different user by the time delivery
+   * processes this row. Null on older containers that predate the column,
+   * in which case we fall back to the source-side lookup.
+   */
+  origin_user_id?: string | null;
 }
 
 /**
@@ -202,18 +212,24 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   const forwardedContent = forwardFileAttachments(msg, a2aMsgId, session, targetAgentGroupId, targetSession.id);
 
   // Propagate the origin user so the worker can attribute ERP calls to the
-  // real employee instead of falling back to agent-asserted. Pulled from
-  // the source session's most recent chat row (or its origin_user_id, for
-  // N-deep chains). session.owner_user_id is a per-user session pin, not
-  // strictly the originator — but covers the common case when sourceDb is
-  // empty (e.g. cold fresh session). Falls back to null when neither is
-  // present; downstream handling is unchanged.
-  const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
-  let originUserId: string | null;
-  try {
-    originUserId = resolveOriginUserId(srcDbForOrigin);
-  } finally {
-    srcDbForOrigin.close();
+  // real employee. Priority:
+  //   1. msg.origin_user_id — stamped by the container at emit time
+  //      (container/agent-runner/src/mcp-tools/core.ts). This is the only
+  //      source that captures "whose turn was running when this delegation
+  //      was produced" — the source session's most-recent-chat can already
+  //      belong to a different user by the time delivery processes this row.
+  //   2. resolveOriginUserId(sourceInboundDb) — legacy fallback for older
+  //      containers that predate the column. Degrades to the "most recent
+  //      chat" heuristic described in origin-user.ts.
+  //   3. session.owner_user_id — last resort for per-user-pinned sessions.
+  let originUserId: string | null = msg.origin_user_id ?? null;
+  if (!originUserId) {
+    const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
+    try {
+      originUserId = resolveOriginUserId(srcDbForOrigin);
+    } finally {
+      srcDbForOrigin.close();
+    }
   }
   if (!originUserId) originUserId = session.owner_user_id ?? null;
 

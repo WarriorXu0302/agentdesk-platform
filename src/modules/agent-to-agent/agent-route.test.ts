@@ -282,7 +282,48 @@ describe('routeAgentMessage return-path', () => {
     expect(JSON.parse(rootRows[0].content).text).toBe('route to isolated worker lane');
   });
 
-  it('propagates origin_user_id from the source session into the target a2a inbound row', async () => {
+  it('prefers msg.origin_user_id (stamped by container at emit time) over source-session lookup', async () => {
+    // Source session has TWO chat rows — Alice's (older) and Bob's (newer).
+    // Under the old behavior the a2a router would read "most recent" and
+    // attribute to Bob. The container correctly stamped Alice on the
+    // outbound (her turn was still running when it delegated). The router
+    // must honor that stamp.
+    writeSessionMessage(A, S1.id, {
+      id: 'chat-from-alice',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: 'feishu:p2p:ou_alice',
+      channelType: 'feishu',
+      threadId: null,
+      content: JSON.stringify({ senderId: 'ou_alice', text: 'please handle INV-001' }),
+    });
+    writeSessionMessage(A, S1.id, {
+      id: 'chat-from-bob',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: 'feishu:p2p:ou_bob',
+      channelType: 'feishu',
+      threadId: null,
+      content: JSON.stringify({ senderId: 'ou_bob', text: 'unrelated, raced in mid-turn' }),
+    });
+
+    await routeAgentMessage(
+      {
+        id: 'msg-from-A-to-B',
+        platform_id: B,
+        content: JSON.stringify({ text: 'handle this' }),
+        in_reply_to: null,
+        origin_user_id: 'feishu:ou_alice',
+      },
+      S1,
+    );
+
+    const bRows = readInbound(B, SB.id);
+    expect(bRows).toHaveLength(1);
+    expect(bRows[0].origin_user_id).toBe('feishu:ou_alice');
+  });
+
+  it('falls back to source-session lookup when the container did not stamp origin_user_id (legacy)', async () => {
     // Seed S1's inbound with a chat message that carries the real employee id.
     writeSessionMessage(A, S1.id, {
       id: 'chat-from-employee',

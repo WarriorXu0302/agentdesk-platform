@@ -13,8 +13,29 @@ import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { getRequestIdentity } from '../request-context.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+
+/**
+ * For outbound rows that route to another agent (`channel_type === 'agent'`),
+ * stamp the current turn's trusted user id so the host-side a2a router
+ * can attribute delegation correctly. Returns null for non-a2a destinations
+ * (channel delivery) — the host already has that identity on the source
+ * inbound row.
+ *
+ * "Trusted" means the value came from the poll loop's batch resolver
+ * (session / origin_user_id), never from agent-asserted args. If the
+ * current turn itself has no resolved identity we return null; the host
+ * a2a router then falls back to its own "most recent chat" lookup, same
+ * as before this was introduced — safe default.
+ */
+function a2aOriginUserId(channelType: string): string | null {
+  if (channelType !== 'agent') return null;
+  const identity = getRequestIdentity();
+  if (!identity || identity.source !== 'session') return null;
+  return identity.userId ?? null;
+}
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -124,6 +145,7 @@ export const sendMessage: McpToolDefinition = {
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
       content: JSON.stringify({ text }),
+      origin_user_id: a2aOriginUserId(routing.channel_type),
     });
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
@@ -171,6 +193,7 @@ export const sendFile: McpToolDefinition = {
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
       content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+      origin_user_id: a2aOriginUserId(routing.channel_type),
     });
 
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);

@@ -18,6 +18,7 @@ import { migration018 } from './018-enterprise-audit.js';
 import { migration019 } from './019-erp-audit.js';
 import { migration020 } from './020-inbound-origin-user.js';
 import { migration021 } from './021-session-archived-status.js';
+import { migration022 } from './022-session-archived-at.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -47,6 +48,7 @@ const migrations: Migration[] = [
   migration019,
   migration020,
   migration021,
+  migration022,
 ];
 
 export function runMigrations(db: Database.Database): void {

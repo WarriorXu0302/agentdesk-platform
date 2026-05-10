@@ -100,6 +100,22 @@ export function markProcessing(ids: string[]): void {
   })();
 }
 
+/**
+ * Drop processing_ack rows for these messages — effectively releasing
+ * the claim so `getPendingMessages` will return them again on the next
+ * poll. Use when we decided against actually running a message (e.g.
+ * identity-change mid-turn: we must re-queue the follow-up under a
+ * fresh turn instead of attributing it to the current identity).
+ */
+export function releaseProcessing(ids: string[]): void {
+  if (ids.length === 0) return;
+  const db = getOutboundDb();
+  const stmt = db.prepare('DELETE FROM processing_ack WHERE message_id = ?');
+  db.transaction(() => {
+    for (const id of ids) stmt.run(id);
+  })();
+}
+
 /** Mark messages as completed — updates processing_ack in outbound.db. */
 export function markCompleted(ids: string[]): void {
   if (ids.length === 0) return;

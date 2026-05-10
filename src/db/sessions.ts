@@ -6,12 +6,13 @@ import { getDb, hasTable } from './connection.js';
 export function createSession(session: Session): void {
   getDb()
     .prepare(
-      `INSERT INTO sessions (id, agent_group_id, messaging_group_id, thread_id, owner_user_id, root_session_id, agent_provider, status, container_status, last_active, created_at)
-       VALUES (@id, @agent_group_id, @messaging_group_id, @thread_id, @owner_user_id, @root_session_id, @agent_provider, @status, @container_status, @last_active, @created_at)`,
+      `INSERT INTO sessions (id, agent_group_id, messaging_group_id, thread_id, owner_user_id, root_session_id, agent_provider, status, container_status, last_active, archived_at, created_at)
+       VALUES (@id, @agent_group_id, @messaging_group_id, @thread_id, @owner_user_id, @root_session_id, @agent_provider, @status, @container_status, @last_active, @archived_at, @created_at)`,
     )
     .run({
       ...session,
       root_session_id: session.root_session_id ?? session.id,
+      archived_at: session.archived_at ?? null,
     });
 }
 
@@ -129,15 +130,21 @@ export function findArchivableSessions(beforeIso: string, limit: number): Sessio
     .all(beforeIso, limit) as Session[];
 }
 
-/** Archived sessions older than `beforeIso` — candidates for hard delete. */
+/**
+ * Archived sessions whose archive event is older than `beforeIso` —
+ * candidates for hard delete. Gates on `archived_at`, not `last_active`,
+ * so the retention window is measured from archive time. A session that
+ * was idle for a year and only just got archived gets the full retention
+ * window starting now.
+ */
 export function findArchivedSessionsOlderThan(beforeIso: string, limit: number): Session[] {
   return getDb()
     .prepare(
       `SELECT * FROM sessions
          WHERE status = 'archived'
-           AND last_active IS NOT NULL
-           AND last_active < ?
-         ORDER BY last_active ASC
+           AND archived_at IS NOT NULL
+           AND archived_at < ?
+         ORDER BY archived_at ASC
          LIMIT ?`,
     )
     .all(beforeIso, limit) as Session[];
@@ -156,7 +163,7 @@ export function getRunningSessions(): Session[] {
 
 export function updateSession(
   id: string,
-  updates: Partial<Pick<Session, 'status' | 'container_status' | 'last_active' | 'agent_provider'>>,
+  updates: Partial<Pick<Session, 'status' | 'container_status' | 'last_active' | 'agent_provider' | 'archived_at'>>,
 ): void {
   const fields: string[] = [];
   const values: Record<string, unknown> = { id };

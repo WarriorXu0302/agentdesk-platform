@@ -255,6 +255,13 @@ export interface OutboundMessage {
   thread_id: string | null;
   content: string;
   in_reply_to: string | null;
+  /**
+   * Set by the container on a2a outbound rows: the namespaced user id of
+   * the human whose turn produced this delegation. Null on
+   * channel-delivered rows (the user id is already on the source inbound
+   * row) and on older containers that predate this column.
+   */
+  origin_user_id?: string | null;
 }
 
 export function getDueOutboundMessages(db: Database.Database): OutboundMessage[] {

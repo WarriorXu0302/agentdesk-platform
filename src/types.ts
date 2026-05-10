@@ -136,6 +136,12 @@ export interface Session {
   status: 'active' | 'closed' | 'archived';
   container_status: 'running' | 'idle' | 'stopped';
   last_active: string | null;
+  /**
+   * When this session was archived. NULL for active / closed rows.
+   * Hard-delete gating reads this — NOT last_active — so the retention
+   * window starts at archive time, not at last user activity.
+   */
+  archived_at?: string | null;
   created_at: string;
 }
 

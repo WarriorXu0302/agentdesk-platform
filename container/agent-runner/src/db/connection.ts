@@ -108,6 +108,17 @@ export function getOutboundDb(): Database {
         updated_at               TEXT NOT NULL
       );
     `);
+    // messages_out.origin_user_id — stamps the namespaced user id of the
+    // person whose turn produced this outbound. Read by the host a2a router
+    // so delegated work is attributed to the originator at *emit time*, not
+    // at delivery time (delivery can land after a different user has already
+    // spoken in the source session). Forward-compat ALTER.
+    const outCols = new Set(
+      (_outbound.prepare("PRAGMA table_info('messages_out')").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    if (!outCols.has('origin_user_id')) {
+      _outbound.exec('ALTER TABLE messages_out ADD COLUMN origin_user_id TEXT');
+    }
   }
   return _outbound;
 }
@@ -230,7 +241,8 @@ export function initTestSessionDb(): { inbound: Database; outbound: Database } {
       platform_id    TEXT,
       channel_type   TEXT,
       thread_id      TEXT,
-      content        TEXT NOT NULL
+      content        TEXT NOT NULL,
+      origin_user_id TEXT
     );
     CREATE TABLE processing_ack (
       message_id     TEXT PRIMARY KEY,

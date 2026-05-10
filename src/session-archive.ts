@@ -89,10 +89,14 @@ export function archiveSessionFiles(session: Session): string | null {
  * tar the directory, flip status to 'archived'. Called one session at a
  * time so one bad tar doesn't block the whole sweep.
  */
-export async function archiveSession(session: Session): Promise<boolean> {
+export async function archiveSession(session: Session, now: Date = new Date()): Promise<boolean> {
   try {
     const archivePath = archiveSessionFiles(session);
-    updateSession(session.id, { status: 'archived' });
+    // `archived_at` is the hard-delete gate. Set it to now so the retention
+    // window (FRONTLANE_ARCHIVE_HARD_DELETE_DAYS) starts here, not at
+    // last_active — otherwise an ancient idle session gets tarred and
+    // unlinked inside the same sweep tick.
+    updateSession(session.id, { status: 'archived', archived_at: now.toISOString() });
     log.info('Session archived', {
       sessionId: session.id,
       agentGroupId: session.agent_group_id,
@@ -153,7 +157,7 @@ export async function runSessionLifecycleSweep(now: Date = new Date()): Promise<
     const beforeIso = cutoffIso(ttlDays, now);
     const candidates = findArchivableSessions(beforeIso, ARCHIVE_BATCH_LIMIT);
     for (const session of candidates) {
-      if (await archiveSession(session)) archived++;
+      if (await archiveSession(session, now)) archived++;
     }
   }
 

@@ -115,6 +115,11 @@ CREATE TABLE sessions (
   status             TEXT DEFAULT 'active',
   container_status   TEXT DEFAULT 'stopped',
   last_active        TEXT,
+  -- Independent of last_active. Only set when status flips to 'archived'
+  -- by the session lifecycle sweep. Hard-delete gates on this, so an
+  -- already-idle-for-a-year session still gets its configured
+  -- archive retention window before the tarball is wiped.
+  archived_at        TEXT,
   created_at         TEXT NOT NULL
 );
 CREATE INDEX idx_sessions_agent_group ON sessions(agent_group_id);
