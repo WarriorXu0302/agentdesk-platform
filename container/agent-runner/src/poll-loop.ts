@@ -66,6 +66,26 @@ export function shouldEndForIdentityChange(
   return current.userId !== incoming.userId;
 }
 
+/**
+ * Pick a short, stable label for the provider_error metric's `code` dim.
+ * The message itself is free-form and changes between providers /
+ * versions — using it as a label would cardinality-bomb Prometheus.
+ *
+ * Exported for unit testing.
+ */
+export function classifyProviderError(errMsg: string, sessionInvalid: boolean): string {
+  if (sessionInvalid) return 'session_invalid';
+  const normalized = errMsg.toLowerCase();
+  if (/\b(502|503|504)\b/.test(normalized)) return 'gateway_5xx';
+  if (normalized.includes('timed out') || normalized.includes('timeout')) return 'timeout';
+  if (/\b401\b/.test(normalized)) return 'unauthorized';
+  if (/\b429\b/.test(normalized)) return 'rate_limited';
+  if (/\b4\d\d\b/.test(normalized)) return 'client_4xx';
+  if (/\b5\d\d\b/.test(normalized)) return 'server_5xx';
+  if (normalized.includes('non-json')) return 'bad_response';
+  return 'unknown';
+}
+
 function formatUserFacingError(errMsg: string): string {
   const normalized = errMsg.toLowerCase();
   if (
@@ -274,11 +294,27 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // Stale/corrupt continuation recovery: ask the provider whether
       // this error means the stored continuation is unusable, and clear
       // it so the next attempt starts fresh.
-      if (continuation && config.provider.isSessionInvalid(err)) {
+      const sessionInvalid = continuation && config.provider.isSessionInvalid(err);
+      if (sessionInvalid) {
         log(`Stale session detected (${continuation}) — clearing for next retry`);
         continuation = undefined;
         clearContinuation(config.providerName);
       }
+
+      // Emit a provider_error system action so the host can bump the
+      // frontlane_provider_errors_total metric. Without this, dashboards
+      // that watch for provider trouble stay at 0 regardless of what's
+      // happening — the opposite of "no signal is no problem".
+      writeMessageOut({
+        id: generateId(),
+        kind: 'system',
+        content: JSON.stringify({
+          action: 'provider_error',
+          provider: config.providerName,
+          code: classifyProviderError(errMsg, sessionInvalid),
+          message: errMsg.slice(0, 500),
+        }),
+      });
 
       // Write error response so the user knows something went wrong
       writeMessageOut({

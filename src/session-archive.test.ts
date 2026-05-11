@@ -95,6 +95,19 @@ describe('archiveSession', () => {
     expect(ok).toBe(true);
     expect(getSession('s1')!.status).toBe('archived');
   });
+
+  it('short-circuits a concurrent archive attempt on the same session', async () => {
+    seedSession({ id: 's1', agentGroupId: 'ag-1' });
+
+    // Kick two archive attempts off against the same row without awaiting
+    // between them — the second one must see the reentrancy guard and
+    // return false immediately rather than racing on the DB flip or
+    // double-tarring the directory.
+    const row = getSession('s1')!;
+    const [a, b] = await Promise.all([archiveSession(row), archiveSession(row)]);
+    expect([a, b].filter(Boolean).length).toBe(1);
+    expect(getSession('s1')!.status).toBe('archived');
+  });
 });
 
 describe('hardDeleteArchivedSession', () => {

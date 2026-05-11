@@ -17,7 +17,7 @@
  * `FRONTLANE_ARCHIVE_HARD_DELETE_DAYS` has also elapsed. Default 0 =
  * disabled; archives live forever unless an operator clears them.
  */
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -34,6 +34,15 @@ import { sessionDir } from './session-manager.js';
 import type { Session } from './types.js';
 
 const ARCHIVE_BATCH_LIMIT = 100;
+
+/**
+ * Session ids currently being tar'd in the background. The sweep fires
+ * one tick per 60s — without this set a long-running tar from the prior
+ * tick would be re-issued on the next one because the DB row still says
+ * `status='active'` until the tar finishes. Cleared in the finally arm
+ * of spawnTarAsync().
+ */
+const archivesInProgress = new Set<string>();
 
 function archiveBaseDir(): string {
   return path.join(DATA_DIR, 'v2-sessions-archive');
@@ -62,36 +71,67 @@ function cutoffIso(days: number, now: Date = new Date()): string {
 }
 
 /**
- * Tar + gzip a session's directory into the archive tree. Idempotent:
- * overwrites an existing archive with the same id (in practice only
- * happens if a prior archive crashed mid-run).
+ * Run `tar -czf ...` in a child process and wait for it via a Promise —
+ * yields the event loop instead of blocking it. Big session folders
+ * (conversations/, outbox/, etc.) can tar for hundreds of ms to several
+ * seconds each; the sweep batch limit is 100, so the old execSync path
+ * would freeze the entire host loop for minutes in the worst case.
+ *
+ * Resolves to the archive path on success, or null when the source dir
+ * no longer exists. Rejects if tar exits non-zero.
  */
-export function archiveSessionFiles(session: Session): string | null {
+async function spawnTarAsync(src: string, dst: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const parentDir = path.dirname(src);
+    const leaf = path.basename(src);
+    const child = spawn('tar', ['-czf', dst, '-C', parentDir, leaf], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderrBuf = '';
+    child.stderr?.on('data', (chunk) => {
+      stderrBuf += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`tar exited ${code}: ${stderrBuf.slice(0, 500)}`));
+    });
+  });
+}
+
+/**
+ * Tar + gzip a session's directory into the archive tree. Async.
+ * Idempotent: overwrites an existing archive with the same id (in
+ * practice only happens if a prior archive crashed mid-run).
+ */
+export async function archiveSessionFiles(session: Session): Promise<string | null> {
   const src = sessionDir(session.agent_group_id, session.id);
   if (!fs.existsSync(src)) return null;
 
   const dst = archivePathFor(session);
   fs.mkdirSync(path.dirname(dst), { recursive: true });
 
-  // Use tar with relative paths so the archive extracts cleanly as
-  // `<agent_group_id>/<session_id>/...`. -C parents lets us tar without
-  // embedding the absolute path.
-  const parentDir = path.dirname(src);
-  const leaf = path.basename(src);
-  execSync(`tar -czf ${JSON.stringify(dst)} -C ${JSON.stringify(parentDir)} ${JSON.stringify(leaf)}`);
+  await spawnTarAsync(src, dst);
 
   fs.rmSync(src, { recursive: true, force: true });
   return dst;
 }
 
 /**
- * Archive a single session: stop container if it's somehow still listed,
- * tar the directory, flip status to 'archived'. Called one session at a
- * time so one bad tar doesn't block the whole sweep.
+ * Archive a single session: tar the directory, flip status to 'archived'.
+ * Called one session at a time so one bad tar doesn't block the whole
+ * sweep; the tar itself is async (spawn) so the sweep loop keeps
+ * yielding.
+ *
+ * Reentrancy guard: if the same session is already being archived by a
+ * prior (still-running) sweep tick, we short-circuit with false. The
+ * in-progress tick owns the DB flip.
  */
 export async function archiveSession(session: Session, now: Date = new Date()): Promise<boolean> {
+  if (archivesInProgress.has(session.id)) {
+    return false;
+  }
+  archivesInProgress.add(session.id);
   try {
-    const archivePath = archiveSessionFiles(session);
+    const archivePath = await archiveSessionFiles(session);
     // `archived_at` is the hard-delete gate. Set it to now so the retention
     // window (FRONTLANE_ARCHIVE_HARD_DELETE_DAYS) starts here, not at
     // last_active — otherwise an ancient idle session gets tarred and
@@ -106,6 +146,8 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
   } catch (err) {
     log.error('Session archive failed', { sessionId: session.id, err });
     return false;
+  } finally {
+    archivesInProgress.delete(session.id);
   }
 }
 
@@ -156,9 +198,15 @@ export async function runSessionLifecycleSweep(now: Date = new Date()): Promise<
   if (ttlDays > 0) {
     const beforeIso = cutoffIso(ttlDays, now);
     const candidates = findArchivableSessions(beforeIso, ARCHIVE_BATCH_LIMIT);
-    for (const session of candidates) {
-      if (await archiveSession(session, now)) archived++;
-    }
+    // Run the tar-per-session jobs concurrently. Each archive forks a
+    // `tar` subprocess (spawnTarAsync) which runs outside the event loop,
+    // so the concurrency here is CPU/IO-bound by the kernel, not by
+    // JavaScript — we're just not serializing their waits. On the old
+    // execSync path a batch of 100 stacking to ~1 second per session
+    // would block the sweep (and everything else) for minutes; now the
+    // sweep returns quickly and the tars finish whenever.
+    const outcomes = await Promise.all(candidates.map((session) => archiveSession(session, now)));
+    archived = outcomes.filter((ok) => ok).length;
   }
 
   if (hardDays > 0) {
