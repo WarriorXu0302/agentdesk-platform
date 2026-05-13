@@ -112,10 +112,14 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
-  it('bare text produces no outbound messages (scratchpad only)', async () => {
+  it('bare text falls back to source-destination delivery', async () => {
     insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'discord' });
 
-    // Agent responds with bare text — no <message to="..."> wrapping
+    // Agent responds with bare text — no <message to="..."> wrapping. The
+    // poll loop's "reply-source fallback" delivers it to the destination
+    // matching the inbound channel/platform (rather than dropping to
+    // scratchpad). Many models emit a final result as bare text after a
+    // long tool-call chain — see poll-loop.ts handleResultText.
     const provider = new MockProvider({}, () => 'I am thinking about this...');
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
@@ -125,7 +129,11 @@ describe('poll loop integration', () => {
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(0);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.platform_id).toBe('chan-1');
+    expect(out[0]!.channel_type).toBe('discord');
+    const body = JSON.parse(out[0]!.content) as { text?: string };
+    expect(body.text).toContain('thinking');
 
     await loopPromise.catch(() => {});
   });
