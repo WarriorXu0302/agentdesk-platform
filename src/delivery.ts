@@ -256,6 +256,14 @@ async function deliverMessage(
     return;
   }
 
+  // Observability-only rows (per-LLM-call usage telemetry from the agent
+  // runner) are not user-facing — the sidecar reads them straight from
+  // outbound.db and forwards to Langfuse. We mark them delivered so they
+  // don't loop, but skip the channel adapter entirely.
+  if (msg.kind === 'llm-usage') {
+    return undefined;
+  }
+
   const content = JSON.parse(msg.content);
 
   // System actions — handle internally (schedule_task, cancel_task, etc.)

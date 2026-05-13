@@ -1,4 +1,4 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
   markProcessing,
@@ -627,6 +627,27 @@ async function processQuery(
               `Use <message to="name"> blocks to address them. Bare text goes to the scratchpad fallback only.`,
           );
         }
+      } else if (event.type === 'usage') {
+        // Per-LLM-call cost/latency record. Persisted as a sentinel row in
+        // outbound.db with kind='llm-usage' so host-side observability can
+        // attribute spend to the originating turn without instrumenting
+        // each provider individually. Not user-facing — the host router
+        // filters these out before delivery.
+        writeMessageOut({
+          id: generateId(),
+          kind: 'llm-usage',
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+          content: JSON.stringify({
+            model: event.model,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            totalTokens: event.totalTokens,
+            durationMs: event.durationMs,
+            transport: event.transport,
+          }),
+        });
       }
     }
   } finally {
@@ -667,7 +688,23 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * The agent must always wrap output in <message to="name">...</message>
  * blocks, even with a single destination. Bare text is scratchpad only.
  */
+/**
+ * Pre-clean common LLM typos in `<message>` wrapping. The strict parser
+ * silently drops blocks like `/message to="x">` (missing leading `<`) or
+ * `< message to="x">` (stray space). Normalize them before regex matching.
+ *
+ * Exported for unit testing.
+ */
+export function normalizeMessageBlocks(text: string): string {
+  return text
+    .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
+    .replace(/<\s+message(?=\s+to=)/g, '<message')
+    .replace(/<\/\s*message\s*>/g, '</message>')
+    .replace(/<\s*\/\s*message\s*>/g, '</message>');
+}
+
 function dispatchResultText(text: string, routing: RoutingContext): void {
+  const cleaned = normalizeMessageBlocks(text);
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
@@ -675,9 +712,9 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   let lastIndex = 0;
   const scratchpadParts: string[] = [];
 
-  while ((match = MESSAGE_RE.exec(text)) !== null) {
+  while ((match = MESSAGE_RE.exec(cleaned)) !== null) {
     if (match.index > lastIndex) {
-      scratchpadParts.push(text.slice(lastIndex, match.index));
+      scratchpadParts.push(cleaned.slice(lastIndex, match.index));
     }
     const toName = match[1];
     const body = match[2].trim();
@@ -692,8 +729,8 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
     sendToDestination(dest, body, routing);
     sent++;
   }
-  if (lastIndex < text.length) {
-    scratchpadParts.push(text.slice(lastIndex));
+  if (lastIndex < cleaned.length) {
+    scratchpadParts.push(cleaned.slice(lastIndex));
   }
 
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
@@ -702,8 +739,29 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
     log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
   }
 
-  if (sent === 0 && text.trim()) {
-    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
+  if (sent === 0 && cleaned.trim()) {
+    // Fallback: many models (especially after a long tool-call chain) emit
+    // a final result as bare text instead of wrapping in <message to="name">.
+    // Rather than dropping it to scratchpad, deliver to the inbound's source
+    // destination (the same place an unwrapped reply would naturally go).
+    // Falls through to the WARNING if the group has multiple destinations and
+    // we can't determine the source — that's a real ambiguity worth flagging.
+    const sourceDest = findByRouting(routing.channelType, routing.platformId);
+    if (sourceDest) {
+      const body = cleaned.trim();
+      log(`Reply-source fallback: delivering ${body.length}B bare text to "${sourceDest.name}"`);
+      sendToDestination(sourceDest, body, routing);
+      return;
+    }
+    const all = getAllDestinations();
+    if (all.length === 1) {
+      const body = cleaned.trim();
+      log(`Single-destination fallback: delivering ${body.length}B bare text to "${all[0].name}"`);
+      sendToDestination(all[0], body, routing);
+      return;
+    }
+    const sample = text.replace(/\s+/g, ' ').slice(0, 200);
+    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent. text[0..200]="${sample}"`);
   }
 }
 

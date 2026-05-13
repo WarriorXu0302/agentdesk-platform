@@ -26,7 +26,7 @@ const MAX_REPLAY_TRANSCRIPT_ITEMS = 128;
 const MAX_REPLAY_TRANSCRIPT_CHARS = 120_000;
 const PREVIOUS_RESPONSE_UNSUPPORTED_RE = /previous_response_id.*(?:responses websocket v2|only supported)/i;
 const RESPONSES_TRANSPORT_FALLBACK_RE =
-  /non-json response \((502|503|504)\)|unreadable sse response \((502|503|504)\)|request failed with status (502|503|504)/i;
+  /non-json response \((404|405|502|503|504)\)|unreadable sse response \((404|405|502|503|504)\)|request failed with status (404|405|502|503|504)|does not support the ['"]?\/v1\/responses['"]? api|\/v1\/responses[^a-z0-9]+(?:is\s+)?(?:not\s+supported|unsupported)|failed to deserialize the json body.*invalid ['"]?input['"]?|invalid ['"]?input['"]?:\s*value did not match any expected variant/i;
 const INVALID_SESSION_RE =
   /response.*not found|unknown response|invalid response|previous_response_id.*(?:not found|does not exist|invalid)/i;
 
@@ -44,6 +44,16 @@ interface OpenAIResponseError {
   message?: string;
 }
 
+interface OpenAIUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  // chat-completions API uses prompt_tokens / completion_tokens names instead;
+  // we normalize at extraction time.
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
 interface OpenAIResponse {
   id?: string;
   status?: string;
@@ -51,6 +61,7 @@ interface OpenAIResponse {
   incomplete_details?: { reason?: string } | null;
   output?: OpenAIOutputItem[];
   output_text?: string;
+  usage?: OpenAIUsage;
 }
 
 interface OpenAIOutputItem extends JsonObject {
@@ -82,6 +93,7 @@ interface OpenAIChatCompletionResponse {
     };
     finish_reason?: string | null;
   }>;
+  usage?: OpenAIUsage;
 }
 
 interface ToolBinding {
@@ -286,6 +298,17 @@ function replayableOutputItems(output: OpenAIOutputItem[] | undefined): JsonObje
   return replayable;
 }
 
+// F2: tool_call_id entries don't survive a cross-session restore — once persisted
+// and reloaded into a stateless replay, the upstream API has no record of the
+// originating tool call and rejects the orphan output. Strip them before persist
+// so the restored transcript only carries plain message turns.
+function stripStaleToolCallTranscript(items: JsonObject[]): JsonObject[] {
+  return items.filter((item) => {
+    const type = (item as { type?: unknown }).type;
+    return type !== 'function_call' && type !== 'function_call_output';
+  });
+}
+
 function parseContinuationState(raw: string | undefined): OpenAIContinuationState {
   const legacyResponseId = readString(raw);
   if (!legacyResponseId) {
@@ -301,7 +324,7 @@ function parseContinuationState(raw: string | undefined): OpenAIContinuationStat
     const mode = parsed.mode === 'stateless' ? 'stateless' : 'responses';
     const transport = parsed.transport === 'chat-completions' ? 'chat-completions' : 'responses';
     const transcript = Array.isArray(parsed.transcript)
-      ? trimTranscript(parsed.transcript.filter(isRecord).map((item) => cloneJson(item)))
+      ? trimTranscript(stripStaleToolCallTranscript(parsed.transcript.filter(isRecord).map((item) => cloneJson(item))))
       : [];
     const responseId = readString(parsed.responseId);
     return {
@@ -322,7 +345,7 @@ function serializeContinuationState(state: OpenAIContinuationState): string {
     mode: state.mode,
     transport: state.transport,
     responseId: state.responseId,
-    transcript: trimTranscript(state.transcript),
+    transcript: trimTranscript(stripStaleToolCallTranscript(state.transcript)),
   });
 }
 
@@ -468,6 +491,7 @@ function chatCompletionToResponse(response: OpenAIChatCompletionResponse): OpenA
     error: response.error ?? null,
     output,
     output_text: contentText || undefined,
+    usage: response.usage,
   };
 }
 
@@ -554,9 +578,13 @@ function parseSseResponse(raw: string): OpenAIResponse | null {
     }
   }
 
-  response.output = outputItems;
-  response.output_text = extractOutputText(response) ?? undefined;
-  return response;
+  // Refresh narrowing — TS loses the inner closure's reassignment story so
+  // it ends up typing `response` as `never` here. Pin it back to a fresh
+  // `OpenAIResponse` binding before mutating.
+  const final: OpenAIResponse = response;
+  final.output = outputItems;
+  final.output_text = extractOutputText(final) ?? undefined;
+  return final;
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -621,7 +649,10 @@ class OpenAIMcpBridge {
           arguments: parsedArgs,
         }),
       );
-      return formatToolResult(result);
+      // The SDK's CallToolResult type from runtime + the same type referenced
+      // by formatToolResult diverge by a hair (`_meta` is widened to
+      // Record<string, unknown>). Functionally identical — assert through.
+      return formatToolResult(result as Parameters<typeof formatToolResult>[0]);
     } catch (err) {
       return `Tool ${qualifiedName} failed: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -702,6 +733,7 @@ export class OpenAIProvider implements AgentProvider {
   private readonly model: string;
   private readonly reasoningEffort?: string;
   private readonly timeoutMs: number;
+  private readonly forceTransport?: OpenAITransport;
   private readonly bridge: OpenAIMcpBridge;
 
   constructor(options: ProviderOptions = {}) {
@@ -711,6 +743,8 @@ export class OpenAIProvider implements AgentProvider {
     this.model = readString(env.OPENAI_MODEL) || DEFAULT_MODEL;
     this.reasoningEffort = readString(env.OPENAI_REASONING_EFFORT);
     this.timeoutMs = Number.parseInt(readString(env.OPENAI_TIMEOUT_MS) || '', 10) || DEFAULT_TIMEOUT_MS;
+    const force = readString(env.OPENAI_FORCE_TRANSPORT)?.toLowerCase();
+    this.forceTransport = force === 'chat-completions' || force === 'responses' ? force : undefined;
     this.bridge = new OpenAIMcpBridge(options.mcpServers ?? {}, env);
   }
 
@@ -726,7 +760,9 @@ export class OpenAIProvider implements AgentProvider {
     let continuation = input.continuation;
 
     const events: AsyncIterable<ProviderEvent> = {
-      [Symbol.asyncIterator]: async function* (this: OpenAIProvider) {
+      [Symbol.asyncIterator]: async function* (
+        this: OpenAIProvider,
+      ): AsyncGenerator<ProviderEvent, void, unknown> {
         let currentPrompt = input.prompt;
 
         while (true) {
@@ -747,6 +783,17 @@ export class OpenAIProvider implements AgentProvider {
             yield { type: 'init', continuation };
             for (const progress of turn.progressMessages) {
               yield { type: 'progress', message: progress };
+            }
+            for (const u of turn.usages) {
+              yield {
+                type: 'usage',
+                model: u.model,
+                inputTokens: u.inputTokens,
+                outputTokens: u.outputTokens,
+                totalTokens: u.totalTokens,
+                durationMs: u.durationMs,
+                transport: u.transport,
+              };
             }
             yield { type: 'result', text: turn.text };
           } catch (err) {
@@ -797,17 +844,38 @@ export class OpenAIProvider implements AgentProvider {
     continuation?: string;
     instructions?: string;
     signal: AbortSignal;
-  }): Promise<{ continuation: string; text: string | null; progressMessages: string[] }> {
+  }): Promise<{
+    continuation: string;
+    text: string | null;
+    progressMessages: string[];
+    usages: Array<{
+      model: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      durationMs?: number;
+      transport: OpenAITransport;
+    }>;
+  }> {
     if (!this.apiKey) {
       throw new Error('OPENAI_API_KEY is missing for provider=openai');
     }
 
     const tools = await this.bridge.listTools();
     const progressMessages: string[] = [];
+    const usages: Array<{
+      model: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      durationMs?: number;
+      transport: OpenAITransport;
+    }> = [];
     const restored = parseContinuationState(params.continuation);
-    let mode: ContinuationMode = restored.mode;
-    let transport: OpenAITransport = restored.transport;
-    let previousResponseId = restored.mode === 'responses' ? restored.responseId : undefined;
+    let mode: ContinuationMode = this.forceTransport === 'chat-completions' ? 'stateless' : restored.mode;
+    let transport: OpenAITransport = this.forceTransport ?? restored.transport;
+    let previousResponseId =
+      this.forceTransport === 'chat-completions' ? undefined : restored.mode === 'responses' ? restored.responseId : undefined;
     let transcript = trimTranscript(restored.transcript);
     transcript = appendTranscript(transcript, [userMessageInput(params.prompt)]);
     let nextInput: unknown =
@@ -817,6 +885,7 @@ export class OpenAIProvider implements AgentProvider {
       if (params.signal.aborted) throw new Error('OpenAI request aborted');
 
       let response: OpenAIResponse;
+      const callStartedAt = Date.now();
       try {
         if (transport === 'chat-completions') {
           response = await this.createChatCompletionResponse({
@@ -864,6 +933,21 @@ export class OpenAIProvider implements AgentProvider {
       }
       const responseItems = replayableOutputItems(response.output);
 
+      // Record LLM usage for observability before any branch that might
+      // throw — this LLM call already happened so cost is real regardless
+      // of whether we end up surfacing the result to the caller.
+      if (response.usage) {
+        const u = response.usage;
+        usages.push({
+          model: this.model,
+          inputTokens: u.input_tokens ?? u.prompt_tokens,
+          outputTokens: u.output_tokens ?? u.completion_tokens,
+          totalTokens: u.total_tokens,
+          durationMs: Date.now() - callStartedAt,
+          transport,
+        });
+      }
+
       const functionCalls = collectFunctionCalls(response.output);
       if (functionCalls.length === 0) {
         transcript = appendTranscript(transcript, responseItems);
@@ -887,6 +971,7 @@ export class OpenAIProvider implements AgentProvider {
           continuation,
           text: extractOutputText(response),
           progressMessages,
+          usages,
         };
       }
 

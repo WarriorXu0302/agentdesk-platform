@@ -87,4 +87,20 @@ export type ProviderEvent =
    * after compaction. Distinct from `result` so it doesn't mark the turn
    * completed or get dispatched as a chat message. See qwibitai/nanoclaw#2325.
    */
-  | { type: 'compacted'; text: string };
+  | { type: 'compacted'; text: string }
+  /**
+   * Per-LLM-call usage report. Emitted after each successful API call so the
+   * poll-loop can record cost/latency to outbound.db (kind='llm-usage') and
+   * downstream observability (Langfuse sidecar) can attribute LLM cost back
+   * to the originating turn. Optional — providers that don't expose usage
+   * metadata simply skip the event.
+   */
+  | {
+      type: 'usage';
+      model: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      durationMs?: number;
+      transport?: string;
+    };
