@@ -286,11 +286,12 @@ FEISHU_EVENT_MODE=hybrid
 
 ## 相关文档
 
+- [docs/PLATFORM.md](docs/PLATFORM.md) — 平台总览 + 文档地图（新人优先看这个）
+- [docs/architecture.md](docs/architecture.md)
 - [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md)
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md)
-- [docs/feishu-channel.md](docs/feishu-channel.md)
-- [docs/architecture.md](docs/architecture.md)
 - [docs/isolation-model.md](docs/isolation-model.md)
+- [docs/feishu-channel.md](docs/feishu-channel.md)
 
 ## License
 
