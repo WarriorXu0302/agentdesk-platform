@@ -1,10 +1,23 @@
 /**
  * Bootstrap a shared-enterprise FrontLane topology.
  *
- * Creates/reuses a frontdesk agent group plus a set of specialist workers,
- * seeds their group files with enterprise-oriented starter instructions,
- * wires bidirectional agent destinations, and optionally wires a shared
- * entry channel to the frontdesk.
+ * Creates/reuses a primary frontdesk agent group, an optional secondary
+ * lab-style frontdesk (Phase 0a `frontlane-lab-frontdesk`), plus a set of
+ * specialist workers for the primary frontdesk. Seeds group files with
+ * enterprise-oriented starter instructions, wires bidirectional agent
+ * destinations, and optionally wires a shared entry channel to the
+ * **primary** frontdesk.
+ *
+ * Multi-frontdesk model (see ADR-0008):
+ * - DEFAULT_FRONTDESKS lists every desk this script provisions by default.
+ * - The first entry is the "primary" frontdesk: shared-entry wiring + worker
+ *   reverse destinations attach here.
+ * - Subsequent desks (e.g. lab) own their own `groups/<folder>/` prompt
+ *   contract and call the ERP gateway directly; they do not delegate to
+ *   shared workers, so they get `workers: []` and contribute no reverse
+ *   destinations on existing workers (avoids destination-name collisions).
+ * - Passing --frontdesk-folder or --frontdesk-name switches to single-desk
+ *   mode for back-compat with older callers.
  *
  * Usage:
  *   pnpm exec tsx scripts/init-enterprise-topology.ts
@@ -16,8 +29,9 @@
  *     --threaded
  *
  * Optional args:
- *   --frontdesk-name "FrontLane Desk"
- *   --frontdesk-folder frontlane-frontdesk
+ *   --frontdesks folder1:name1[,folder2:name2,...]    # multi-desk override
+ *   --frontdesk-name "FrontLane Desk"                 # single-desk back-compat
+ *   --frontdesk-folder frontlane-frontdesk            # single-desk back-compat
  *   --workers access-worker,sales-worker,finance-worker,approval-worker,ops-worker
  *   --channel <channel>
  *   --platform-id <platform id emitted by the adapter>
@@ -82,10 +96,48 @@ const ENGAGE_MODES: MessagingGroupAgent['engage_mode'][] = ['pattern', 'mention'
 const SENDER_SCOPES: SenderScope[] = ['all', 'known'];
 const UNKNOWN_SENDER_POLICIES: UnknownSenderPolicy[] = ['strict', 'request_approval', 'public'];
 
-interface Args {
-  frontdeskName: string;
-  frontdeskFolder: string;
+/**
+ * One frontdesk specification. `workers` may be empty — secondary desks
+ * (like the Phase 0a lab frontdesk) call the ERP gateway directly and do
+ * not own a shared worker pool. Only the **primary** frontdesk (the first
+ * entry in the active list) wires reverse `frontdesk` destinations onto
+ * workers, to avoid name collisions on the worker side.
+ */
+interface FrontdeskSpec {
+  folder: string;
+  name: string;
   workers: string[];
+}
+
+/**
+ * Default desks provisioned by `pnpm init:enterprise` with no args.
+ * Order is significant: index 0 is the primary frontdesk.
+ *
+ * `frontlane-lab-frontdesk` was added in Phase 0a (ADR-0008) as a
+ * lab-flavored secondary desk that owns its own prompt contract
+ * (`groups/frontlane-lab-frontdesk/CLAUDE.local.md`) and calls the ERP
+ * gateway directly — hence `workers: []`.
+ */
+const DEFAULT_FRONTDESKS: FrontdeskSpec[] = [
+  {
+    folder: DEFAULT_FRONTDESK_FOLDER,
+    name: DEFAULT_FRONTDESK_NAME,
+    workers: DEFAULT_WORKERS,
+  },
+  {
+    folder: 'frontlane-lab-frontdesk',
+    name: 'FrontLane Lab Desk',
+    workers: [],
+  },
+];
+
+interface Args {
+  /**
+   * Active frontdesk list after CLI parsing. May be a single-element list
+   * (single-desk back-compat mode triggered by --frontdesk-folder or
+   * --frontdesk-name) or the multi-desk default.
+   */
+  frontdesks: FrontdeskSpec[];
   channel: string | null;
   platformId: string | null;
   groupName: string | null;
@@ -105,8 +157,9 @@ interface WorkerSpec {
 }
 
 function parseArgs(argv: string[]): Args {
-  let frontdeskName: string | undefined;
-  let frontdeskFolder: string | undefined;
+  let singleFrontdeskName: string | undefined;
+  let singleFrontdeskFolder: string | undefined;
+  let frontdesksRaw: string | undefined;
   let workersRaw: string | undefined;
   let channel: string | undefined;
   let platformId: string | undefined;
@@ -118,17 +171,24 @@ function parseArgs(argv: string[]): Args {
   let isGroup = true;
   let threaded = false;
   let sawChannelConfig = false;
+  let sawSingleFrontdesk = false;
 
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     const val = argv[i + 1];
     switch (key) {
       case '--frontdesk-name':
-        frontdeskName = val;
+        singleFrontdeskName = val;
+        sawSingleFrontdesk = true;
         i++;
         break;
       case '--frontdesk-folder':
-        frontdeskFolder = val;
+        singleFrontdeskFolder = val;
+        sawSingleFrontdesk = true;
+        i++;
+        break;
+      case '--frontdesks':
+        frontdesksRaw = val;
         i++;
         break;
       case '--workers':
@@ -205,13 +265,21 @@ function parseArgs(argv: string[]): Args {
   if (!isGroup && threaded) {
     fatal('--threaded only makes sense for shared/group surfaces; remove it when using --dm.');
   }
+  if (sawSingleFrontdesk && frontdesksRaw) {
+    fatal('Use either --frontdesks (multi-desk) or --frontdesk-folder/--frontdesk-name (single-desk), not both.');
+  }
 
   const workers = parseWorkers(workersRaw);
+  const frontdesks = resolveFrontdesks({
+    sawSingleFrontdesk,
+    singleFrontdeskFolder,
+    singleFrontdeskName,
+    frontdesksRaw,
+    primaryWorkers: workers,
+  });
 
   return {
-    frontdeskName: frontdeskName?.trim() || DEFAULT_FRONTDESK_NAME,
-    frontdeskFolder: normalizeName(frontdeskFolder?.trim() || DEFAULT_FRONTDESK_FOLDER),
-    workers,
+    frontdesks,
     channel: channel ?? null,
     platformId: platformId?.trim() || null,
     groupName: groupName?.trim() || null,
@@ -222,6 +290,74 @@ function parseArgs(argv: string[]): Args {
     isGroup,
     threaded,
   };
+}
+
+/**
+ * Resolve the active frontdesk list from CLI flags.
+ *
+ * Precedence:
+ * 1. Single-desk back-compat: `--frontdesk-folder` and/or `--frontdesk-name`
+ *    yields a single-desk list using the CLI-provided values (folder/name)
+ *    or the standard defaults if not given. Primary desk inherits the
+ *    `--workers` override.
+ * 2. Explicit multi-desk: `--frontdesks folder1:name1,folder2:name2` yields
+ *    that exact list. First entry inherits `--workers`; the rest are
+ *    `workers: []`.
+ * 3. Default: `DEFAULT_FRONTDESKS` (primary inherits `--workers`).
+ */
+function resolveFrontdesks(opts: {
+  sawSingleFrontdesk: boolean;
+  singleFrontdeskFolder: string | undefined;
+  singleFrontdeskName: string | undefined;
+  frontdesksRaw: string | undefined;
+  primaryWorkers: string[];
+}): FrontdeskSpec[] {
+  if (opts.sawSingleFrontdesk) {
+    return [
+      {
+        folder: normalizeName(opts.singleFrontdeskFolder?.trim() || DEFAULT_FRONTDESK_FOLDER),
+        name: opts.singleFrontdeskName?.trim() || DEFAULT_FRONTDESK_NAME,
+        workers: opts.primaryWorkers,
+      },
+    ];
+  }
+
+  if (opts.frontdesksRaw) {
+    const list = parseFrontdesksList(opts.frontdesksRaw, opts.primaryWorkers);
+    if (list.length === 0) fatal('--frontdesks parsed to an empty list.');
+    return list;
+  }
+
+  return DEFAULT_FRONTDESKS.map((desk, idx) => ({
+    folder: desk.folder,
+    name: desk.name,
+    // The primary desk picks up the operator's --workers override; other
+    // desks keep their declared (typically empty) worker set.
+    workers: idx === 0 ? opts.primaryWorkers : desk.workers,
+  }));
+}
+
+/** Parse `folder1:name1[,folder2:name2,...]`. Empty `:name` parts default to titleCase(folder). */
+function parseFrontdesksList(raw: string, primaryWorkers: string[]): FrontdeskSpec[] {
+  const seen = new Set<string>();
+  const result: FrontdeskSpec[] = [];
+  for (const [idx, part] of raw.split(',').entries()) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colon = trimmed.indexOf(':');
+    const folderRaw = colon >= 0 ? trimmed.slice(0, colon).trim() : trimmed;
+    const nameRaw = colon >= 0 ? trimmed.slice(colon + 1).trim() : '';
+    const folder = normalizeName(folderRaw);
+    if (!folder) fatal(`--frontdesks entry has empty folder: "${trimmed}"`);
+    if (seen.has(folder)) fatal(`--frontdesks duplicate folder: "${folder}"`);
+    seen.add(folder);
+    result.push({
+      folder,
+      name: nameRaw || titleCase(folder),
+      workers: idx === 0 ? primaryWorkers : [],
+    });
+  }
+  return result;
 }
 
 function parseWorkers(raw: string | undefined): string[] {
@@ -334,6 +470,24 @@ Never delegate silently. Every routing decision must have a preceding \`classify
 - for money movement, approvals, status changes, or destructive operations, require explicit confirmation and use the approval path
 - use <message to="worker-name">...</message> for delegation and include only the minimum context needed
 - return concise user-facing summaries after worker results come back
+`;
+}
+
+function buildSoloFrontdeskInstructions(frontdeskName: string): string {
+  return `# ${frontdeskName}
+
+You are a self-contained frontdesk agent. You receive user requests directly
+and call the ERP gateway (\`erp_*\` tools) yourself, without delegating to
+shared worker agents.
+
+Operating rules:
+- preserve session isolation: never read or write another user's session
+- verify identity and permission scope before any ERP-side write
+- for any operation that mutates physical or business state, require explicit
+  user confirmation first
+- never fabricate completion — return only results backed by a real tool
+  response or file write
+- when you cannot satisfy a request safely, say so and propose the next step
 `;
 }
 
@@ -457,7 +611,7 @@ function ensureSharedEntryWiring(frontdesk: AgentGroup, args: Args, now: string)
       id: generateId('mg'),
       channel_type: args.channel,
       platform_id: platformId,
-      name: args.groupName || args.frontdeskName,
+      name: args.groupName || frontdesk.name,
       is_group: args.isGroup ? 1 : 0,
       unknown_sender_policy: args.unknownSenderPolicy,
       created_at: now,
@@ -526,43 +680,71 @@ export async function run(argv: string[]): Promise<void> {
   runMigrations(db);
 
   const now = new Date().toISOString();
-  const workerSpecs = buildWorkerSpecs(args.workers);
   const touchedGroups = new Set<string>();
 
-  if (workerSpecs.some((worker) => worker.folder === args.frontdeskFolder)) {
-    throw new Error(
-      `Frontdesk folder "${args.frontdeskFolder}" collides with a worker folder. Pick a different --frontdesk-folder or worker name.`,
-    );
+  // Collision pre-check across all frontdesks and their workers — across the
+  // *active* desk list. Each desk's workers are checked against that desk's
+  // folder name; cross-desk folder collisions are also flagged.
+  const allFolders = new Set<string>();
+  for (const desk of args.frontdesks) {
+    if (allFolders.has(desk.folder)) {
+      throw new Error(`Duplicate frontdesk folder in active list: "${desk.folder}".`);
+    }
+    allFolders.add(desk.folder);
+  }
+  for (const desk of args.frontdesks) {
+    for (const worker of desk.workers) {
+      const workerFolder = normalizeName(buildWorkerFolder(worker));
+      if (workerFolder === desk.folder) {
+        throw new Error(
+          `Frontdesk folder "${desk.folder}" collides with worker folder. Pick a different folder or worker name.`,
+        );
+      }
+    }
   }
 
-  const frontdesk = ensureAgentGroup(
-    args.frontdeskFolder,
-    args.frontdeskName,
-    buildFrontdeskInstructions(args.frontdeskName, workerSpecs),
-    now,
-    'frontdesk',
-  );
+  // Primary (index 0) is the desk that owns shared workers and the optional
+  // channel wiring. Secondary desks (e.g. lab) get their own agent_group +
+  // group filesystem but no reverse worker destinations.
+  const primaryDesk = args.frontdesks[0];
 
-  const workers = workerSpecs.map((worker) =>
+  // Build worker specs once (only used by primary desk).
+  const primaryWorkerSpecs = buildWorkerSpecs(primaryDesk.workers);
+
+  // 1. Provision every frontdesk in the active list.
+  const frontdeskGroups: AgentGroup[] = [];
+  for (const desk of args.frontdesks) {
+    const isPrimary = desk === primaryDesk;
+    const instructions = isPrimary
+      ? buildFrontdeskInstructions(desk.name, primaryWorkerSpecs)
+      : buildSoloFrontdeskInstructions(desk.name);
+    const group = ensureAgentGroup(desk.folder, desk.name, instructions, now, 'frontdesk');
+    frontdeskGroups.push(group);
+  }
+  const primaryFrontdeskGroup = frontdeskGroups[0];
+
+  // 2. Provision primary desk's workers and wire bidirectional destinations.
+  const workerGroups = primaryWorkerSpecs.map((worker) =>
     ensureAgentGroup(worker.folder, worker.displayName, buildWorkerInstructions(worker), now, 'worker'),
   );
 
-  for (let i = 0; i < workerSpecs.length; i++) {
-    const workerSpec = workerSpecs[i];
-    const workerGroup = workers[i];
+  for (let i = 0; i < primaryWorkerSpecs.length; i++) {
+    const workerSpec = primaryWorkerSpecs[i];
+    const workerGroup = workerGroups[i];
 
-    if (ensureDestination(frontdesk, workerGroup, workerSpec.localName, now)) {
-      touchedGroups.add(frontdesk.id);
-      console.log(`Linked agent destination: ${frontdesk.name} -> ${workerSpec.localName}`);
+    if (ensureDestination(primaryFrontdeskGroup, workerGroup, workerSpec.localName, now)) {
+      touchedGroups.add(primaryFrontdeskGroup.id);
+      console.log(`Linked agent destination: ${primaryFrontdeskGroup.name} -> ${workerSpec.localName}`);
     }
-    if (ensureDestination(workerGroup, frontdesk, FRONTDESK_DESTINATION_NAME, now)) {
+    if (ensureDestination(workerGroup, primaryFrontdeskGroup, FRONTDESK_DESTINATION_NAME, now)) {
       touchedGroups.add(workerGroup.id);
       console.log(`Linked agent destination: ${workerGroup.name} -> ${FRONTDESK_DESTINATION_NAME}`);
     }
   }
 
-  const sharedEntry = ensureSharedEntryWiring(frontdesk, args, now);
-  if (sharedEntry) touchedGroups.add(frontdesk.id);
+  // 3. Shared-entry channel wiring (only the primary desk; ADR-0008 §3).
+  const sharedEntry = ensureSharedEntryWiring(primaryFrontdeskGroup, args, now);
+  if (sharedEntry) touchedGroups.add(primaryFrontdeskGroup.id);
 
   for (const agentGroupId of touchedGroups) {
     refreshDestinations(agentGroupId);
@@ -570,8 +752,11 @@ export async function run(argv: string[]): Promise<void> {
 
   console.log('');
   console.log('Enterprise topology ready.');
-  console.log(`  frontdesk: ${frontdesk.name} [${frontdesk.id}] @ groups/${frontdesk.folder}`);
-  for (const worker of workers) {
+  for (const [idx, group] of frontdeskGroups.entries()) {
+    const tag = idx === 0 ? 'frontdesk (primary)' : 'frontdesk (secondary)';
+    console.log(`  ${tag}: ${group.name} [${group.id}] @ groups/${group.folder}`);
+  }
+  for (const worker of workerGroups) {
     console.log(`  worker:    ${worker.name} [${worker.id}] @ groups/${worker.folder}`);
   }
   if (sharedEntry) {

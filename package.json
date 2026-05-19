@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit",
     "init:enterprise": "tsx scripts/init-enterprise-topology.ts",
     "configure:enterprise-gateway": "tsx scripts/configure-enterprise-gateway.ts",
+    "generate:env-local-proposed": "tsx scripts/generate-env-local-proposed.ts",
+    "setup:lab-frontdesk": "pnpm init:enterprise && pnpm configure:enterprise-gateway && pnpm generate:env-local-proposed",
     "container:build": "bash container/build.sh",
     "chat": "tsx scripts/chat.ts",
     "format": "prettier --write \"src/**/*.ts\"",

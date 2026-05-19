@@ -16,6 +16,11 @@
  *     --memory-mode erp \
  *     --header x-tenant=erp-a \
  *     --header x-env=prod
+ *
+ * The base URL falls back to `process.env.ERP_GATEWAY_BASE_URL` when
+ * --base-url is omitted, so `pnpm setup:lab-frontdesk` (the Phase 0a
+ * orchestration alias) can run unattended after the operator merges the
+ * relevant key from `.env.local.proposed` into `.env.local`.
  */
 import fs from 'fs';
 import path from 'path';
@@ -32,6 +37,7 @@ import { updateContainerConfig } from '../src/container-config.js';
 
 const DEFAULT_FOLDERS = [
   DEFAULT_FRONTDESK_FOLDER,
+  'frontlane-lab-frontdesk',
   buildWorkerFolder('access-worker'),
   buildWorkerFolder('sales-worker'),
   buildWorkerFolder('finance-worker'),
@@ -100,7 +106,12 @@ function parseArgs(argv: string[]): Args {
   }
 
   if (!baseUrl) {
-    fatal('Missing required arg: --base-url');
+    const fromEnv = process.env.ERP_GATEWAY_BASE_URL?.trim();
+    if (fromEnv) {
+      baseUrl = fromEnv;
+    } else {
+      fatal('Missing required arg: --base-url (or set ERP_GATEWAY_BASE_URL in the environment).');
+    }
   }
 
   const folders = (foldersRaw ? foldersRaw.split(',') : DEFAULT_FOLDERS).map((value) => value.trim()).filter(Boolean);
@@ -143,10 +154,14 @@ export async function run(argv: string[]): Promise<void> {
     }
 
     updateContainerConfig(folder, (config) => {
+      const existingHeaders = config.enterpriseGateway?.defaultHeaders ?? {};
+      const mergedHeaders = { ...existingHeaders, ...args.headers };
+      const hasHeaders = Object.keys(mergedHeaders).length > 0;
+
       config.enterpriseGateway = {
         baseUrl: args.baseUrl,
-        timeoutMs: args.timeoutMs ?? undefined,
-        defaultHeaders: Object.keys(args.headers).length > 0 ? args.headers : undefined,
+        timeoutMs: args.timeoutMs ?? config.enterpriseGateway?.timeoutMs,
+        defaultHeaders: hasHeaders ? mergedHeaders : undefined,
       };
       config.memoryMode = args.memoryMode;
       config.a2aSessionMode = 'root-session';
