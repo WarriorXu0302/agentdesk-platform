@@ -46,6 +46,20 @@ const DEFAULT_TEMPLATE_CANDIDATES = [
 
 const DEFAULT_OUTPUT = path.resolve(REPO_ROOT, '.env.local.proposed');
 
+const OBSERVABILITY_SECTION = `# -----------------------------------------------------------------------------
+# Observability (Phase 0b / PR-O1)
+# -----------------------------------------------------------------------------
+# MUAP PR-O1 extends the generated proposal locally. The sibling closeout file
+# openclaw/CLOSEOUT/phase0-implementation-pack/env-template.example remains a
+# read-only upstream reference for this repo task.
+PHOENIX_OTLP_ENDPOINT=http://localhost:4317
+PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006/v1/traces
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_SERVICE_NAME=frontlane-host
+PHOENIX_PROJECT_NAME=muap-local
+GRAFANA_HOST_PORT=3001
+`;
+
 /**
  * Embedded fallback copy of the Phase 0a env template.
  *
@@ -87,7 +101,7 @@ ERP_GATEWAY_BASE_URL=http://localhost:8088
 # FrontLane Lab Frontdesk Group — wire CLI / Feishu autowire to lab desk
 # -----------------------------------------------------------------------------
 # Uncomment to make lab-frontdesk the default Feishu autowire target
-# (instead of generic frontlane-frontdesk)
+# (instead of generic frontlane-template-frontdesk)
 # ENTERPRISE_FRONTDESK_FOLDER=frontlane-lab-frontdesk
 
 
@@ -194,6 +208,18 @@ function loadTemplate(explicitPath: string | null): { source: 'canonical' | 'emb
   return { source: 'embedded', content: EMBEDDED_TEMPLATE, from: null };
 }
 
+function appendObservabilitySection(content: string): string {
+  if (
+    content.includes('PHOENIX_OTLP_ENDPOINT=http://localhost:4317') &&
+    content.includes('PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006/v1/traces') &&
+    content.includes('GRAFANA_HOST_PORT=3001')
+  ) {
+    return content;
+  }
+
+  return `${content.replace(/\s*$/, '\n')}\n${OBSERVABILITY_SECTION}`;
+}
+
 /**
  * Extract the set of `KEY=...` variable names from a dotenv-like blob.
  * Lines beginning with `#` or matching `# KEY=...` are skipped because
@@ -262,12 +288,13 @@ export interface RunResult {
 export async function run(argv: string[]): Promise<RunResult> {
   const args = parseArgs(argv);
   const { source, content, from } = loadTemplate(args.templatePath);
+  const renderedContent = appendObservabilitySection(content);
 
   fs.mkdirSync(path.dirname(args.outputPath), { recursive: true });
-  fs.writeFileSync(args.outputPath, content, 'utf-8');
+  fs.writeFileSync(args.outputPath, renderedContent, 'utf-8');
 
   const envLocalPath = path.resolve(REPO_ROOT, '.env.local');
-  const diff = computeDiff(content, envLocalPath);
+  const diff = computeDiff(renderedContent, envLocalPath);
 
   if (!args.quiet) {
     console.log('');

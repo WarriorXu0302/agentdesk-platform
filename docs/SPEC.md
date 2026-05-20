@@ -176,7 +176,7 @@ Typical private-chat flow:
 
 1. Feishu sends a message event to FrontLane.
 2. The router resolves the sender, conversation, and session scope.
-3. Enterprise autowire connects the sender to `frontlane-frontdesk` if needed.
+3. Enterprise autowire connects the sender to `frontlane-template-frontdesk` if needed.
 4. The frontdesk session is woken and processes the request.
 5. If needed, frontdesk delegates to a worker agent.
 6. The worker uses ERP Gateway tools for authorization, execution, or memory.

@@ -1,0 +1,51 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "mode": "markdown",
+      "options": {
+        "content": "# MUAP Observability Bootstrap\n\nPR-O1 provisions Phoenix + Grafana only; host spans arrive in PR-O2; runner spans arrive in PR-O3; full dashboards arrive later.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "11.0.0",
+      "title": "Bootstrap Scope",
+      "type": "text"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "muap",
+    "observability",
+    "phase0b",
+    "bootstrap"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "MUAP Observability Bootstrap",
+  "uid": "muap-observability-bootstrap",
+  "version": 1,
+  "weekStart": ""
+}

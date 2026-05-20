@@ -11,7 +11,7 @@
  *
  *   pnpm exec tsx scripts/configure-enterprise-gateway.ts \
  *     --base-url https://erp-gateway.internal/api/agent \
- *     --folders frontlane-frontdesk,frontlane-finance-worker \
+ *     --folders frontlane-template-frontdesk,frontlane-finance-worker \
  *     --timeout-ms 20000 \
  *     --memory-mode erp \
  *     --header x-tenant=erp-a \

@@ -26,7 +26,7 @@
 - 支持 shared、per-user、per-user-per-thread 等 session 隔离模式
 - 支持 frontdesk -> worker 的 agent-to-agent 派活
 - 支持 `root-session` worker 会话模式：同一个员工的请求会带着自己的根会话上下文进入 worker
-- 支持企业前台自动接线：员工第一次私聊飞书机器人时可自动接到 `frontlane-frontdesk`
+- 支持企业前台自动接线：员工第一次私聊飞书机器人时可自动接到 `frontlane-template-frontdesk`
 - 飞书通道支持用 reaction 做“处理中”状态提示，避免机器人先发一条废话消息
 
 **身份与审计（企业场景的信任链）**
@@ -62,7 +62,7 @@
 ```text
 飞书用户 / 群聊
   -> Feishu Bot
-  -> frontlane-frontdesk
+  -> frontlane-template-frontdesk
   -> user-scoped session
   -> worker agents
   -> ERP gateway
@@ -143,7 +143,7 @@ OPENAI_BASE_URL=https://www.d1token.com/
 OPENAI_API_KEY=sk-xxx
 OPENAI_MODEL=gpt-5.4
 
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false
@@ -186,7 +186,7 @@ pnpm init:enterprise
 
 这一步会创建或复用：
 
-- `frontlane-frontdesk`
+- `frontlane-template-frontdesk`
 - `frontlane-access-worker`
 - `frontlane-sales-worker`
 - `frontlane-finance-worker`
@@ -201,7 +201,7 @@ pnpm init:enterprise
 pnpm exec tsx scripts/init-enterprise-topology.ts \
   --channel feishu \
   --platform-id oc_xxx \
-  --group-name "FrontLane Desk" \
+  --group-name "FrontLane Template Desk" \
   --threaded
 ```
 

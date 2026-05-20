@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Phoenix Postgres
+    uid: phoenix-postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: $PHOENIX_POSTGRES_GRAFANA_USER
+    secureJsonData:
+      password: $PHOENIX_POSTGRES_GRAFANA_PASSWORD
+    jsonData:
+      database: $PHOENIX_POSTGRES_DB
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    editable: false
+
+  - name: Phoenix Metrics
+    uid: phoenix-metrics
+    type: prometheus
+    access: proxy
+    url: http://phoenix:9090
+    editable: false

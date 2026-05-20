@@ -389,7 +389,7 @@ describe('session manager', () => {
 
 describe('router', () => {
   beforeEach(() => {
-    process.env.ENTERPRISE_FRONTDESK_FOLDER = 'frontlane-frontdesk';
+    process.env.ENTERPRISE_FRONTDESK_FOLDER = 'frontlane-template-frontdesk';
     process.env.ENTERPRISE_AUTO_WIRE_CHANNELS = 'feishu';
     process.env.ENTERPRISE_AUTO_WIRE_P2P = 'false';
     process.env.ENTERPRISE_AUTO_WIRE_GROUPS = 'false';
@@ -505,8 +505,8 @@ describe('router', () => {
 
     createAgentGroup({
       id: 'ag-frontdesk',
-      name: 'FrontLane Desk',
-      folder: 'frontlane-frontdesk',
+      name: 'FrontLane Template Desk',
+      folder: 'frontlane-template-frontdesk',
       agent_provider: null,
       created_at: now(),
     });
@@ -562,8 +562,8 @@ describe('router', () => {
 
     createAgentGroup({
       id: 'ag-frontdesk',
-      name: 'FrontLane Desk',
-      folder: 'frontlane-frontdesk',
+      name: 'FrontLane Template Desk',
+      folder: 'frontlane-template-frontdesk',
       agent_provider: null,
       created_at: now(),
     });

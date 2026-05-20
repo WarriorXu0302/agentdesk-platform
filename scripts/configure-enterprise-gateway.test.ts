@@ -20,7 +20,7 @@ import { run } from './configure-enterprise-gateway.js';
 
 beforeEach(() => {
   if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-frontdesk'), { recursive: true });
+  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-template-frontdesk'), { recursive: true });
   fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-lab-frontdesk'), { recursive: true });
   fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-access-worker'), { recursive: true });
   fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-sales-worker'), { recursive: true });
@@ -39,14 +39,14 @@ describe('configure-enterprise-gateway', () => {
       '--base-url',
       'https://erp-gateway.internal/api/agent',
       '--folders',
-      'frontlane-frontdesk,frontlane-finance-worker',
+      'frontlane-template-frontdesk,frontlane-finance-worker',
       '--timeout-ms',
       '20000',
       '--header',
       'x-tenant=erp-a',
     ]);
 
-    const frontdesk = readContainerConfig('frontlane-frontdesk');
+    const frontdesk = readContainerConfig('frontlane-template-frontdesk');
     const finance = readContainerConfig('frontlane-finance-worker');
 
     expect(frontdesk.enterpriseGateway).toEqual({
@@ -73,7 +73,7 @@ describe('configure-enterprise-gateway', () => {
     expect(labDesk.memoryMode).toBe('erp');
     expect(labDesk.a2aSessionMode).toBe('root-session');
 
-    const frontdesk = readContainerConfig('frontlane-frontdesk');
+    const frontdesk = readContainerConfig('frontlane-template-frontdesk');
     expect(frontdesk.enterpriseGateway?.baseUrl).toBe('https://erp-gateway.internal/api/agent');
 
     const opsWorker = readContainerConfig('frontlane-ops-worker');
@@ -84,9 +84,9 @@ describe('configure-enterprise-gateway', () => {
     const prev = process.env.ERP_GATEWAY_BASE_URL;
     process.env.ERP_GATEWAY_BASE_URL = 'https://erp-gateway-from-env.example/api/agent';
     try {
-      await run(['--folders', 'frontlane-frontdesk']);
+      await run(['--folders', 'frontlane-template-frontdesk']);
 
-      const frontdesk = readContainerConfig('frontlane-frontdesk');
+      const frontdesk = readContainerConfig('frontlane-template-frontdesk');
       expect(frontdesk.enterpriseGateway?.baseUrl).toBe('https://erp-gateway-from-env.example/api/agent');
     } finally {
       if (prev === undefined) delete process.env.ERP_GATEWAY_BASE_URL;
@@ -124,23 +124,23 @@ describe('configure-enterprise-gateway', () => {
 
   it('CLI --header overrides a same-key header from the existing config', async () => {
     const { writeContainerConfig } = await import('../src/container-config.js');
-    const seeded = readContainerConfig('frontlane-frontdesk');
+    const seeded = readContainerConfig('frontlane-template-frontdesk');
     seeded.enterpriseGateway = {
       baseUrl: '${ERP_GATEWAY_BASE_URL}',
       defaultHeaders: { 'x-tenant': 'erp-old' },
     };
-    writeContainerConfig('frontlane-frontdesk', seeded);
+    writeContainerConfig('frontlane-template-frontdesk', seeded);
 
     await run([
       '--base-url',
       'https://erp-gateway.internal/api/agent',
       '--folders',
-      'frontlane-frontdesk',
+      'frontlane-template-frontdesk',
       '--header',
       'x-tenant=erp-new',
     ]);
 
-    const after = readContainerConfig('frontlane-frontdesk');
+    const after = readContainerConfig('frontlane-template-frontdesk');
     expect(after.enterpriseGateway?.defaultHeaders).toEqual({ 'x-tenant': 'erp-new' });
   });
 });

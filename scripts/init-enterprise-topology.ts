@@ -25,13 +25,13 @@
  *   pnpm exec tsx scripts/init-enterprise-topology.ts \
  *     --channel feishu \
  *     --platform-id oc_xxx \
- *     --group-name "FrontLane Desk" \
+ *     --group-name "FrontLane Template Desk" \
  *     --threaded
  *
  * Optional args:
  *   --frontdesks folder1:name1[,folder2:name2,...]    # multi-desk override
- *   --frontdesk-name "FrontLane Desk"                 # single-desk back-compat
- *   --frontdesk-folder frontlane-frontdesk            # single-desk back-compat
+ *   --frontdesk-name "FrontLane Template Desk"        # single-desk back-compat
+ *   --frontdesk-folder frontlane-template-frontdesk   # single-desk back-compat
  *   --workers access-worker,sales-worker,finance-worker,approval-worker,ops-worker
  *   --channel <channel>
  *   --platform-id <platform id emitted by the adapter>

@@ -28,6 +28,12 @@ describe('generate-env-local-proposed', () => {
     expect(rendered).toMatch(/RUNTIME_MODE=simulation/);
     expect(rendered).toMatch(/ERP_GATEWAY_BASE_URL=/);
     expect(rendered).toMatch(/<MQTT_BROKER_HOST>/);
+    expect(rendered).toMatch(/# Observability \(Phase 0b \/ PR-O1\)/);
+    expect(rendered).toMatch(/PHOENIX_OTLP_ENDPOINT=http:\/\/localhost:4317/);
+    expect(rendered).toMatch(/PHOENIX_COLLECTOR_ENDPOINT=http:\/\/localhost:6006\/v1\/traces/);
+    expect(rendered).toMatch(/OTEL_SERVICE_NAME=frontlane-host/);
+    expect(rendered).toMatch(/GRAFANA_HOST_PORT=3001/);
+    expect(rendered).toMatch(/read-only upstream reference/i);
     expect(rendered).toMatch(/redaction/i);
     expect(result.templateSource === 'canonical' || result.templateSource === 'embedded').toBe(true);
     expect(result.outputPath).toBe(output);
@@ -64,8 +70,13 @@ describe('generate-env-local-proposed', () => {
 
     expect(result.diff.proposalKeys).toContain('RUNTIME_MODE');
     expect(result.diff.proposalKeys).toContain('ERP_GATEWAY_BASE_URL');
+    expect(result.diff.proposalKeys).toContain('PHOENIX_OTLP_ENDPOINT');
+    expect(result.diff.proposalKeys).toContain('PHOENIX_COLLECTOR_ENDPOINT');
+    expect(result.diff.proposalKeys).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
+    expect(result.diff.proposalKeys).toContain('OTEL_SERVICE_NAME');
+    expect(result.diff.proposalKeys).toContain('PHOENIX_PROJECT_NAME');
+    expect(result.diff.proposalKeys).toContain('GRAFANA_HOST_PORT');
     expect(result.diff.proposalKeys).not.toContain('ERP_GATEWAY_SIGNING_KEY');
     expect(result.diff.proposalKeys).not.toContain('MQTT_BROKER_HOST');
-    expect(result.diff.proposalKeys).not.toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
   });
 });
