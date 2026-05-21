@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MUAP — 最小完整演示流程 — 2026-05-21</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #30363d;
+    --border-strong: #586069;
+    --text: #e6edf3;
+    --text-dim: #adbac7;
+    --text-muted: #7d8590;
+    --accent: #58a6ff;
+    --accent-soft: rgba(88,166,255,.12);
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --pending: #8b949e;
+    --inprog: #58a6ff;
+    --done: #3fb950;
+    --shadow: 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.5);
+    --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd, .mono { font-family: var(--mono); font-size: .92em; }
+  .container { max-width: 1280px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  header.hero {
+    background: linear-gradient(180deg, #1c2530 0%, #0e1117 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    box-shadow: var(--shadow);
+  }
+  header.hero h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: .2px; }
+  header.hero .sub { color: var(--text-dim); font-size: 13.5px; }
+  .hero-meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px; margin-top: 18px;
+  }
+  .hero-meta div {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    background: var(--panel-2);
+  }
+  .hero-meta .k { color: var(--text-muted); font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; }
+  .hero-meta .v { color: var(--text); font-size: 14px; margin-top: 4px; font-weight: 500; }
+  .hero-meta .v .mono { color: var(--accent); }
+
+  h2.section {
+    font-size: 17px; margin: 32px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border); letter-spacing: .2px;
+  }
+  h2.section .pip { color: var(--text-muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  h3.subsec { font-size: 14.5px; margin: 18px 0 10px; color: var(--text); }
+
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+    border: 1px solid var(--border);
+  }
+  .pill.done    { background: rgba(63,185,80,.12);  color: var(--done);   border-color: rgba(63,185,80,.35); }
+  .pill.inprog  { background: rgba(88,166,255,.12); color: var(--inprog); border-color: rgba(88,166,255,.4); }
+  .pill.pending { background: rgba(125,133,144,.15); color: var(--text-dim); border-color: rgba(125,133,144,.35); }
+  .pill.warn    { background: rgba(210,153,34,.13); color: var(--warn); border-color: rgba(210,153,34,.4); }
+  .pill.ghost   { background: transparent; color: var(--text-muted); border-color: var(--border); }
+
+  table.t {
+    width: 100%; border-collapse: collapse; margin-top: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden;
+  }
+  table.t th, table.t td {
+    padding: 8px 12px; text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; vertical-align: top;
+  }
+  table.t th {
+    background: var(--panel-2); color: var(--text-dim);
+    font-weight: 600; font-size: 12px; letter-spacing: .3px;
+    text-transform: uppercase;
+  }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t td.mono, table.t td .mono { color: var(--accent); }
+
+  pre.code {
+    background: #0a0d12; border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; margin: 8px 0 0; overflow-x: auto;
+    font: 12.5px/1.55 var(--mono); color: var(--text-dim);
+  }
+  pre.code .k { color: #79c0ff; }
+  pre.code .s { color: #a5d6ff; }
+  pre.code .c { color: var(--text-muted); }
+  pre.code .add { color: var(--done); }
+  pre.code .hl { background: rgba(63,185,80,.08); display: block; padding-left: 4px; margin-left: -4px; }
+
+  .step {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    padding: 14px 16px; margin-top: 10px; box-shadow: var(--shadow);
+  }
+  .step .head { display: flex; align-items: center; gap: 10px; }
+  .step .head .num {
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid rgba(88,166,255,.4); border-radius: 6px;
+    padding: 2px 8px; font-size: 12px; font-family: var(--mono);
+  }
+  .step .head h4 { margin: 0; font-size: 14.5px; }
+  .step .head .pill { margin-left: auto; }
+  .step .desc { color: var(--text-dim); font-size: 13px; margin: 6px 0 0; }
+  .step .why { color: var(--text-muted); font-size: 12.5px; margin-top: 6px; font-style: italic; }
+
+  .banner {
+    border: 1px solid rgba(63,185,80,.45); background: rgba(63,185,80,.06);
+    border-radius: 8px; padding: 10px 14px; margin: 14px 0 0;
+    color: var(--text-dim); font-size: 13px;
+  }
+  .banner b { color: var(--done); }
+  .banner.warn   { border-color: rgba(210,153,34,.45); background: rgba(210,153,34,.06); }
+  .banner.warn b { color: var(--warn); }
+  .banner.bad    { border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.06); }
+  .banner.bad b  { color: var(--bad); }
+  .banner.info   { border-color: rgba(88,166,255,.4); background: rgba(88,166,255,.06); }
+  .banner.info b { color: var(--accent); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 10px; margin-top: 6px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .stat .label { color: var(--text-muted); font-size: 11.5px; letter-spacing: .3px; text-transform: uppercase; }
+  .stat .value { color: var(--text); font-size: 18px; margin-top: 4px; font-weight: 600; font-family: var(--mono); }
+  .stat .sub { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+
+  .matrix-row { display: grid; grid-template-columns: 180px 1fr; gap: 10px; margin-top: 8px; }
+  .matrix-row .lbl { color: var(--text-muted); font-size: 12.5px; padding-top: 4px; }
+  .matrix-row .val { color: var(--text-dim); font-size: 13px; }
+
+  .ascii {
+    background: #0a0d12; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; margin: 10px 0 0; overflow-x: auto;
+    font: 12px/1.55 var(--mono); color: var(--text-dim); white-space: pre;
+  }
+
+  footer.foot {
+    margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12.5px; line-height: 1.7;
+  }
+  footer.foot ul { margin: 8px 0 0; padding: 0 0 0 18px; }
+  footer.foot code { background: var(--panel); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="hero">
+    <h1>MUAP — <span class="mono" style="color:var(--accent);">最小完整演示流程</span> · 现状盘点</h1>
+    <div class="sub">问题：「现在可以做到的最小完整演示流程是什么样的」 · 基于 commit <code>4348ea9</code>（Phase 0b/PR-O1 闸门已关闭）实测代码路径整理</div>
+    <div class="hero-meta">
+      <div><div class="k">报告日期</div><div class="v">2026-05-21</div></div>
+      <div><div class="k">基线 commit</div><div class="v"><span class="mono">4348ea9</span></div></div>
+      <div><div class="k">分支</div><div class="v"><span class="mono">dxy-dev</span></div></div>
+      <div><div class="k">推荐演示路径</div><div class="v">CLI + mock provider</div></div>
+      <div><div class="k">外部依赖</div><div class="v">无（本机 Node ≥ 20 + Docker）</div></div>
+      <div><div class="k">预计耗时</div><div class="v">≈ 5 分钟（首次含镜像构建则 + 3-5 分钟）</div></div>
+    </div>
+    <div class="banner info">
+      <b>结论先讲</b> · 当前 baseline 已经具备一条**完全离线、零账号、零飞书、零 ERP** 的端到端演示路径：通过 <code>cli</code> 通道把消息送进 host → host 拉起 docker 容器 → 容器内的 <code>mock</code> provider 立即回一句 <code>Mock response to: ...</code> → host 把结果原路写回 CLI socket。这条路验证了 MUAP 的核心生命周期（路由 → 容器调度 → poll-loop → 响应回投），但**不验证**真实 LLM 推理、ERP 集成、飞书接入、observability。
+    </div>
+  </header>
+
+  <!-- §0 -->
+  <h2 class="section">§0 数字概览</h2>
+  <div class="stats">
+    <div class="stat">
+      <div class="label">最小依赖</div>
+      <div class="value">Node 20 + Docker</div>
+      <div class="sub">无云账号 / 无 API key</div>
+    </div>
+    <div class="stat">
+      <div class="label">脚本步数</div>
+      <div class="value">5</div>
+      <div class="sub">install · provider · init · serve · chat</div>
+    </div>
+    <div class="stat">
+      <div class="label">可演示能力</div>
+      <div class="value">3 / 8</div>
+      <div class="sub">CLI 接入 / 容器调度 / 会话隔离</div>
+    </div>
+    <div class="stat">
+      <div class="label">未演示能力</div>
+      <div class="value">5 / 8</div>
+      <div class="sub">真实 LLM · 飞书 · ERP · 多用户 · 可观测</div>
+    </div>
+    <div class="stat">
+      <div class="label">commit 基线</div>
+      <div class="value">4348ea9</div>
+      <div class="sub">QA 11/11 PASS 后</div>
+    </div>
+    <div class="stat">
+      <div class="label">配套测试</div>
+      <div class="value">351 ✓</div>
+      <div class="sub">同 baseline · pnpm test 通过</div>
+    </div>
+  </div>
+
+  <!-- §1 路径选择矩阵 -->
+  <h2 class="section">§1 三条候选路径 · 选择矩阵</h2>
+  <p style="color:var(--text-dim); margin: 4px 0 10px;">"最小完整"有三种合理解读，按"附加依赖"递增排序如下。本报告把 <b>Path A</b> 作为推荐演示路径。</p>
+  <table class="t">
+    <thead>
+      <tr>
+        <th style="width:80px;">路径</th>
+        <th>能演示什么</th>
+        <th>依赖</th>
+        <th>典型耗时</th>
+        <th>适用场景</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>Path A</b><br><span class="pill done">推荐</span></td>
+        <td>消息 → 路由 → 容器 → 模拟回复 → 回投。验证 host/runner 协议是否正常。</td>
+        <td>Node 20 · Docker</td>
+        <td>≈ 5 分钟</td>
+        <td>新人 onboarding · CI smoke · "代码能跑起来吗"自检</td>
+      </tr>
+      <tr>
+        <td><b>Path B</b></td>
+        <td>Path A + 真实 Claude / OpenAI 推理（让 Agent 自然回复一句话）</td>
+        <td>Path A + 一个 Anthropic 或 OpenAI 兼容 API key</td>
+        <td>≈ 7 分钟</td>
+        <td>给非工程师演示 "AI 能聊天" · UI 评审</td>
+      </tr>
+      <tr>
+        <td><b>Path C</b></td>
+        <td>Path B + 一次 ERP gateway 调用（<code>erp_describe</code>）</td>
+        <td>Path B + 一个 echo HTTP server (any) · 可手撸 30 行 Node</td>
+        <td>≈ 12 分钟</td>
+        <td>给企业方演示 "Agent ↔ ERP" 信任链</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="banner warn">
+    <b>不在演示范围内</b> · 飞书入口（需 cli_xxx app id + 公网回调）/ Phoenix-Grafana observability（PR-O1 已交付但与单 agent 演示正交）/ 多用户隔离对照（需要至少两位真实身份）/ HMAC 签名 / `erp_audit` 审计 · 这五项是企业部署关注，但不是"看 demo 能跑"必需的。
+  </div>
+
+  <!-- §2 Path A 详细脚本 -->
+  <h2 class="section">§2 Path A · 推荐演示流程（CLI + mock provider · 离线）</h2>
+  <p style="color:var(--text-dim);">下面 5 步严格按顺序执行，期望输出已逐条标注。任意一步失败请停下来排查再往下走。</p>
+
+  <div class="step">
+    <div class="head">
+      <span class="num">Step 1</span>
+      <h4>克隆 + 安装依赖</h4>
+      <span class="pill ghost">≈ 60 s</span>
+    </div>
+    <div class="desc">仓库根目录下安装 pnpm 工作区依赖。<code>pnpm install</code> 同时会处理 <code>better-sqlite3</code> 的 native rebuild — 如果 Node ABI 不匹配会在这一步报错。</div>
+    <pre class="code">pnpm install</pre>
+    <div class="why">期望尾行：<code>Done in &lt;n&gt;s</code> · 后续步骤都依赖 <code>node_modules</code> 与 <code>scripts/</code> 可执行。</div>
+  </div>
+
+  <div class="step">
+    <div class="head">
+      <span class="num">Step 2</span>
+      <h4>构建 agent runner 容器镜像</h4>
+      <span class="pill ghost">首次 ≈ 3-5 分钟，后续命中 layer 缓存秒级</span>
+    </div>
+    <div class="desc">host 启动 session 时会用 <code>docker run --rm muap-runner:&lt;slug&gt;</code> 拉起一个隔离的 agent runner 容器；该镜像包含 <code>container/agent-runner/</code> 编译产物以及 mock / openai / claude 三个 provider 注册器。镜像 tag 由仓库绝对路径的 sha 前 8 位派生，所以两个 checkout 不会互踩。</div>
+    <pre class="code">pnpm container:build</pre>
+    <div class="why">期望尾行：<code>Successfully tagged muap-runner:&lt;8-hex-slug&gt;</code> · 之后 <code>docker images | grep muap-runner</code> 应能看到该 tag。</div>
+  </div>
+
+  <div class="step">
+    <div class="head">
+      <span class="num">Step 3</span>
+      <h4>初始化最小 CLI agent + 锁定 mock provider</h4>
+      <span class="pill ghost">≈ 5 s · 幂等</span>
+    </div>
+    <div class="desc">这一步做三件事：①  在中央 SQLite 创建一个 agent group <code>cli-with-demo</code>；② 创建 <code>cli/local</code> messaging group；③ 把这个 messaging group wire 到 agent group。脚本会在 <code>groups/cli-with-demo/</code> 写出 CLAUDE.md 和 container.json。</div>
+    <pre class="code"><span class="c"># 1. 跑 init 脚本</span>
+pnpm exec tsx scripts/init-cli-agent.ts \
+  --display-name <span class="s">"Demo User"</span> \
+  --agent-name <span class="s">"Demo"</span> \
+  --folder <span class="s">cli-with-demo</span>
+
+<span class="c"># 2. 把 provider 切成 mock（默认是 'claude'，会要求 ANTHROPIC_API_KEY）</span>
+<span class="c"># 用 jq 原地修改，没有 jq 就手工 vi groups/cli-with-demo/container.json</span>
+node -e <span class="s">"const f='groups/cli-with-demo/container.json'; const o=JSON.parse(require('fs').readFileSync(f,'utf8')); o.provider='mock'; require('fs').writeFileSync(f, JSON.stringify(o,null,2)+'\n');"</span></pre>
+    <div class="why">期望输出（部分）：<br><code>Created agent group: ag-…</code><br><code>Created CLI messaging group: mg-…</code><br><code>Wired cli: mg-… -&gt; ag-…</code><br>验证：<code>cat groups/cli-with-demo/container.json | grep provider</code> 应包含 <code>"provider": "mock"</code>。</div>
+  </div>
+
+  <div class="step">
+    <div class="head">
+      <span class="num">Step 4</span>
+      <h4>启动 host service（一个独立终端）</h4>
+      <span class="pill ghost">长驻进程 · Ctrl+C 停</span>
+    </div>
+    <div class="desc">host 会：① 跑 SQLite migration；② 启动 channel adapter（cli + feishu，但 feishu 未配 env 时静默 noop）；③ 启动 host-sweep 60 s 周期；④ 在 <code>data/cli.sock</code> 监听 Unix socket。</div>
+    <pre class="code">pnpm dev</pre>
+    <div class="why">期望日志（关键 3 行）：<br><code>FrontLane Agent Platform starting</code><br><code>Central DB ready { path: '…/data/v2.db' }</code><br><code>cli channel listening at …/data/cli.sock</code><br>看到第三行就可以打开第二个终端做 Step 5。</div>
+  </div>
+
+  <div class="step">
+    <div class="head">
+      <span class="num">Step 5</span>
+      <h4>用 CLI client 发一句话 · 收到 mock 回复</h4>
+      <span class="pill ghost">≈ 10 s（含首次 docker 容器冷启）</span>
+    </div>
+    <div class="desc">在第二个终端运行 <code>pnpm chat</code>，它会连接 <code>data/cli.sock</code> 写入一个 <code>{"text":"…"}</code> JSON 行。host router 把这条消息塞进 session queue，container-runtime 拉起 docker，agent runner poll 到消息后调 <code>mock</code> provider，返回 <code>"Mock response to: hello"</code>，host 写回 socket。</div>
+    <pre class="code">pnpm chat hello from minimal demo</pre>
+    <div class="why">期望终端输出（client 侧）：<br><code class="add">Mock response to: hello from minimal demo</code><br>同时第一个终端的 host 日志应能看到（关键事件）：<br><code>Inbound message routed</code> → <code>Container started</code> → <code>Provider event { type: 'result', text: 'Mock response …' }</code> → <code>Delivered response</code>。</div>
+  </div>
+
+  <div class="banner">
+    <b>✅ 演示通过判定</b> · Step 5 客户端打印出 <code>Mock response to: …</code> · host 日志中能看到 <code>Container started</code> + <code>Delivered response</code> 两行 · 进程退出码 0。任意一项缺失 → 见 §6 排错。
+  </div>
+
+  <!-- §3 ASCII 数据流 -->
+  <h2 class="section">§3 演示流的数据流（ASCII）</h2>
+  <pre class="ascii">┌──────────────┐   1. JSON line     ┌────────────────────────┐
+│ pnpm chat    │ ─────────────────► │ host (pnpm dev)        │
+│  client      │   data/cli.sock    │  ┌──────────────────┐  │
+└──────────────┘                    │  │ src/router.ts    │  │
+                                    │  │  routeInbound()  │  │
+                                    │  └────────┬─────────┘  │
+                                    │           │ 2. session queue (SQLite)
+                                    │  ┌────────▼─────────┐  │
+                                    │  │ container-runner │  │
+                                    │  │ docker run …     │  │
+                                    │  └────────┬─────────┘  │
+                                    └───────────┼────────────┘
+                                                │ 3. ENV + bind mount
+                                    ┌───────────▼──────────────┐
+                                    │ docker container         │
+                                    │  agent-runner            │
+                                    │  ┌────────────────────┐  │
+                                    │  │ poll-loop          │  │
+                                    │  │  provider = mock   │  │
+                                    │  └────────┬───────────┘  │
+                                    │           │ 4. canned reply
+                                    │  ┌────────▼───────────┐  │
+                                    │  │ writes result      │  │
+                                    │  │ to per-session DB  │  │
+                                    │  └────────────────────┘  │
+                                    └───────────┬──────────────┘
+                                                │ 5. host poll picks up
+                                    ┌───────────▼──────────────┐
+                                    │ host (delivery.ts)       │
+                                    │  CLI adapter writes back │
+                                    └───────────┬──────────────┘
+                                                │ 6. JSON line
+┌──────────────┐                                │
+│ pnpm chat    │ ◄──────────────────────────────┘
+│  client      │   "Mock response to: …"
+└──────────────┘</pre>
+
+  <!-- §4 Path B / Path C delta -->
+  <h2 class="section">§4 升级到 Path B / Path C 的最小增量</h2>
+
+  <h3 class="subsec">B. 接真实 LLM · 让 agent 自然说话（不是 canned 回复）</h3>
+  <p style="color:var(--text-dim);">把 Path A Step 3 第二条命令换成：把 <code>provider</code> 设成 <code>openai</code> 或 <code>claude</code>，并提供对应的 env。</p>
+  <pre class="code"><span class="c"># 选项 B-1：OpenAI 兼容（任何 baseURL，比如 d1token / Azure / 本地 vLLM）</span>
+export OPENAI_BASE_URL=<span class="s">https://www.d1token.com/</span>
+export OPENAI_API_KEY=<span class="s">sk-xxx</span>
+export OPENAI_MODEL=<span class="s">gpt-5.4</span>
+node -e <span class="s">"const f='groups/cli-with-demo/container.json'; const o=JSON.parse(require('fs').readFileSync(f,'utf8')); o.provider='openai'; require('fs').writeFileSync(f, JSON.stringify(o,null,2)+'\n');"</span>
+
+<span class="c"># 选项 B-2：原生 Claude SDK</span>
+export ANTHROPIC_API_KEY=<span class="s">sk-ant-…</span>
+node -e <span class="s">"const f='groups/cli-with-demo/container.json'; const o=JSON.parse(require('fs').readFileSync(f,'utf8')); o.provider='claude'; require('fs').writeFileSync(f, JSON.stringify(o,null,2)+'\n');"</span></pre>
+  <p style="color:var(--text-dim);">其余 Step 1/2/4/5 不变。预期 Step 5 输出从 <code>Mock response to: …</code> 变成真实模型的自由回复（Demo 这个 agent 会按 CLAUDE.md 自我介绍并邀请你接着聊）。</p>
+
+  <h3 class="subsec">C. 接 ERP gateway · 演示企业信任链最小切片</h3>
+  <p style="color:var(--text-dim);">在 <code>groups/cli-with-demo/container.json</code> 顶层加 <code>enterpriseGateway.baseUrl</code>，让容器内的 <code>erp_*</code> MCP 工具有可达后端。最小可演示后端 = 一个 Node echo 服务：</p>
+  <pre class="code"><span class="c"># 1. 起 echo 服务（终端 3）</span>
+node -e <span class="s">"require('http').createServer((q,s)=>{let b='';q.on('data',d=&gt;b+=d);q.on('end',()=&gt;{console.log(q.method,q.url,b);s.setHeader('content-type','application/json');s.end('{\"ok\":true,\"echo\":'+JSON.stringify(b)+'}')})}).listen(8088)"</span>
+
+<span class="c"># 2. 把 baseUrl 写入 container.json</span>
+node -e <span class="s">"const f='groups/cli-with-demo/container.json'; const o=JSON.parse(require('fs').readFileSync(f,'utf8')); o.enterpriseGateway={baseUrl:'http://host.docker.internal:8088', timeoutMs:5000, defaultHeaders:{'X-FrontLane-Source':'cli-with-demo'}}; o.memoryMode='erp'; require('fs').writeFileSync(f, JSON.stringify(o,null,2)+'\n');"</span>
+
+<span class="c"># 3. Path A Step 5 换成显式触发 erp_describe（自然语言提示）</span>
+pnpm chat <span class="s">"call the erp gateway describe endpoint with operation list_orders"</span></pre>
+  <p style="color:var(--text-dim);">期望终端 3 上看到 echo 服务打印一行 <code>POST /describe …</code>，包含 host 注入的身份头：<code>x-frontlane-user-id</code>、<code>x-frontlane-requester-source</code>、<code>x-frontlane-origin-user-id</code>，以及（若开启 HMAC）<code>x-frontlane-signature</code>。central DB 的 <code>erp_audit</code> 表会落一行成功记录：</p>
+  <pre class="code">sqlite3 data/v2.db <span class="s">"select user_id, operation, requester_source, http_status from erp_audit order by created_at desc limit 1;"</span></pre>
+
+  <!-- §5 矩阵：演示了什么 / 没演示什么 -->
+  <h2 class="section">§5 演示覆盖矩阵</h2>
+  <table class="t">
+    <thead>
+      <tr>
+        <th>能力</th>
+        <th>Path A</th>
+        <th>Path B</th>
+        <th>Path C</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>CLI 入站消息 → host</td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td>Unix socket 协议正常</td></tr>
+      <tr><td>SQLite migration / 中央库</td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td>第一次启动会跑 migration</td></tr>
+      <tr><td>Docker 容器调度（lazy + idle exit）</td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td>看 <code>docker ps</code> 能看见 <code>muap-runner</code></td></tr>
+      <tr><td>poll-loop / per-session SQLite 协议</td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td>容器 ↔ host 沟通</td></tr>
+      <tr><td>Provider abstraction（mock）</td><td><span class="pill done">✅</span></td><td><span class="pill ghost">绕过</span></td><td><span class="pill ghost">绕过</span></td><td>Path A 用 mock；B/C 用真实 LLM</td></tr>
+      <tr><td>真实 LLM 推理</td><td><span class="pill pending">—</span></td><td><span class="pill done">✅</span></td><td><span class="pill done">✅</span></td><td>需 API key</td></tr>
+      <tr><td>ERP Gateway 5 端点 + <code>erp_audit</code></td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td><span class="pill done">✅</span></td><td>需要 echo 后端</td></tr>
+      <tr><td>身份信任链（batch <code>RequestIdentity</code> + <code>origin_user_id</code> + HMAC）</td><td><span class="pill pending">部分</span></td><td><span class="pill pending">部分</span></td><td><span class="pill done">完整</span></td><td>Path C 才能在 echo 日志看到全部头</td></tr>
+      <tr><td>飞书私聊 / 群聊接入</td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td>需 cli_xxx + 公网回调；超出"最小"</td></tr>
+      <tr><td>多用户隔离对比演示</td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td>CLI 单用户场景，无对照</td></tr>
+      <tr><td>frontdesk → worker 派活</td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td><span class="pill pending">—</span></td><td>需要 <code>pnpm setup:lab-frontdesk</code> 全套企业拓扑</td></tr>
+      <tr><td>Observability (Phoenix + Grafana)</td><td><span class="pill pending">独立栈</span></td><td><span class="pill pending">独立栈</span></td><td><span class="pill pending">独立栈</span></td><td>PR-O1 已交付，但与本演示正交，需 <code>pnpm obs:up</code> 单独起</td></tr>
+    </tbody>
+  </table>
+
+  <!-- §6 排错 -->
+  <h2 class="section">§6 常见排错</h2>
+  <table class="t">
+    <thead><tr><th style="width:280px;">症状</th><th>原因</th><th>处置</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>FrontLane daemon not reachable at .../cli.sock</code></td>
+        <td>host 没在跑，或 host 在不同 <code>DATA_DIR</code></td>
+        <td>确认 Step 4 仍在前台；如改了 <code>DATA_DIR</code>，client 也要相同 env</td>
+      </tr>
+      <tr>
+        <td>Step 5 一直没回复，30 s 后客户端超时</td>
+        <td>容器镜像没 build 或 build 出 ABI 不匹配</td>
+        <td>另开终端：<code>docker images | grep muap-runner</code> 必须有 tag；没有就重跑 Step 2</td>
+      </tr>
+      <tr>
+        <td>host 日志报 <code>provider 'claude' requires ANTHROPIC_API_KEY</code></td>
+        <td>Step 3 第二条命令没跑，<code>provider</code> 还是默认值 <code>claude</code></td>
+        <td>检查 <code>groups/cli-with-demo/container.json</code> 的 <code>provider</code> 字段</td>
+      </tr>
+      <tr>
+        <td>Step 4 报 <code>circuit breaker open: backoff 5s</code></td>
+        <td>短时间反复重启被启动 backoff 拦下</td>
+        <td>等几秒；clean 退出会自动 reset，强制 reset：<code>rm data/circuit-breaker.json</code></td>
+      </tr>
+      <tr>
+        <td>Path C echo 服务收不到请求</td>
+        <td>容器到 host loopback 路径不对（Linux 上 <code>host.docker.internal</code> 不一定可达）</td>
+        <td>Linux 用 <code>--add-host=host.docker.internal:host-gateway</code> 或改成 host 的 LAN IP</td>
+      </tr>
+      <tr>
+        <td>Path C <code>erp_audit</code> 一行没有</td>
+        <td>agent 没真正去调 <code>erp_describe</code>（可能直接用普通对话回答了）</td>
+        <td>提示词改成更指令式：<code>"please invoke the erp_describe MCP tool with {operation:'list_orders'} and report the JSON response"</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- §7 清理 -->
+  <h2 class="section">§7 清理</h2>
+  <pre class="code"><span class="c"># 终端 1：Ctrl+C 停 host</span>
+<span class="c"># 删演示残留</span>
+pnpm exec tsx scripts/delete-cli-agent.ts --folder cli-with-demo  <span class="c"># 如脚本支持；否则 rm -rf groups/cli-with-demo data/v2.db data/cli.sock 等</span>
+
+<span class="c"># 停掉所有 muap 容器（演示用，谨慎）</span>
+docker ps --filter <span class="s">"ancestor=muap-runner"</span> -q | xargs -r docker stop</pre>
+
+  <!-- §8 与正式部署的差距清单 -->
+  <h2 class="section">§8 与"生产可用"之间的差距</h2>
+  <p style="color:var(--text-dim);">本报告刻意把演示路径压到最小。要进入生产 / 准生产，至少还要：</p>
+  <ul style="color:var(--text-dim); font-size:13px;">
+    <li>跑 <code>pnpm setup:lab-frontdesk</code>（前台 + 5 worker + ERP gateway header），见 Phase 0a 报告</li>
+    <li>配置飞书：<code>FEISHU_APP_ID</code> / <code>FEISHU_APP_SECRET</code> / <code>FEISHU_EVENT_MODE</code> / <code>FEISHU_BOT_OPEN_ID</code>（参考 <code>docs/feishu-channel.md</code>）</li>
+    <li>启用 observability：<code>pnpm obs:up</code> 起 Phoenix + Postgres + Grafana（PR-O1 交付，11/11 manual QA 已 PASS）</li>
+    <li>启用 HMAC：在 ERP gateway 配 <code>signingKey</code>，host 与 gateway 双侧持有</li>
+    <li>配置 session TTL / 容器并发上限：<code>FRONTLANE_SESSION_TTL_DAYS</code> / <code>MAX_CONCURRENT_CONTAINERS</code> / <code>FRONTLANE_IDLE_EXIT_MS</code></li>
+    <li>等待 PR-O2（host instrumentation）+ PR-O3（runner manual spans，Oracle ruling）落地后才有完整 trace 视图</li>
+  </ul>
+
+  <div class="banner info">
+    <b>定位</b> · 这条最小演示路径是 <b>"baseline 健康自检"</b> 的工具，不是 <b>"产品 demo"</b>。前者验证代码能跑；后者要展示业务价值。两者的取舍清晰且无冲突。
+  </div>
+
+  <footer class="foot">
+    <b>相关文档</b>
+    <ul>
+      <li><code>MultiUserAgentPlatform/README.md</code> — 平台总览 · 快速启动</li>
+      <li><code>MultiUserAgentPlatform/scripts/init-cli-agent.ts</code> — 单 agent 最小初始化脚本（演示用）</li>
+      <li><code>MultiUserAgentPlatform/scripts/chat.ts</code> — CLI 客户端 (<code>pnpm chat</code>)</li>
+      <li><code>MultiUserAgentPlatform/scripts/init-enterprise-topology.ts</code> — 企业拓扑（前台 + 5 worker，超出"最小"范围）</li>
+      <li><code>MultiUserAgentPlatform/container/agent-runner/src/providers/mock.ts</code> — 演示用 mock provider 实现</li>
+      <li><code>MultiUserAgentPlatform/container/agent-runner/src/providers/factory.ts</code> — provider 注册 / 选择逻辑</li>
+      <li><code>MultiUserAgentPlatform/src/container-runner.ts</code> · <code>resolveProviderName()</code> — provider 优先级（session &gt; agent_group &gt; container.json &gt; 'claude'）</li>
+      <li><code>MultiUserAgentPlatform/docs/architecture.md</code> · <code>docs/isolation-model.md</code> — 架构和隔离模型</li>
+      <li><code>MultiUserAgentPlatform/reports/human/phase0a-onboarding-2026-05-20.html</code> — 多 frontdesk 拓扑接入背景</li>
+      <li><code>MultiUserAgentPlatform/reports/human/phase0b-pr-o1-2026-05-20.html</code> — observability bootstrap 背景</li>
+      <li><code>MultiUserAgentPlatform/reports/human/phase0b-pr-o1-qa-evidence-2026-05-21.html</code> — manual QA 11/11 PASS 证据</li>
+    </ul>
+    <div style="margin-top:10px;">
+      报告由 Sisyphus 生成 · 2026-05-21 · 基线 commit <code>4348ea9</code> · 工作目录 <code>MultiUserAgentPlatform/dxy-dev</code> · 本文档自包含，无外部资源
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
