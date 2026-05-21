@@ -14,6 +14,12 @@
 
 ## 当前清单
 
+### `reports/machine/`
+
+| 路径 | 内容 | 关联报告 |
+|---|---|---|
+| `qa-evidence-2026-05-21/` | Phase 0b / PR-O1 manual Docker QA 11 步原始 stdout / JSON 证据 | `human/phase0b-pr-o1-qa-evidence-2026-05-21.html` |
+
 ### `reports/human/`
 
 | 文件 | 类型 | 主题 | 关联 ADR / 工作 |
@@ -22,7 +28,8 @@
 | `p0-harness-fixes-2026-05-18.html` | 变更报告 | P0 三项修复完成情况、ADR 系统建立、Before/After 对比 | ADR-0001 ~ ADR-0007 落地 |
 | `next-phase-milestones-2026-05-19.html` | 富文本看板 | MUAP 下一阶段工作 + 里程碑：关键路径甘特 / 8 阶段 kanban / 当前状态盘点 / ERP 操作索引 / 风险登记 / 验收门集合 / 立即可执行行动 | 落地 v1.2 宪法 + ADR-0001~0007 |
 | `phase0a-onboarding-2026-05-20.html` | 交付完成报告 | Phase 0a `frontlane-lab-frontdesk` 接入完成：多 frontdesk 拓扑 / configure gateway header merge 修复 / `.env.local.proposed` 生成器 / canonical pack 接入 / ADR-0008 / 验证证据（36 files · 345 tests 全绿 + 3 步手工 QA） | commit `dba7249` · ADR-0008 落地 |
-| `phase0b-pr-o1-2026-05-20.html` | 交付报告（含 2026-05-21 §10 Addendum） | Phase 0b / PR-O1 Observability Bootstrap 落地：双 compose stack（Phoenix-sim / Phoenix+Postgres+Grafana-prod）/ image pin / Grafana host 3001 避让 webhook / read-only `grafana_ro` 角色 / Phoenix 内建 Prom 端点 / Grafana provisioning + 占位 dashboard / `pnpm obs:*` 8 个脚本 / TDD 6 条契约守门 / 验证证据（37 files · 351 tests 全绿 + 11 步 manual Docker QA 待执行） | commit `19a2031` 已落 · ADR-0009 + ADR-0010（frontdesk 模板改名）落地 · manual Docker QA 仍是唯一未关闭闸门 |
+| `phase0b-pr-o1-2026-05-20.html` | 交付报告（含 2026-05-21 §10 Addendum） | Phase 0b / PR-O1 Observability Bootstrap 落地：双 compose stack（Phoenix-sim / Phoenix+Postgres+Grafana-prod）/ image pin / Grafana host 3001 避让 webhook / read-only `grafana_ro` 角色 / Phoenix 内建 Prom 端点 / Grafana provisioning + 占位 dashboard / `pnpm obs:*` 8 个脚本 / TDD 6 条契约守门 / 验证证据（37 files · 351 tests 全绿 + 11 步 manual Docker QA） | commit `19a2031` 已落 · ADR-0009 + ADR-0010（frontdesk 模板改名）落地 · manual Docker QA 已于 2026-05-21 全部 PASS |
+| `phase0b-pr-o1-qa-evidence-2026-05-21.html` | QA 证据补章 | Phase 0b / PR-O1 manual Docker QA 11 步实测证据：obs:config / obs:up / Phoenix UI / Grafana health / 2 datasource / 占位 dashboard / `grafana_ro` 角色权限 / host 3000 避让 / obs:down 保留卷 / obs:reset 清理 — 全部 PASS · 关闭 PR-O1 唯一未关闭闸门 | 关联 commit `19a2031` · ADR-0009 §Acceptance 闸门关闭 · 原始证据 `reports/machine/qa-evidence-2026-05-21/step1..step11.{txt,json}` |
 | `architecture-explainer-2026-05-20.html` | 架构解释 | 双 Frontdesk / Lab Desk / ERP Gateway 三个核心概念详解：两种接待风格对比（委托模型 vs 直驱模型）/ Lab Desk 身份标记（X-FrontLane-Source）/ Gateway 5 端点 + 安全模型（身份传递 / HMAC / 审计）/ 全景数据流图 / 常见问题 | Phase 0a 架构背景 |
 
 ## 维护规则

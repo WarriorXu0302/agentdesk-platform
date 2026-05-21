@@ -1,0 +1,135 @@
+
+> frontlane-agent-platform@2.0.44 obs:config /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+> docker compose -p muap-observability-prod -f infra/observability/docker-compose.prod.yml config && docker compose -p muap-observability-sim -f infra/observability/docker-compose.sim.yml config
+
+name: muap-observability-prod
+services:
+  grafana:
+    depends_on:
+      phoenix:
+        condition: service_started
+        required: true
+      postgres:
+        condition: service_started
+        required: true
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_SECURITY_ADMIN_PASSWORD: frontlane-local-observability
+      GF_SECURITY_ADMIN_USER: admin
+      PHOENIX_POSTGRES_DB: phoenix
+      PHOENIX_POSTGRES_GRAFANA_PASSWORD: grafana_readonly_local_only
+      PHOENIX_POSTGRES_GRAFANA_USER: grafana_ro
+    image: grafana/grafana:11.0.0
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3001"
+        protocol: tcp
+    volumes:
+      - type: volume
+        source: muap_grafana_data
+        target: /var/lib/grafana
+        volume: {}
+      - type: bind
+        source: /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/infra/observability/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/infra/observability/grafana/dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+        bind:
+          create_host_path: true
+  phoenix:
+    depends_on:
+      postgres:
+        condition: service_started
+        required: true
+    environment:
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
+      PHOENIX_ENABLE_PROMETHEUS: "true"
+      PHOENIX_SQL_DATABASE_URL: postgresql://phoenix:phoenix_local_only@postgres:5432/phoenix
+    image: arizephoenix/phoenix:version-8.0.0
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 6006
+        published: "6006"
+        protocol: tcp
+      - mode: ingress
+        target: 4317
+        published: "4317"
+        protocol: tcp
+      - mode: ingress
+        target: 9090
+        published: "9090"
+        protocol: tcp
+  postgres:
+    environment:
+      PHOENIX_POSTGRES_GRAFANA_PASSWORD: grafana_readonly_local_only
+      PHOENIX_POSTGRES_GRAFANA_USER: grafana_ro
+      POSTGRES_DB: phoenix
+      POSTGRES_PASSWORD: phoenix_local_only
+      POSTGRES_USER: phoenix
+    image: postgres:16
+    networks:
+      default: null
+    volumes:
+      - type: volume
+        source: muap_phoenix_postgres_data
+        target: /var/lib/postgresql/data
+        volume: {}
+      - type: bind
+        source: /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/infra/observability/init/grafana_readonly.sql
+        target: /docker-entrypoint-initdb.d/10-grafana_readonly.sql
+        read_only: true
+        bind:
+          create_host_path: true
+networks:
+  default:
+    name: muap-observability-prod_default
+volumes:
+  muap_grafana_data:
+    name: muap-observability-prod_muap_grafana_data
+  muap_phoenix_postgres_data:
+    name: muap-observability-prod_muap_phoenix_postgres_data
+name: muap-observability-sim
+services:
+  phoenix:
+    environment:
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
+      PHOENIX_ENABLE_PROMETHEUS: "true"
+      PHOENIX_WORKING_DIR: /mnt/data
+    image: arizephoenix/phoenix:version-8.0.0
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 6006
+        published: "6006"
+        protocol: tcp
+      - mode: ingress
+        target: 4317
+        published: "4317"
+        protocol: tcp
+      - mode: ingress
+        target: 9090
+        published: "9090"
+        protocol: tcp
+    volumes:
+      - type: volume
+        source: muap_phoenix_sim_data
+        target: /mnt/data
+        volume: {}
+networks:
+  default:
+    name: muap-observability-sim_default
+volumes:
+  muap_phoenix_sim_data:
+    name: muap-observability-sim_muap_phoenix_sim_data

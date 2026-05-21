@@ -1,0 +1,11 @@
+docker exec -it muap-observability-prod-postgres-1 \
+  psql -U phoenix -d phoenix -c '\du grafana_ro'
+        List of roles
+ Role name  |   Attributes   
+------------+----------------
+ grafana_ro | No inheritance
+
+
+What's next:
+    Try Docker Debug for seamless, persistent debugging tools in any container or image → docker debug muap-observability-prod-postgres-1
+    Learn more at https://docs.docker.com/go/debug-cli/

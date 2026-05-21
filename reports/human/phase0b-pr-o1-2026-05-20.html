@@ -226,23 +226,24 @@
 
   <header class="hero">
     <h1>Phase 0b / PR-O1 — <span class="mono" style="color:var(--accent);">Observability Bootstrap</span> 落地报告</h1>
-    <div class="sub">基于 <code>openclaw/CLOSEOUT/migration-to-muap.md v1.2</code> 宪法 Phase 0b 路线 · 通过 Momus <span class="pill done" style="font-size:10.5px;padding:1px 6px;">[OKAY]</span> 评审后由主会话直接实施 · <b>已 commit 落盘 (<span class="mono">19a2031</span>)</b> · 待 manual Docker QA</div>
+    <div class="sub">基于 <code>openclaw/CLOSEOUT/migration-to-muap.md v1.2</code> 宪法 Phase 0b 路线 · 通过 Momus <span class="pill done" style="font-size:10.5px;padding:1px 6px;">[OKAY]</span> 评审后由主会话直接实施 · <b>已 commit 落盘 (<span class="mono">19a2031</span>)</b> · <b>manual Docker QA 11/11 PASS（2026-05-21）</b></div>
     <div class="hero-meta">
-      <div><div class="k">报告日期</div><div class="v">2026-05-20（修订 2026-05-21）</div></div>
+      <div><div class="k">报告日期</div><div class="v">2026-05-20（修订 2026-05-21 · QA 闸门关闭）</div></div>
       <div><div class="k">基线分支</div><div class="v"><span class="mono">dxy-dev</span></div></div>
       <div><div class="k">前置 commit</div><div class="v"><span class="mono">dba7249</span> <span class="pill ghost" style="font-size:10px;">Phase 0a</span></div></div>
       <div><div class="k">PR-O1 commit</div><div class="v"><span class="mono">19a2031</span> <span class="pill done" style="font-size:10px;">已落盘</span></div></div>
-      <div><div class="k">PR-O1 状态</div><div class="v"><span class="pill inprog">🟡 已 commit · 待 manual Docker QA</span></div></div>
+      <div><div class="k">PR-O1 状态</div><div class="v"><span class="pill done">✅ 交付完成 · QA 11/11 PASS</span></div></div>
       <div><div class="k">关联 ADR</div><div class="v"><span class="mono">ADR-0009</span> + <span class="mono">ADR-0010</span></div></div>
       <div><div class="k">守门测试</div><div class="v">6/6 ✓ · <span class="mono">observability-bootstrap.test.ts</span></div></div>
+      <div><div class="k">manual QA 证据</div><div class="v"><a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">qa-evidence-2026-05-21.html</a></div></div>
     </div>
     <div class="banner">
       <b>三句话总结</b> · ①  PR-O1 范围严格锁定 infra-only — compose / provisioning / runbook / scripts / env 提案 / ADR-0009，<b>不</b>动任何 host 或 runner runtime；
       ② TDD 流程：先写 6 条 artifact 契约测试（RED），再补齐 infra、runbook、ADR，最终 6/6 GREEN 与 <span class="mono">pnpm typecheck</span> 全绿；
-      ③ 已与 <b>frontdesk 模板改名（ADR-0010）</b>合并为单 commit <span class="mono">19a2031</span> 落盘；<b>剩唯一闸门</b>：操作员手工 docker QA（11 步 curl 检查清单见 §5），<b>尚未执行</b>。
+      ③ 已与 <b>frontdesk 模板改名（ADR-0010）</b>合并为单 commit <span class="mono">19a2031</span> 落盘；<b>原唯一未关闭闸门</b>（操作员手工 docker QA · 11 步 curl 清单见 §5）已于 <b>2026-05-21 全部 PASS</b>，证据见 <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">QA 证据补章</a>。
     </div>
     <div class="banner warn">
-      <b>⚠️ 修订说明（2026-05-21）</b> · 本报告原起草于 2026-05-20 commit 前夜，标注"待 commit"；此后在 commit <span class="mono">19a2031</span> 中 PR-O1 与一项独立的 frontdesk 模板改名（<a href="../../docs/decisions/ADR-0010-rename-default-frontdesk-to-template.md"><span class="mono">ADR-0010</span></a>：<span class="mono">frontlane-frontdesk</span> → <span class="mono">frontlane-template-frontdesk</span> + LEGACY fallback）合并落盘。原文中"待 commit / 未提交"措辞已就地修订为"已落盘"。<b>manual Docker QA 仍未执行</b>，是当前唯一未关闭的闸门。详见新增 §10 Addendum。
+      <b>⚠️ 修订说明（2026-05-21）</b> · 本报告原起草于 2026-05-20 commit 前夜，标注"待 commit"；此后在 commit <span class="mono">19a2031</span> 中 PR-O1 与一项独立的 frontdesk 模板改名（<a href="../../docs/decisions/ADR-0010-rename-default-frontdesk-to-template.md"><span class="mono">ADR-0010</span></a>：<span class="mono">frontlane-frontdesk</span> → <span class="mono">frontlane-template-frontdesk</span> + LEGACY fallback）合并落盘。原文中"待 commit / 未提交"措辞已就地修订为"已落盘"。<b>manual Docker QA 已于 2026-05-21 全部 PASS</b>（11/11），<a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">QA 证据补章</a> 给出完整证据。详见 §10 Addendum。
     </div>
   </header>
 
@@ -276,8 +277,8 @@
     </div>
     <div class="stat">
       <div class="label">manual QA</div>
-      <div class="value">⏳ pending</div>
-      <div class="sub">11 步 curl 清单待运维执行</div>
+      <div class="value" style="color:var(--done);">11/11 ✅</div>
+      <div class="sub">2026-05-21 全部 PASS · <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">证据补章</a></div>
     </div>
   </div>
 
@@ -587,7 +588,7 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
   </div>
 
   <!-- §5 验证证据 -->
-  <h2 class="section">§5 验证证据 <span class="pip">(automated complete · manual QA pending)</span></h2>
+  <h2 class="section">§5 验证证据 <span class="pip">(automated complete · manual QA 11/11 PASS)</span></h2>
   <div class="split2">
     <div>
       <b>自动化（已完成）</b>
@@ -623,21 +624,21 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
       </table>
     </div>
     <div>
-      <b>手工 QA · 11 步 curl 检查清单（待运维执行）</b>
+      <b>手工 QA · 11 步 curl 检查清单</b> <span class="pill done">✅ 11/11 PASS · 2026-05-21</span> · 完整证据见 <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">qa-evidence-2026-05-21.html</a> 与 <span class="mono">reports/machine/qa-evidence-2026-05-21/</span>
       <table class="t">
-        <thead><tr><th>#</th><th>命令</th><th>预期</th></tr></thead>
+        <thead><tr><th>#</th><th>命令</th><th>预期</th><th>结果</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td><span class="mono">pnpm obs:config</span></td><td>两个 stack 解析 yaml 打印 · 无 unresolved variable</td></tr>
-          <tr><td>2</td><td><span class="mono">pnpm obs:up</span></td><td>3 个容器 ready（postgres / phoenix / grafana）</td></tr>
-          <tr><td>3</td><td><span class="mono">curl -fsS http://localhost:6006</span></td><td>Phoenix UI 响应非空</td></tr>
-          <tr><td>4</td><td><span class="mono">curl -fsS http://localhost:3001/api/health</span></td><td>JSON 含 <span class="mono">{"database":"ok"}</span></td></tr>
-          <tr><td>5</td><td><span class="mono">/api/datasources/name/Phoenix%20Postgres</span></td><td>type postgres · uid <span class="mono">phoenix-postgres</span></td></tr>
-          <tr><td>6</td><td><span class="mono">/api/datasources/name/Phoenix%20Metrics</span></td><td>type prometheus · uid <span class="mono">phoenix-metrics</span></td></tr>
-          <tr><td>7</td><td><span class="mono">/api/search?query=MUAP%20Observability%20Bootstrap</span></td><td>≥ 1 条结果 · folder <span class="mono">MUAP Observability</span></td></tr>
-          <tr><td>8</td><td>postgres <span class="mono">\du grafana_ro</span></td><td>角色存在 · 无 superuser / createrole</td></tr>
-          <tr><td>9</td><td><span class="mono">lsof -nP -iTCP:3000</span></td><td>不被本栈占用（避让 webhook）</td></tr>
-          <tr><td>10</td><td><span class="mono">pnpm obs:down</span></td><td>容器移除 · volumes 保留</td></tr>
-          <tr><td>11</td><td>（可选）<span class="mono">pnpm obs:reset</span></td><td>volumes 全部销毁；本地观测数据清零</td></tr>
+          <tr><td>1</td><td><span class="mono">pnpm obs:config</span></td><td>两个 stack 解析 yaml 打印 · 无 unresolved variable</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>2</td><td><span class="mono">pnpm obs:up</span></td><td>3 个容器 ready（postgres / phoenix / grafana）</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>3</td><td><span class="mono">curl -fsS http://localhost:6006</span></td><td>Phoenix UI 响应非空</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>4</td><td><span class="mono">curl -fsS http://localhost:3001/api/health</span></td><td>JSON 含 <span class="mono">{"database":"ok"}</span></td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>5</td><td><span class="mono">/api/datasources/name/Phoenix%20Postgres</span></td><td>type postgres · uid <span class="mono">phoenix-postgres</span></td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>6</td><td><span class="mono">/api/datasources/name/Phoenix%20Metrics</span></td><td>type prometheus · uid <span class="mono">phoenix-metrics</span></td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>7</td><td><span class="mono">/api/search?query=MUAP%20Observability%20Bootstrap</span></td><td>≥ 1 条结果 · folder <span class="mono">MUAP Observability</span></td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>8</td><td>postgres <span class="mono">\du grafana_ro</span></td><td>角色存在 · 无 superuser / createrole</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>9</td><td><span class="mono">lsof -nP -iTCP:3000</span></td><td>不被本栈占用（避让 webhook）</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>10</td><td><span class="mono">pnpm obs:down</span></td><td>容器移除 · volumes 保留</td><td><span class="pill done">PASS</span></td></tr>
+          <tr><td>11</td><td>（可选）<span class="mono">pnpm obs:reset</span></td><td>volumes 全部销毁；本地观测数据清零</td><td><span class="pill done">PASS</span></td></tr>
         </tbody>
       </table>
     </div>
@@ -782,9 +783,9 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
       <tr>
         <td>3</td>
         <td>用户执行 §5 的 11 步 manual Docker QA</td>
-        <td>用户 / 运维</td>
-        <td><span class="pill blocked">⏳ 等待 · 仍是当前唯一未关闭闸门</span></td>
-        <td>所有 11 步必须 PASS；任何一步失败会触发 hot-fix 或 ADR addendum</td>
+        <td>本地运维</td>
+        <td><span class="pill done">✅ 11/11 PASS · 2026-05-21</span></td>
+        <td>全部步骤通过；证据见 <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">QA 证据补章</a> 与 <span class="mono">reports/machine/qa-evidence-2026-05-21/</span></td>
       </tr>
       <tr>
         <td>4</td>
@@ -869,7 +870,7 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
   <h2 class="section">§10 Addendum · 落盘后修订 <span class="pip">(2026-05-21 · commit <span class="mono">19a2031</span> 已落)</span></h2>
 
   <div class="banner warn">
-    <b>背景</b> · 报告原稿（2026-05-20）以"待 commit"姿态生成。次日 PR-O1 与一项<b>独立的 frontdesk 模板改名</b>合并为单 commit <span class="mono">19a2031</span> 落盘。本附加章节同步两件事实：①  落盘事实；②  改名事实。<b>manual Docker QA 仍未执行</b>，是当前唯一未关闭闸门。
+    <b>背景</b> · 报告原稿（2026-05-20）以"待 commit"姿态生成。次日 PR-O1 与一项<b>独立的 frontdesk 模板改名</b>合并为单 commit <span class="mono">19a2031</span> 落盘。本附加章节同步三件事实：①  落盘事实；②  改名事实；③  manual Docker QA 已于 2026-05-21 全部 PASS（11/11），<b>PR-O1 唯一未关闭闸门已关闭</b>，证据见 <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">QA 证据补章</a>。
   </div>
 
   <h3 class="subsec">A. Commit 落盘事实</h3>
@@ -910,14 +911,15 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
     <li>两件事在同一时间窗内由用户拍板，没必要拆 PR — 仍然各自有独立 ADR（<span class="mono">ADR-0009</span> + <span class="mono">ADR-0010</span>）保证可回溯</li>
   </ul>
 
-  <h3 class="subsec">D. 当前唯一未关闭闸门 · manual Docker QA</h3>
-  <div class="banner bad">
-    <b>⏳ 仍未执行</b> · §5 给出的 11 步 curl 检查清单需要操作员手工跑一遍。自动化测试只能验证文件契约（artifact 路径 / image pin / scripts / env / ADR / forbidden imports），<b>不能</b>验证容器是否真的能起、Phoenix 是否能被探活、Grafana provisioning 是否真的应用、<span class="mono">grafana_ro</span> 角色是否真的被创建。
+  <h3 class="subsec">D. 原唯一未关闭闸门 · manual Docker QA <span class="pill done">✅ 关闭</span></h3>
+  <div class="banner ok">
+    <b>✅ 11/11 PASS</b>（2026-05-21）· 操作员手工执行 §5 给出的 11 步 curl + docker 检查清单，全部通过。完整证据见 <a href="phase0b-pr-o1-qa-evidence-2026-05-21.html">QA 证据补章（phase0b-pr-o1-qa-evidence-2026-05-21.html）</a> 与 <span class="mono">reports/machine/qa-evidence-2026-05-21/step1..step11.{txt,json}</span>。
   </div>
   <ul style="margin: 6px 0 0 18px; color: var(--text-dim);">
-    <li>QA 全部通过 → 在 commit message 之外补一份 manual-QA-evidence ADR addendum 或单独的 "QA 补充" 报告</li>
-    <li>QA 任意一步失败 → 触发 hot-fix（compose 调整、SQL 调整、provisioning 修复）+ 必要时新 ADR 修订 ADR-0009 落地形态</li>
-    <li>守门测试已经在 commit 里持续生效，未来任何 PR 误把 OTel / openinference 引入 host/runner 都会被 CI 拦截</li>
+    <li>覆盖：compose 解析 / 容器起停 / Phoenix UI 探活 / Grafana <span class="mono">/api/health</span> / 2 datasource provisioning / 占位 dashboard 入仓 / <span class="mono">grafana_ro</span> 角色权限 / host 3000 避让 / 卷保留 / 卷销毁</li>
+    <li>守门测试（automated 6/6 GREEN）+ manual Docker QA（11/11 PASS）双层验证完成 — PR-O1 阶段交付完整闭合</li>
+    <li>下游 PR-O2（host instrumentation）+ PR-O3（runner instrumentation · manual / hybrid spans per Oracle ruling）已 unblock</li>
+    <li>守门测试持续在 commit 里生效，未来任何 PR 误把 OTel / openinference 引入 host/runner 都会被 CI 拦截</li>
   </ul>
 
   <h3 class="subsec">E. Architecture Explainer（同 commit 附带，未在 §3-§9 介绍）</h3>
@@ -957,7 +959,7 @@ it(<span class="s">'keeps PR-O1 scope free from forbidden runtime imports'</span
       <li><code>MultiUserAgentPlatform/reports/human/phase0a-onboarding-2026-05-20.html</code> — Phase 0a 前置报告</li>
     </ul>
     <div style="margin-top:10px;">
-      报告由 Sisyphus 生成 · 2026-05-20（修订 2026-05-21） · PR-O1 commit <code>19a2031</code> 已落（前置 Phase 0a <code>dba7249</code>） · 工作目录 <code>MultiUserAgentPlatform/dxy-dev</code> · 当前唯一未关闭闸门：操作员执行 §5 11 步 manual Docker QA
+      报告由 Sisyphus 生成 · 2026-05-20（修订 2026-05-21 · QA 闸门关闭） · PR-O1 commit <code>19a2031</code> 已落（前置 Phase 0a <code>dba7249</code>） · 工作目录 <code>MultiUserAgentPlatform/dxy-dev</code> · <b>manual Docker QA 11/11 PASS（2026-05-21）</b> · 证据补章 <code>phase0b-pr-o1-qa-evidence-2026-05-21.html</code>
     </div>
   </footer>
 

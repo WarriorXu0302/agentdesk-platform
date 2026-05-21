@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 0b / PR-O1 — Manual Docker QA Evidence — 2026-05-21</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #adbac7;
+    --text-muted: #7d8590;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --done: #3fb950;
+    --shadow: 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.5);
+    --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd, .mono { font-family: var(--mono); font-size: .92em; }
+  .container { max-width: 1280px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  header.hero {
+    background: linear-gradient(180deg, #1c2530 0%, #0e1117 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    box-shadow: var(--shadow);
+  }
+  header.hero h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .2px; }
+  header.hero .sub { color: var(--text-dim); font-size: 13.5px; }
+  .hero-meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px; margin-top: 18px;
+  }
+  .hero-meta div {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    background: var(--panel-2);
+  }
+  .hero-meta .k { color: var(--text-muted); font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; }
+  .hero-meta .v { color: var(--text); font-size: 14px; margin-top: 4px; font-weight: 500; }
+  .hero-meta .v .mono { color: var(--accent); }
+
+  h2.section {
+    font-size: 17px; margin: 32px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border); letter-spacing: .2px;
+  }
+  h2.section .pip { color: var(--text-muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  h3.subsec { font-size: 14.5px; margin: 18px 0 10px; color: var(--text); }
+
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+    border: 1px solid var(--border);
+  }
+  .pill.done    { background: rgba(63,185,80,.12);  color: var(--done);   border-color: rgba(63,185,80,.35); }
+  .pill.warn    { background: rgba(210,153,34,.13); color: var(--warn);  border-color: rgba(210,153,34,.4); }
+  .pill.ghost   { background: transparent; color: var(--text-muted); border-color: var(--border); }
+
+  table.t {
+    width: 100%; border-collapse: collapse; margin-top: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden;
+  }
+  table.t th, table.t td {
+    padding: 8px 12px; text-align: left; vertical-align: top;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  table.t th { background: var(--panel-2); color: var(--text-dim); font-weight: 600; font-size: 12.5px; letter-spacing: .3px; text-transform: uppercase; }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t td.center { text-align: center; }
+
+  pre.evidence {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    overflow-x: auto;
+    margin: 6px 0 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre.evidence b { color: var(--text); }
+
+  .banner {
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; background: var(--panel);
+    margin: 14px 0;
+  }
+  .banner.info { border-left: 3px solid var(--accent); }
+  .banner.ok { border-left: 3px solid var(--done); }
+  .banner.warn { border-left: 3px solid var(--warn); }
+
+  footer.foot {
+    margin-top: 36px; color: var(--text-muted); font-size: 12.5px;
+    border-top: 1px solid var(--border); padding-top: 14px;
+  }
+  footer.foot ul { margin: 6px 0 0 18px; padding: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Hero -->
+  <header class="hero">
+    <h1>Phase 0b / PR-O1 — Manual Docker QA Evidence</h1>
+    <div class="sub">2026-05-21 · 11 步首次启动检查清单全部通过 · PR-O1 唯一未关闭闸门已关闭</div>
+    <div class="hero-meta">
+      <div><div class="k">关联 PR</div><div class="v">PR-O1 · commit <span class="mono">19a2031</span></div></div>
+      <div><div class="k">主报告</div><div class="v"><a href="phase0b-pr-o1-2026-05-20.html">phase0b-pr-o1-2026-05-20.html</a></div></div>
+      <div><div class="k">证据目录</div><div class="v"><span class="mono">reports/machine/qa-evidence-2026-05-21/</span></div></div>
+      <div><div class="k">QA 步数</div><div class="v">11 / 11 <span class="pill done">PASS</span></div></div>
+      <div><div class="k">执行人</div><div class="v">本地运维（人工执行）</div></div>
+      <div><div class="k">关联 ADR</div><div class="v"><span class="mono">ADR-0009</span> §Acceptance</div></div>
+    </div>
+  </header>
+
+  <!-- §1 Summary -->
+  <h2 class="section">§1 总览 <span class="pip">(11/11 PASS)</span></h2>
+
+  <div class="banner ok">
+    <b>结论</b> · <a href="../../infra/observability/README.md"><span class="mono">infra/observability/README.md</span></a> §"首次启动检查清单" 中所列 11 步全部在本地 Docker 环境实际执行并通过。<a href="../../docs/decisions/ADR-0009-observability-bootstrap-contract.md"><span class="mono">ADR-0009</span></a> §Acceptance 要求的 manual Docker QA 闸门已关闭，PR-O1 阶段交付完成。
+  </div>
+
+  <table class="t">
+    <thead>
+      <tr><th>#</th><th>检查项</th><th>结果摘要</th><th>证据文件</th><th class="center">判定</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><span class="mono">pnpm obs:config</span></td>
+        <td>两个 stack 解析后的 yaml 完整打印 · 无 unresolved variable 警告</td>
+        <td><span class="mono">step1-obs-config.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><span class="mono">pnpm obs:up</span></td>
+        <td>3 镜像 pull 完成 · 3 容器启动（<span class="mono">postgres-1</span> / <span class="mono">phoenix-1</span> / <span class="mono">grafana-1</span>）· network 与 2 named volume 创建</td>
+        <td><span class="mono">step2-obs-up.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><span class="mono">curl http://localhost:6006</span></td>
+        <td>Phoenix UI HTML 返回非空 · <span class="mono">platformVersion: "8.0.0"</span> · <span class="mono">authenticationEnabled: False</span></td>
+        <td><span class="mono">step3-curl-phoenix.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><span class="mono">curl http://localhost:3001/api/health</span></td>
+        <td>JSON 含 <span class="mono">{"database":"ok","version":"11.0.0"}</span> · 见 §3 关于一次启动期 transient 的说明</td>
+        <td><span class="mono">step4-curl-health.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><span class="mono">/api/datasources/name/Phoenix%20Postgres</span></td>
+        <td><span class="mono">uid:phoenix-postgres</span> · type postgres family · <span class="mono">user:grafana_ro</span> · <span class="mono">readOnly:true</span></td>
+        <td><span class="mono">step5-datasource-postgres.json</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><span class="mono">/api/datasources/name/Phoenix%20Metrics</span></td>
+        <td><span class="mono">uid:phoenix-metrics</span> · <span class="mono">type:prometheus</span> · <span class="mono">url:http://phoenix:9090</span> · <span class="mono">readOnly:true</span></td>
+        <td><span class="mono">step6-datasource-metrics.json</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><span class="mono">/api/search?query=...</span></td>
+        <td>命中 1 条：<span class="mono">MUAP Observability Bootstrap</span> · folder <span class="mono">MUAP Observability</span> · type <span class="mono">dash-db</span></td>
+        <td><span class="mono">step7-dashboard-search.json</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><span class="mono">psql \du grafana_ro</span></td>
+        <td>角色存在 · 属性仅 <span class="mono">No inheritance</span> · <b>无 superuser / createrole / createdb / replication / bypassrls</b></td>
+        <td><span class="mono">step8-psql.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><span class="mono">lsof -nP -iTCP:3000</span></td>
+        <td>输出为空（host 端口 3000 未被本栈占用，正确避让 webhook）</td>
+        <td><span class="mono">step9-host3000.txt</span> (0 B)</td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><span class="mono">pnpm obs:down</span></td>
+        <td>3 容器移除 · network 移除 · 2 named volume <b>保留</b>（<span class="mono">muap_phoenix_postgres_data</span> + <span class="mono">muap_grafana_data</span>）</td>
+        <td><span class="mono">step10-obs-down.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td><span class="mono">pnpm obs:reset</span>（可选）</td>
+        <td>2 named volume 销毁 · <span class="mono">docker volume ls -f name=muap_</span> 输出为空</td>
+        <td><span class="mono">step11-obs-reset.txt</span></td>
+        <td class="center"><span class="pill done">PASS</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- §2 Detailed Evidence -->
+  <h2 class="section">§2 关键证据节录 <span class="pip">(per-step 摘要)</span></h2>
+
+  <h3 class="subsec">Step 1 · <span class="mono">pnpm obs:config</span> — 两 stack yaml 解析</h3>
+  <p>关键字段验证（节选自 prod stack）：</p>
+  <pre class="evidence"><b>grafana:</b>
+  image: grafana/grafana:11.0.0
+  ports: 3001 -&gt; 3000     <span style="color:var(--ok)">✓ host 3001 避让 webhook</span>
+  GF_AUTH_ANONYMOUS_ENABLED: "false"   <span style="color:var(--ok)">✓ 匿名访问已禁</span>
+  PHOENIX_POSTGRES_GRAFANA_USER: grafana_ro  <span style="color:var(--ok)">✓ 只读角色</span>
+
+<b>phoenix:</b>
+  image: arizephoenix/phoenix:version-8.0.0   <span style="color:var(--ok)">✓ 非 :latest</span>
+  PHOENIX_ENABLE_PROMETHEUS: "true"
+  ports: 6006, 4317, 9090
+
+<b>postgres:</b>
+  image: postgres:16   <span style="color:var(--ok)">✓ 非 :latest</span>
+  ports: <i>(无 host 暴露)</i>   <span style="color:var(--ok)">✓ 仅 compose 网络内可达</span>
+  init: 10-grafana_readonly.sql 已挂载到 /docker-entrypoint-initdb.d/</pre>
+
+  <h3 class="subsec">Step 2 · <span class="mono">pnpm obs:up</span> — 容器与卷创建</h3>
+  <pre class="evidence"> Network muap-observability-prod_default  Created
+ Volume "muap-observability-prod_muap_grafana_data"  Created
+ Volume "muap-observability-prod_muap_phoenix_postgres_data"  Created
+ Container muap-observability-prod-postgres-1  Started
+ Container muap-observability-prod-phoenix-1  Started
+ Container muap-observability-prod-grafana-1  Started</pre>
+
+  <h3 class="subsec">Step 4 · Grafana <span class="mono">/api/health</span></h3>
+  <pre class="evidence"><b>{
+  "commit": "83b9528bce85cf9371320f6d6e450916156da3f6",
+  "database": "ok",
+  "version": "11.0.0"
+}</b></pre>
+
+  <h3 class="subsec">Step 5 · Phoenix Postgres datasource（关键字段）</h3>
+  <pre class="evidence">{
+  "uid": "phoenix-postgres",                          <span style="color:var(--ok)">✓</span>
+  "name": "Phoenix Postgres",                         <span style="color:var(--ok)">✓</span>
+  "type": "grafana-postgresql-datasource",            <span style="color:var(--ok)">✓ postgres family</span>
+  "user": "grafana_ro",                               <span style="color:var(--ok)">✓ 只读角色，未用 phoenix superuser</span>
+  "url": "postgres:5432",
+  "isDefault": true,
+  "readOnly": true,                                   <span style="color:var(--ok)">✓ provisioning 不可在 UI 改</span>
+  "jsonData": { "database":"phoenix", "sslmode":"disable" },
+  "secureJsonFields": { "password": true }
+}</pre>
+
+  <h3 class="subsec">Step 6 · Phoenix Metrics datasource</h3>
+  <pre class="evidence">{
+  "uid": "phoenix-metrics",                           <span style="color:var(--ok)">✓</span>
+  "name": "Phoenix Metrics",                          <span style="color:var(--ok)">✓</span>
+  "type": "prometheus",                               <span style="color:var(--ok)">✓</span>
+  "url": "http://phoenix:9090",                       <span style="color:var(--ok)">✓ Phoenix 内建 Prom 端点</span>
+  "isDefault": false,
+  "readOnly": true                                    <span style="color:var(--ok)">✓</span>
+}</pre>
+
+  <h3 class="subsec">Step 7 · 占位 dashboard 命中</h3>
+  <pre class="evidence">[
+  {
+    "uid": "muap-observability-bootstrap",            <span style="color:var(--ok)">✓</span>
+    "title": "MUAP Observability Bootstrap",          <span style="color:var(--ok)">✓</span>
+    "type": "dash-db",                                <span style="color:var(--ok)">✓</span>
+    "folderTitle": "MUAP Observability",              <span style="color:var(--ok)">✓ 文件夹自动创建</span>
+    "tags": ["bootstrap","muap","observability","phase0b"]
+  }
+]</pre>
+
+  <h3 class="subsec">Step 8 · <span class="mono">grafana_ro</span> 角色权限</h3>
+  <pre class="evidence">$ docker exec -it muap-observability-prod-postgres-1 \
+    psql -U phoenix -d phoenix -c '\du grafana_ro'
+
+        List of roles
+ Role name  |   Attributes
+------------+----------------
+ grafana_ro | <b>No inheritance</b>
+
+<span style="color:var(--ok)">✓ 无 Superuser / Create role / Create DB / Replication / Bypass RLS</span>
+<span style="color:var(--ok)">✓ 写入失败语义由 ADR-0009 §Read-Only Datasource Policy 守护</span></pre>
+
+  <h3 class="subsec">Step 9 · host 3000 端口未被栈占用</h3>
+  <pre class="evidence">$ lsof -nP -iTCP:3000
+<i>(empty)</i>
+
+<span style="color:var(--ok)">✓ Grafana 实际监听 3001 而非 3000，避让 MUAP webhook 默认占用</span></pre>
+
+  <h3 class="subsec">Step 10 · <span class="mono">obs:down</span> 保留卷</h3>
+  <pre class="evidence">[+] Running 4/4
+ ✔ Container muap-observability-prod-grafana-1   Removed
+ ✔ Container muap-observability-prod-phoenix-1   Removed
+ ✔ Container muap-observability-prod-postgres-1  Removed
+ ✔ Network muap-observability-prod_default       Removed
+
+$ docker ps -f name=muap-observability-prod
+<i>(empty)</i>                                                    <span style="color:var(--ok)">✓ 容器全停</span>
+
+$ docker volume ls -f name=muap_
+local     muap-observability-prod_muap_grafana_data
+local     muap-observability-prod_muap_phoenix_postgres_data
+                                                          <span style="color:var(--ok)">✓ 2 卷保留（无 trace 丢失）</span></pre>
+
+  <h3 class="subsec">Step 11 · <span class="mono">obs:reset</span> 清理</h3>
+  <pre class="evidence">[+] Running 2/2
+ ✔ Volume muap-observability-prod_muap_phoenix_postgres_data  Removed
+ ✔ Volume muap-observability-prod_muap_grafana_data           Removed
+
+$ docker volume ls -f name=muap_
+<i>(empty)</i>                                                    <span style="color:var(--ok)">✓ 卷全部销毁</span></pre>
+
+  <!-- §3 Notes -->
+  <h2 class="section">§3 备注 / 偏差说明 <span class="pip">(disclosures)</span></h2>
+
+  <table class="t">
+    <thead><tr><th>项</th><th>观察</th><th>处置 / 解释</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill warn">note</span></td>
+        <td>Step 4 首次 <span class="mono">curl /api/health</span> 返回 <span class="mono">curl: (52) Empty reply from server</span>，重试后才得到 <span class="mono">{"database":"ok"}</span></td>
+        <td>属预期行为：Grafana 容器 <span class="mono">Started</span> 后 plugin loading + provisioning 仍需要数秒；README §First-Run §Step 4 的 "<i>等 ~10 秒后</i>" 已点出。证据文件保留两次响应以如实记录。</td>
+      </tr>
+      <tr>
+        <td><span class="pill ghost">note</span></td>
+        <td>Step 10 后 <span class="mono">docker volume ls -f name=muap_</span> 仅显示 2 个卷，没有 <span class="mono">muap_phoenix_sim_data</span></td>
+        <td>正确：本次仅启动 <span class="mono">prod</span> stack，未启动 <span class="mono">sim</span> stack（<span class="mono">obs:up:sim</span> 未执行），因此 sim 卷从未创建。两 stack 互相独立，不影响 prod QA 闸门判定。</td>
+      </tr>
+      <tr>
+        <td><span class="pill ghost">note</span></td>
+        <td>Step 5 datasource <span class="mono">type</span> 字段值是 <span class="mono">grafana-postgresql-datasource</span> 而非 README 节录的 <span class="mono">postgres</span></td>
+        <td>正确：Grafana 11.x 起官方 PostgreSQL plugin 的内部 type id 是 <span class="mono">grafana-postgresql-datasource</span>（与 datasource 配置 yaml 中的简写 <span class="mono">postgres</span> 是同一个 plugin 的两种引用），<span class="mono">uid</span> 与 <span class="mono">readOnly</span> 等核心字段都符合预期。</td>
+      </tr>
+      <tr>
+        <td><span class="pill ghost">note</span></td>
+        <td>未在浏览器实际打开 Grafana UI 渲染占位 dashboard</td>
+        <td>QA 表第 7 步要求 "<i>≥ 1 条结果 · folder MUAP Observability</i>"，已通过 search API 满足。浏览器渲染属于操作员日常使用范畴，不在 ADR-0009 §Acceptance 必填项内。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- §4 状态变更 -->
+  <h2 class="section">§4 PR-O1 状态变更 <span class="pip">(post-QA)</span></h2>
+
+  <table class="t">
+    <thead><tr><th>维度</th><th>QA 前（2026-05-20）</th><th>QA 后（本报告）</th></tr></thead>
+    <tbody>
+      <tr><td>commit</td><td><span class="mono">19a2031</span> 已落</td><td>不变</td></tr>
+      <tr><td>ADR</td><td><span class="mono">ADR-0009</span> + <span class="mono">ADR-0010</span> 落地</td><td>不变</td></tr>
+      <tr><td>守门测试</td><td>351 tests 全绿</td><td>不变</td></tr>
+      <tr><td><b>manual Docker QA</b></td><td><span class="pill warn">待执行</span> · PR-O1 唯一未关闭闸门</td><td><span class="pill done">11/11 PASS</span> · <b>闸门已关闭</b></td></tr>
+      <tr><td>PR-O1 整体</td><td>代码完成 / 运维待 QA</td><td><b>交付完成</b></td></tr>
+      <tr><td>下游 PR-O2 / PR-O3</td><td>blocked by PR-O1 QA</td><td><b>unblocked</b> · 可启动 host / runner instrumentation</td></tr>
+    </tbody>
+  </table>
+
+  <div class="banner info">
+    <b>下一步候选</b>（按优先级建议）
+    <ul style="margin:6px 0 0 18px;">
+      <li><b>PR-O2</b>：host instrumentation — 复用 <span class="mono">PHOENIX_OTLP_ENDPOINT=http://localhost:4317</span> 向本栈 Phoenix 发 span（需新 ADR / 计划 / TDD）</li>
+      <li><b>PR-O3</b>：runner instrumentation — 因 <span class="mono">@arizeai/openinference-instrumentation-anthropic</span> 不能自动 instrument <span class="mono">@anthropic-ai/claude-agent-sdk</span>，需 manual / hybrid span（Oracle ruling），并行可行</li>
+      <li><b>chore(lint)</b>：清理 baseline 6 lint errors（PR-O1 §6 已记录原因）— 体力活，独立 PR</li>
+    </ul>
+  </div>
+
+  <!-- §5 Footer -->
+  <footer class="foot">
+    <b>主参考</b>
+    <ul>
+      <li><code>reports/human/phase0b-pr-o1-2026-05-20.html</code> — PR-O1 主交付报告（含 §10 Addendum）</li>
+      <li><code>reports/machine/qa-evidence-2026-05-21/step1..step11.{txt,json}</code> — 11 步原始证据（本报告引用源）</li>
+      <li><code>infra/observability/README.md</code> §"首次启动检查清单" — QA 11 步定义</li>
+      <li><code>docs/decisions/ADR-0009-observability-bootstrap-contract.md</code> §Acceptance — 闸门定义</li>
+      <li><code>commit 19a2031</code> — PR-O1 代码提交</li>
+    </ul>
+    <p style="margin-top:14px;">QA 执行：<b>本地运维（人工）</b> · 报告整理：MUAP build agent · 日期：<b>2026-05-21</b></p>
+  </footer>
+
+</div>
+</body>
+</html>
