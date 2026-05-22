@@ -112,6 +112,40 @@ export interface ContainerConfig {
    * unlimited. Strongly recommended in multi-user deployments.
    */
   resources?: ContainerResourceLimits;
+  /**
+   * Optional env vars forwarded into the container at spawn time. Use this
+   * to point a skill's bridge.py at a non-default backend (e.g.
+   * `CAMERA_BASE_URL=http://172.18.198.229:8001`) without rebuilding the
+   * image or hard-coding hostnames in skill code. Keys/values passed
+   * verbatim via `docker run -e KEY=VALUE`. Provider/system env (TZ,
+   * OneCLI HTTPS_PROXY, etc.) is layered separately and is not overridden
+   * by this map.
+   */
+  env?: Record<string, string>;
+  /**
+   * Progressive skill disclosure (perf). Replaces each skill's full
+   * `instructions.md` content in the composed system prompt to keep the
+   * prompt small and prefix-cache friendly.
+   *
+   *   false (default)  — current behavior: every skill's instructions.md
+   *                      is inlined into the system prompt.
+   *   true             — emit a compact `Available Skills` index
+   *                      (name + description from SKILL.md frontmatter) +
+   *                      anti-overthink preamble telling the agent to
+   *                      skip `load_skill` for simple greetings. Use
+   *                      `load_skill(name)` MCP tool to fetch a skill on
+   *                      demand.
+   *   "lean"           — omit the skill index entirely. For dispatcher
+   *                      agents that route to worker agents and never
+   *                      need to execute skills themselves
+   *                      (`frontlane-frontdesk` pattern). The
+   *                      `load_skill` tool stays registered but the
+   *                      agent has no list to choose from.
+   *
+   * Worker agent groups that already specify a narrow `skills` array
+   * usually leave this off — their prompt is already small.
+   */
+  progressiveDisclosure?: boolean | 'lean';
 }
 
 function emptyConfig(): ContainerConfig {
@@ -180,6 +214,11 @@ export function readContainerConfig(folder: string): ContainerConfig {
       agentGroupId: raw.agentGroupId,
       maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
       resources: normalizeResources(raw.resources),
+      env: raw.env,
+      progressiveDisclosure:
+        raw.progressiveDisclosure === 'lean'
+          ? 'lean'
+          : raw.progressiveDisclosure === true,
     };
   } catch (err) {
     console.error(`[container-config] failed to parse ${p}: ${String(err)}`);

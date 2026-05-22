@@ -34,6 +34,38 @@ const MCP_TOOLS_HOST_SUBPATH = path.join('container', 'agent-runner', 'src', 'mc
 
 const COMPOSED_HEADER = '<!-- Composed at spawn — do not edit. Edit CLAUDE.local.md for per-group content. -->';
 
+interface SkillFrontmatter {
+  name?: string;
+  description?: string;
+}
+
+// Lightweight YAML frontmatter reader for SKILL.md — only handles single-line
+// scalar fields (name, description). Multi-line / nested YAML would need a
+// full parser, but skills today don't use those for the fields we need.
+function readSkillFrontmatter(skillMdPath: string): SkillFrontmatter {
+  if (!fs.existsSync(skillMdPath)) return {};
+  try {
+    const text = fs.readFileSync(skillMdPath, 'utf8');
+    const match = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+    if (!match) return {};
+    const out: SkillFrontmatter = {};
+    for (const line of match[1].split('\n')) {
+      const kv = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
+      if (!kv) continue;
+      const key = kv[1].trim();
+      let value = kv[2].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (key === 'name') out.name = value;
+      else if (key === 'description') out.description = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Regenerate `groups/<folder>/CLAUDE.md` from the shared base, enabled skill
  * fragments, and MCP server fragments declared in `container.json`. Creates
@@ -57,17 +89,72 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
   const config = readContainerConfig(group.folder);
   const desired = new Map<string, { type: 'symlink' | 'inline'; content: string }>();
 
-  // Skill fragments — every skill that ships an `instructions.md`.
-  // TODO (shared-source refactor): respect `container.json` skill selection.
+  // Skill fragments — only skills that ship an `instructions.md`. If
+  // `container.json#skills` is `"all"` (default), every available skill is
+  // inlined. If it's an array, only those skills are inlined — silently
+  // skips array entries that don't exist on disk or lack `instructions.md`.
+  //
+  // PROGRESSIVE DISCLOSURE: when config.progressiveDisclosure=true, the
+  // per-skill instructions.md is NOT inlined. Instead, a single
+  // `skill-index.md` is generated listing each available skill's name +
+  // description (parsed from SKILL.md frontmatter). The agent then calls
+  // the `load_skill(name)` MCP tool to fetch a specific skill's full
+  // instructions on demand. Keeps the system prompt small + cache-stable;
+  // skill content lands in transcript only when needed.
   const skillsHostDir = path.join(process.cwd(), 'container', 'skills');
   if (fs.existsSync(skillsHostDir)) {
-    for (const skillName of fs.readdirSync(skillsHostDir)) {
-      const hostFragment = path.join(skillsHostDir, skillName, 'instructions.md');
-      if (fs.existsSync(hostFragment)) {
-        desired.set(`skill-${skillName}.md`, {
-          type: 'symlink',
-          content: `${SHARED_SKILLS_CONTAINER_BASE}/${skillName}/instructions.md`,
-        });
+    const candidates =
+      config.skills === 'all' ? fs.readdirSync(skillsHostDir) : config.skills;
+
+    if (config.progressiveDisclosure === 'lean') {
+      // Lean mode — no skill index at all. Dispatcher agents that route
+      // to workers via <message to="..."> blocks don't need the index;
+      // worker capabilities live in their own CLAUDE.md / fragments,
+      // not in the dispatcher's prompt.
+      //
+      // The `load_skill` MCP tool is still registered container-side but
+      // the agent has no list to call it against, which is the intent.
+    } else if (config.progressiveDisclosure) {
+      // Index mode — replace full instructions with a one-line-per-skill
+      // index + an anti-overthink preamble. Helps gpt-5.4 avoid wasting
+      // scratchpad cycles on "should I load a skill?" for trivial
+      // greetings / acknowledgements / fixed-template replies.
+      const indexLines: string[] = [
+        '# Available Skills',
+        '',
+        'These skills are available but NOT loaded into your prompt. To use a skill, call the `load_skill(name)` MCP tool FIRST — its `instructions.md` will be returned as a tool result and become part of the conversation history. After loading, follow the skill\'s instructions to complete the task.',
+        '',
+        '## Decision shortcut (DO NOT skip)',
+        '',
+        '- If the incoming message is a simple greeting / acknowledgement / yes-no confirmation / "你好"/"在吗"/"OK"/"收到"/casual chitchat → respond DIRECTLY with the appropriate fixed-template reply. **Do NOT call `load_skill`. Do NOT enumerate this list.**',
+        '- If the message clearly maps to one specific worker (knowledge/robot/labops/monitor/remote/feishu/...) you can dispatch to → use `<message to="<worker-name>">...</message>` and DO NOT load a skill. Skills are for workers to use, not for the dispatcher.',
+        '- Only call `load_skill(name)` when YOU (the dispatcher) genuinely need a specific how-to for an unusual operation that no worker handles. This is rare.',
+        '',
+        '## Skill index',
+        '',
+      ];
+      for (const skillName of candidates) {
+        const hostFragment = path.join(skillsHostDir, skillName, 'instructions.md');
+        if (!fs.existsSync(hostFragment)) continue;
+        const meta = readSkillFrontmatter(path.join(skillsHostDir, skillName, 'SKILL.md'));
+        const name = meta.name ?? skillName;
+        const desc = (meta.description ?? '').trim() || '(no description)';
+        indexLines.push(`- **${name}** — ${desc}`);
+      }
+      indexLines.push('');
+      desired.set('skill-index.md', {
+        type: 'inline',
+        content: indexLines.join('\n'),
+      });
+    } else {
+      for (const skillName of candidates) {
+        const hostFragment = path.join(skillsHostDir, skillName, 'instructions.md');
+        if (fs.existsSync(hostFragment)) {
+          desired.set(`skill-${skillName}.md`, {
+            type: 'symlink',
+            content: `${SHARED_SKILLS_CONTAINER_BASE}/${skillName}/instructions.md`,
+          });
+        }
       }
     }
   }
