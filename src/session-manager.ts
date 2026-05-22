@@ -33,6 +33,7 @@ import {
   openInboundDb as openInboundDbRaw,
   openOutboundDb as openOutboundDbRaw,
   openOutboundDbRw as openOutboundDbRwRaw,
+  openOutboundDbForRacyWrite as openOutboundDbForRacyWriteRaw,
   upsertSessionRouting,
   insertMessage,
   migrateMessagesInTable,
@@ -421,9 +422,26 @@ export function openOutboundDbRw(agentGroupId: string, sessionId: string): Datab
 }
 
 /**
+ * Open outbound.db for a brief, racy write (host short-circuit, admin
+ * deny-command response). Short busy_timeout — caller must handle SQLite
+ * busy errors as a soft failure (fall back to LLM path).
+ */
+export function openOutboundDbForRacyWrite(agentGroupId: string, sessionId: string): Database.Database {
+  return openOutboundDbForRacyWriteRaw(outboundDbPath(agentGroupId, sessionId));
+}
+
+/**
  * Write a message directly to a session's outbound DB so the host delivery
- * loop picks it up. Used by the command gate to send denial responses
- * without waking a container.
+ * loop picks it up. Used by:
+ *   - the command gate to send denial responses without waking a container
+ *   - the semantic-router short-circuit for fixed-template replies
+ *
+ * Returns `true` on success, `false` on database-busy / write failure
+ * (caller should fall back to the regular routing path). The container
+ * normally owns this DB as sole writer; a short busy_timeout (500ms) keeps
+ * the host's routing thread responsive when the container is busy. WAL
+ * mode is intentionally NOT used (Docker bind-mount + -shm/-wal files are
+ * unreliable across host/container boundaries).
  */
 export function writeOutboundDirect(
   agentGroupId: string,
@@ -435,16 +453,32 @@ export function writeOutboundDirect(
     channelType: string | null;
     threadId: string | null;
     content: string;
+    inReplyTo?: string | null;
   },
-): void {
-  const db = openOutboundDb(agentGroupId, sessionId);
+): boolean {
+  let db: Database.Database | null = null;
   try {
+    db = openOutboundDbForRacyWrite(agentGroupId, sessionId);
     db.prepare(
-      `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 2 FROM messages_out), datetime('now'), ?, ?, ?, ?, ?)`,
-    ).run(message.id, message.kind, message.platformId, message.channelType, message.threadId, message.content);
+      `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content, in_reply_to)
+       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 2 FROM messages_out), datetime('now'), ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      message.id,
+      message.kind,
+      message.platformId,
+      message.channelType,
+      message.threadId,
+      message.content,
+      message.inReplyTo ?? null,
+    );
+    return true;
+  } catch (err) {
+    // Most likely SQLITE_BUSY — container holds an exclusive lock. Caller
+    // falls back to LLM path; the user message still gets a reply, just
+    // not via the short-circuit fast path.
+    return false;
   } finally {
-    db.close();
+    db?.close();
   }
 }
 

@@ -40,6 +40,29 @@ export function openOutboundDbRw(dbPath: string): Database.Database {
   return db;
 }
 
+/**
+ * Open outbound.db for a brief, racy write (host short-circuit, admin
+ * deny-command response). The container holds it open as the sole writer
+ * via `getOutboundDb()` (`busy_timeout=5000`, `journal_mode=DELETE`); we
+ * connect briefly with a SHORT busy_timeout so a stuck container can't
+ * block the routing thread.
+ *
+ * Caller MUST be prepared for SQLITE_BUSY (returned via thrown Error with
+ * message `"database is locked"`) and treat it as a soft failure — fall
+ * back to the regular LLM path. WAL mode is intentionally NOT enabled
+ * because Docker bind-mount visibility for `-shm`/`-wal` files is
+ * unreliable across the host/container boundary (see connection.ts in
+ * container — inbound.db MUST be DELETE for the same reason).
+ */
+export function openOutboundDbForRacyWrite(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = DELETE');
+  // Short timeout so a stuck container doesn't freeze the host's routing
+  // thread. 500ms gives SQLite a few retry chances at typical contention.
+  db.pragma('busy_timeout = 500');
+  return db;
+}
+
 export function upsertSessionRouting(
   db: Database.Database,
   routing: { channel_type: string | null; platform_id: string | null; thread_id: string | null },
