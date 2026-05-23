@@ -436,10 +436,13 @@ frontlane_classification_log_failures_total{reason}      # 审计写失败
 | [docs/isolation-model.md](isolation-model.md) | 4 种 session 隔离模式（shared / per-thread / per-user / per-user-per-thread / agent-shared / root-session） |
 | [docs/enterprise-multi-user.md](enterprise-multi-user.md) | 多人共享 frontdesk 的拓扑、autowire 策略、默认值 |
 | [docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md) | ERP gateway 协议（请求 envelope、HMAC、requesterSource、erp_audit） |
+| [docs/ERP-INTEGRATION-GUIDE.md](ERP-INTEGRATION-GUIDE.md) | ERP 后端开发者教程：怎么实现网关（含示例代码、HMAC、审批、幂等） |
 | [docs/feishu-channel.md](feishu-channel.md) | 飞书接入细节 |
 | [docs/api-details.md](api-details.md) | Channel adapter / inbound / outbound 内容格式 |
 | [docs/agent-runner-details.md](agent-runner-details.md) | 容器侧 poll-loop / formatter / MCP tool 接口 |
 | [docs/build-and-runtime.md](build-and-runtime.md) | Node host + Bun container 双 runtime 的 lockfile / image build |
+| [docs/RUNBOOK.md](RUNBOOK.md) | 运维 / SRE 手册：告警、诊断、故障处置 |
+| [docs/DEVELOPMENT.md](DEVELOPMENT.md) | 开发者上手指南：代码 layout、加新通道 / worker / 工具的 step-by-step |
 
 ---
 

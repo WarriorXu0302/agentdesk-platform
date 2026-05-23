@@ -287,6 +287,9 @@ FEISHU_EVENT_MODE=hybrid
 ## 相关文档
 
 - [docs/PLATFORM.md](docs/PLATFORM.md) — 平台总览 + 文档地图（新人优先看这个）
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) — 运维 / SRE 手册
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 开发者上手指南
+- [docs/ERP-INTEGRATION-GUIDE.md](docs/ERP-INTEGRATION-GUIDE.md) — ERP 后端集成教程
 - [docs/architecture.md](docs/architecture.md)
 - [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md)
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md)
