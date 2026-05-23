@@ -233,9 +233,43 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
     }
   }
 
+  /**
+   * Upload an image to Feishu's image API, returning the `image_key` used to
+   * send the actual `msg_type: "image"` message. Multipart because the Feishu
+   * API expects the raw bytes as a form field — `callApi` only knows
+   * application/json, so this routes around it with raw fetch + FormData.
+   *
+   * Bytes come from `OutboundFile.data` (already in-memory at delivery time,
+   * sourced from the agent's outbox).
+   */
+  async function uploadImage(filename: string, data: Buffer): Promise<string> {
+    const form = new FormData();
+    form.append('image_type', 'message');
+    // Construct a Blob from the buffer; the SDK side accepts either.
+    form.append('image', new Blob([new Uint8Array(data)]), filename);
+
+    const url = `${config.baseUrl}/open-apis/im/v1/images`;
+    const token = await fetchTenantAccessToken();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const text = await response.text();
+    const parsed = text ? (JSON.parse(text) as FeishuApiResponse & { data?: { image_key?: string } }) : null;
+    if (!parsed || parsed.code !== 0 || !parsed.data?.image_key) {
+      throw new Error(`Feishu image upload failed: ${parsed?.msg || `code ${parsed?.code ?? response.status}`}`);
+    }
+    return parsed.data.image_key;
+  }
+
+  function isImageFile(filename: string): boolean {
+    return /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+  }
+
   async function createMessage(
     target: FeishuReceiveTarget,
-    msgType: 'text' | 'interactive',
+    msgType: 'text' | 'interactive' | 'image' | 'file',
     content: string,
     threadId: string | null,
   ): Promise<string | undefined> {
@@ -725,23 +759,50 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         return createMessage(target, 'interactive', JSON.stringify(card), threadId);
       }
 
+      // Split attached files: image extensions get uploaded + sent as
+      // msg_type=image; everything else falls back to the legacy
+      // "Attachments: <filename>" text suffix (still better than dropping).
+      const files = message.files ?? [];
+      const images = files.filter((f) => isImageFile(f.filename));
+      const nonImages: typeof files = files.filter((f) => !isImageFile(f.filename));
+
+      let firstId: string | undefined;
+      for (const img of images) {
+        try {
+          const imageKey = await uploadImage(img.filename, img.data);
+          const imgMsgId = await createMessage(
+            target,
+            'image',
+            JSON.stringify({ image_key: imageKey }),
+            firstId ? null : threadId,
+          );
+          if (!firstId) firstId = imgMsgId;
+        } catch (err) {
+          // Upload failed — degrade to filename suffix in the text branch.
+          log.warn('Feishu image upload failed, falling back to filename in text', {
+            filename: img.filename,
+            err,
+          });
+          nonImages.push(img);
+        }
+      }
+
       const rawText =
         (typeof content.markdown === 'string' ? content.markdown : undefined) ||
         (typeof content.text === 'string' ? content.text : undefined) ||
         '';
-      const text = appendAttachmentSummary(rawText, message.files);
-      if (!text.trim()) return undefined;
+      const text = appendAttachmentSummary(rawText, nonImages);
+      if (!text.trim()) return firstId;
 
       const chunks = splitForLimit(text, DEFAULT_FEISHU_TEXT_LIMIT);
-      let firstId: string | undefined;
       for (let index = 0; index < chunks.length; index += 1) {
         const messageId = await createMessage(
           target,
           'text',
           JSON.stringify({ text: chunks[index] }),
-          index === 0 ? threadId : null,
+          firstId ? null : index === 0 ? threadId : null,
         );
-        if (index === 0) firstId = messageId;
+        if (!firstId) firstId = messageId;
       }
       return firstId;
     },
