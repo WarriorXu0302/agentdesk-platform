@@ -515,15 +515,24 @@ async function deliverToAgent(
       return;
     }
     if (gate.action === 'deny') {
-      writeOutboundDirect(session.agent_group_id, session.id, {
+      const ok = writeOutboundDirect(session.agent_group_id, session.id, {
         id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         kind: 'chat',
         platformId: deliveryAddr.platformId,
         channelType: deliveryAddr.channelType,
         threadId: deliveryAddr.threadId,
         content: JSON.stringify({ text: `Permission denied: ${gate.command} requires admin access.` }),
+        inReplyTo: event.message.id,
       });
-      log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
+      if (!ok) {
+        log.warn('Admin deny response dropped (outbound.db busy)', {
+          command: gate.command,
+          userId,
+          agentGroupId: agent.agent_group_id,
+        });
+      } else {
+        log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
+      }
       return;
     }
   }
