@@ -20,6 +20,22 @@ import type { MessageInRow } from './db/messages-in.js';
 import type { RequestIdentity } from './request-context.js';
 
 /**
+ * System-injected rows (e.g. host-pushed tool failures, kind=chat with
+ * sender='system') must not be picked as the identity trigger — otherwise
+ * they appear as a fake user 'agent:system' and trip the poll-loop's
+ * identity-change guard mid-turn. They carry no real operator identity.
+ */
+function isSystemSenderRow(row: MessageInRow): boolean {
+  if (!row.content) return false;
+  try {
+    const parsed = JSON.parse(row.content) as Record<string, unknown>;
+    return parsed.sender === 'system';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Extract identity for a single inbound row. Exported because batch
  * splitting wants per-row identities, not just the head-of-batch one.
  */
@@ -63,8 +79,14 @@ export function rowIdentity(row: MessageInRow): RequestIdentity {
  * batches' anchor identity against the turn's.
  */
 export function resolveBatchIdentity(batch: MessageInRow[]): RequestIdentity {
-  const trigger = batch.find((m) => m.trigger === 1 && (m.kind === 'chat' || m.kind === 'chat-sdk')) ?? batch[0];
+  const trigger =
+    batch.find(
+      (m) => m.trigger === 1 && (m.kind === 'chat' || m.kind === 'chat-sdk') && !isSystemSenderRow(m),
+    ) ?? batch[0];
   if (!trigger) {
+    return { userId: null, channelType: null, platformId: null, threadId: null, source: 'agent-asserted' };
+  }
+  if (isSystemSenderRow(trigger)) {
     return { userId: null, channelType: null, platformId: null, threadId: null, source: 'agent-asserted' };
   }
   return rowIdentity(trigger);
