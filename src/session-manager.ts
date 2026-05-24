@@ -103,6 +103,11 @@ function isUserScopedSessionMode(
  * `rootSessionId` is an internal a2a lane override. When present, it scopes
  * the resolved session to a stable business/root conversation rather than the
  * target agent group as a whole.
+ *
+ * `sourceDepth` (a2a-only) is the spawn_depth of the session that triggered
+ * this resolve. New sessions are created at `sourceDepth + 1`; existing
+ * sessions are returned unchanged. Channel-entry callers leave this null so
+ * frontdesk-style sessions start at 0.
  */
 export function resolveSession(
   agentGroupId: string,
@@ -111,6 +116,7 @@ export function resolveSession(
   sessionMode: 'shared' | 'per-thread' | 'agent-shared' | 'per-user' | 'per-user-per-thread',
   ownerUserId: string | null = null,
   rootSessionId: string | null = null,
+  sourceDepth: number | null = null,
 ): { session: Session; created: boolean } {
   if (isUserScopedSessionMode(sessionMode) && !ownerUserId) {
     throw new Error(`ownerUserId is required for session_mode=${sessionMode}`);
@@ -159,6 +165,7 @@ export function resolveSession(
     status: 'active',
     container_status: 'stopped',
     last_active: null,
+    spawn_depth: sourceDepth === null ? 0 : sourceDepth + 1,
     created_at: new Date().toISOString(),
   };
 
@@ -171,6 +178,7 @@ export function resolveSession(
     threadId: lookupThreadId,
     ownerUserId: session.owner_user_id,
     rootSessionId: session.root_session_id,
+    spawnDepth: session.spawn_depth,
     sessionMode,
   });
 

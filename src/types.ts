@@ -142,6 +142,19 @@ export interface Session {
    * window starts at archive time, not at last user activity.
    */
   archived_at?: string | null;
+  /**
+   * a2a spawn-chain depth. 0 for channel-entry sessions (frontdesk and
+   * anything wired directly to a messaging group); each agent-to-agent hop
+   * bumps the target by one when the session is first created. agent-route.ts
+   * rejects new edges where `source.spawn_depth >= FRONTLANE_MAX_SPAWN_DEPTH`
+   * (default 2) so a labops→feishu-base→…→X chain can't run away.
+   *
+   * Note: a session's stored depth is its **creation** depth. With root-session
+   * mode the same target session can be reused via a deeper path, so the
+   * `agent_destinations` ACL is still the primary protection — this is a
+   * runtime defense-in-depth that catches misconfigured destinations.
+   */
+  spawn_depth?: number;
   created_at: string;
 }
 

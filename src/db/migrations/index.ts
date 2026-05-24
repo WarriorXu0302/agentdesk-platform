@@ -21,6 +21,7 @@ import { migration021 } from './021-session-archived-status.js';
 import { migration022 } from './022-session-archived-at.js';
 import { migration023 } from './023-classification-log.js';
 import { migration024 } from './024-classification-closing-the-loop.js';
+import { migration025 } from './025-session-spawn-depth.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -53,6 +54,7 @@ const migrations: Migration[] = [
   migration022,
   migration023,
   migration024,
+  migration025,
 ];
 
 export function runMigrations(db: Database.Database): void {
