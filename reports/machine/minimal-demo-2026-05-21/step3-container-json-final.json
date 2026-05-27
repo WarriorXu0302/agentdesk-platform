@@ -1,0 +1,10 @@
+{
+  "provider": "mock",
+  "mcpServers": {},
+  "packages": {
+    "apt": [],
+    "npm": []
+  },
+  "additionalMounts": [],
+  "skills": "all"
+}

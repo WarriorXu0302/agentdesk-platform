@@ -480,7 +480,7 @@ export function writeOutboundDirect(
       message.inReplyTo ?? null,
     );
     return true;
-  } catch (err) {
+  } catch (_err) {
     // Most likely SQLITE_BUSY — container holds an exclusive lock. Caller
     // falls back to LLM path; the user message still gets a reply, just
     // not via the short-circuit fast path.

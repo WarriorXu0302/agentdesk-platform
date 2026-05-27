@@ -478,6 +478,85 @@ docker ps --filter <span class="s">"ancestor=muap-runner"</span> -q | xargs -r d
     <b>定位</b> · 这条最小演示路径是 <b>"baseline 健康自检"</b> 的工具，不是 <b>"产品 demo"</b>。前者验证代码能跑；后者要展示业务价值。两者的取舍清晰且无冲突。
   </div>
 
+  <!-- §9 实测证据 -->
+  <h2 class="section">§9 实测证据 · 2026-05-21 现场跑通</h2>
+
+  <div class="banner ok" style="margin-bottom:16px;">
+    <b>结论</b> · Path A（CLI + mock provider）已在当前基线<strong>实机跑通</strong>。5 步全部 PASS，端到端链路无故障。
+  </div>
+
+  <p style="color:var(--text-dim);">以下命令在 <code>MultiUserAgentPlatform/dxy-dev</code> 分支、commit <code>ff0d18d</code> 基线上逐条执行，未使用任何 API key、飞书凭证或外部网关。</p>
+
+  <table>
+    <thead>
+      <tr><th>Step</th><th>命令</th><th>结果</th><th>关键输出 / 判定</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>pnpm install</code></td>
+        <td><span class="badge ok">PASS</span></td>
+        <td><code>Lockfile is up to date</code> · <code>Already up to date</code> · Done in 724ms</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><code>pnpm container:build</code></td>
+        <td><span class="badge ok">PASS</span></td>
+        <td><code>frontlane-agent-v2-6fa82ab5:latest</code> 构建成功（含 bun + chromium + agent-browser + claude-code）</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><code>pnpm exec tsx scripts/init-cli-agent.ts --display-name "Demo User" --agent-name "Demo" --folder cli-with-demo</code></td>
+        <td><span class="badge ok">PASS</span></td>
+        <td>Agent group <code>ag-1779868765808-x90uj6</code> · Messaging group <code>mg-1779868765809-qn0u4a</code> · wired to CLI channel</td>
+      </tr>
+      <tr>
+        <td>3b</td>
+        <td>编辑 <code>groups/cli-with-demo/container.json</code> 添加 <code>"provider": "mock"</code></td>
+        <td><span class="badge ok">PASS</span></td>
+        <td>锁定 provider 为 mock，避免 OneCLI 401 和 API key 要求</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><code>pnpm dev</code>（后台）+ <code>pnpm chat "hello from minimal demo"</code></td>
+        <td><span class="badge ok">PASS</span></td>
+        <td>
+          CLI 输出：<code>Mock response to: &lt;context timezone="Asia/Shanghai" /&gt;... hello from minimal demo</code><br/>
+          Host 日志：（1）<code>Skipping OneCLI gateway for direct-credential provider ... provider="mock"</code>（2）<code>Spawning container</code>（3）<code>Message routed ... wake=true</code>（4）<code>Message delivered</code>（5）容器正常退出<br/>
+          进程退出码：0
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 style="margin-top:18px; font-size:14px;">关键日志摘要（Step 4）</h3>
+  <pre style="background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; font-size:12px; overflow:auto; color:var(--text-dim);">[16:07:01.288] INFO  Skipping OneCLI gateway for direct-credential provider containerName="frontlane-v2-cli-with-demo-..." provider="mock"
+[16:07:01.288] INFO  Spawning container sessionId="sess-1779868835294-d9ed3l" agentGroup="Demo" containerName="frontlane-v2-cli-with-demo-..."
+[16:07:02.260] INFO  CLI client connected
+[16:07:02.263] INFO  Message routed sessionId="sess-..." agentGroup="ag-..." wake=true created=false agentGroupName="Demo"
+[16:07:03.256] INFO  Message delivered id="msg-..." channelType="cli"
+[16:07:05.266] INFO  CLI client disconnected
+[16:07:05.312] INFO  Shutdown signal received signal="SIGTERM"
+[16:07:05.313] INFO  Circuit breaker reset on clean shutdown</pre>
+
+  <p style="color:var(--text-dim); font-size:13px;">注：本次实测前修复了一个条件判断——mock provider 被错误地要求通过 OneCLI gateway 获取凭证，导致 401 Unauthorized。修复见 <code>src/container-runner.ts:517</code>，将 <code>provider === 'mock'</code> 加入跳过 OneCLI gateway 的条件（与 openai/codex 同级）。</p>
+
+  <h3 style="margin-top:18px; font-size:14px;">证据文件索引</h3>
+  <ul style="font-size:13px; color:var(--text-dim);">
+    <li><code>reports/machine/minimal-demo-2026-05-21/manifest.json</code> — 5 步结果汇总</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step1-pnpm-install.txt</code> — Step 1 原始输出</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step2-container-build.txt</code> — Step 2 原始输出（完整 Docker build log）</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step3-init-agent.txt</code> — Step 3 原始输出</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step3-container-json-diff.patch</code> — container.json 变更 diff</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step3-container-json-final.json</code> — 最终 container.json</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step4-pnpm-dev.log</code> — Step 4 dev server 完整日志</li>
+    <li><code>reports/machine/minimal-demo-2026-05-21/step4-pnpm-chat.txt</code> — Step 4 CLI chat 输出</li>
+  </ul>
+
+  <div class="banner info" style="margin-top:16px;">
+    <b>基线</b> · 实测基线 commit <code>ff0d18d</code>（docs(reports): add minimal end-to-end demo flow report）+ <code>7e25b33</code>（chore(lint): clear baseline 6 errors）+ 本次新增代码修复 <code>src/container-runner.ts</code> mock provider OneCLI 跳过
+  </div>
+
   <footer class="foot">
     <b>相关文档</b>
     <ul>

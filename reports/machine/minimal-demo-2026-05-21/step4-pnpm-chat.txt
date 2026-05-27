@@ -1,0 +1,5 @@
+Mock response to: <context timezone="Asia/Shanghai" />
+<message id="4" from="local-cli" sender="cli" time="May 27, 2026" />
+hello from minimal demo
+
+(abbreviated — full XML context stripped for brevity)
