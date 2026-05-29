@@ -34,6 +34,7 @@
 | `minimal-demo-flow-2026-05-21.html` | 现状盘点 / 操作手册（含 §9 实测证据） | "现在可以做到的最小完整演示流程"：三条候选路径（Path A 离线 mock / Path B 真实 LLM / Path C ERP echo）+ 详细 5 步脚本 + ASCII 数据流图 + 演示覆盖矩阵 + 排错表 + 与生产部署的差距清单 + <strong>§9 实测证据（2026-05-21 现场跑通 5 步全 PASS）</strong> | 关联 commit `ff0d18d` 基线 · 演示路径完全离线，仅依赖 Node 20 + Docker · 含 <code>src/container-runner.ts</code> mock provider OneCLI 跳过修复 |
 | `phase0-recap-2026-05-21.html` | 阶段汇报 / 会议参考 | Phase 0 整段（Phase 0a + Phase 0b/PR-O1）面向开发团队的成果回顾：数字概览 / 迁移路线定位 / 双 frontdesk 拓扑 / observability infra 落地 / 守门 6/6 / manual QA 11/11 / ADR-0001~0010 决策矩阵 / 红线检查 / 最小演示路径 / 5 分钟上手指引 / PR-O2 / O3 启动门槛 | 关联 commit `ff0d18d` 基线 · 含 9 节 + 目录 + 会议一句话叙事 · 自包含 HTML |
 | `architecture-explainer-2026-05-20.html` | 架构解释 | 双 Frontdesk / Lab Desk / ERP Gateway 三个核心概念详解：两种接待风格对比（委托模型 vs 直驱模型）/ Lab Desk 身份标记（X-FrontLane-Source）/ Gateway 5 端点 + 安全模型（身份传递 / HMAC / 审计）/ 全景数据流图 / 常见问题 | Phase 0a 架构背景 |
+| `roadmap-and-dashboard-readiness-2026-05-27.html` | 路线图 / 状态看板 | 当前看板就绪状态（Phoenix/Grafana/Host metrics 各组件能看什么/缺什么）+ 6 阶段路线图（Phase 0 → PR-O2 → PR-O3 → Phase 1 → 2A → 2B）+ 立即可执行 TODO 清单（PR-O2/PR-O3/Phase 1 各 5~10 条）+ 3 项关键决策待拍板 | 基线 2026-05-27 · 飞书+LLM 双通后整理 |
 
 ## 维护规则
 

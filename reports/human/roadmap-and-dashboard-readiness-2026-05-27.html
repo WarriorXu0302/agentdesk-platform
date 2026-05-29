@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MUAP 路线图与看板就绪状态 — 2026-05-27</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --panel-2: #1c232c;
+    --border: #30363d; --border-strong: #586069;
+    --text: #e6edf3; --text-dim: #adbac7; --text-muted: #7d8590;
+    --accent: #58a6ff; --accent-soft: rgba(88,166,255,.12);
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --pending: #8b949e; --inprog: #58a6ff; --done: #3fb950;
+    --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--text); font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .container { max-width:1280px; margin:0 auto; padding:28px 24px 64px; }
+  header.hero { background:linear-gradient(180deg,#1c2530 0%,#0e1117 100%); border:1px solid var(--border); border-radius:12px; padding:28px 32px; }
+  header.hero h1 { margin:0 0 6px; font-size:24px; }
+  header.hero .sub { color:var(--text-dim); font-size:13.5px; }
+  .hero-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-top:18px; }
+  .hero-meta div { border:1px solid var(--border); border-radius:8px; padding:10px 12px; background:var(--panel-2); }
+  .hero-meta .k { color:var(--text-muted); font-size:11.5px; letter-spacing:.4px; text-transform:uppercase; }
+  .hero-meta .v { color:var(--text); font-size:14px; margin-top:4px; font-weight:500; }
+  h2.section { font-size:17px; margin:32px 0 12px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11.5px; font-weight:600; letter-spacing:.3px; border:1px solid var(--border); }
+  .pill.done { background:rgba(63,185,80,.12); color:var(--ok); border-color:rgba(63,185,80,.35); }
+  .pill.inprog { background:rgba(88,166,255,.12); color:var(--inprog); border-color:rgba(88,166,255,.4); }
+  .pill.partial { background:rgba(210,153,34,.13); color:var(--warn); border-color:rgba(210,153,34,.4); }
+  .pill.blocked { background:rgba(248,81,73,.12); color:var(--bad); border-color:rgba(248,81,73,.4); }
+  .pill.ghost { background:transparent; color:var(--text-muted); border-color:var(--border); }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13px; }
+  th,td { border:1px solid var(--border); padding:8px 12px; text-align:left; }
+  th { background:var(--panel-2); font-weight:600; }
+  td { color:var(--text-dim); }
+  td .pill { margin:0; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+  .stat .label { color:var(--text-muted); font-size:11.5px; letter-spacing:.3px; text-transform:uppercase; }
+  .stat .value { color:var(--text); font-size:18px; margin-top:4px; font-weight:600; font-family:var(--mono); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:6px; }
+  .banner { border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin:12px 0; font-size:13px; }
+  .banner.ok { background:rgba(63,185,80,.08); border-color:rgba(63,185,80,.35); color:var(--ok); }
+  .banner.warn { background:rgba(210,153,34,.08); border-color:rgba(210,153,34,.4); color:var(--warn); }
+  .banner.info { background:rgba(88,166,255,.08); border-color:rgba(88,166,255,.35); color:var(--accent); }
+  .roadmap { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+  .card .title { font-size:15px; font-weight:600; margin-bottom:8px; }
+  .card .meta { font-size:12px; color:var(--text-muted); margin-bottom:10px; }
+  .card ul { margin:0; padding-left:18px; font-size:13px; color:var(--text-dim); }
+  .card ul li { margin-bottom:6px; }
+  .card.done-card { border-color:rgba(63,185,80,.4); box-shadow:0 0 0 1px rgba(63,185,80,.12); }
+  .card.inprog-card { border-color:rgba(88,166,255,.45); box-shadow:0 0 0 1px rgba(88,166,255,.10); }
+  .card.blocked-card { border-color:rgba(248,81,73,.4); box-shadow:0 0 0 1px rgba(248,81,73,.12); }
+  .card.pending-card { border-color:var(--border); }
+  .todo-list { list-style:none; padding:0; }
+  .todo-list li { display:flex; align-items:flex-start; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .todo-list li:last-child { border-bottom:none; }
+  .todo-list .check { width:16px; height:16px; border:2px solid var(--border); border-radius:4px; margin-top:1px; flex-shrink:0; }
+  .todo-list .checked { background:var(--ok); border-color:var(--ok); }
+  .todo-list .checked::after { content:"✓"; color:#fff; font-size:11px; display:block; text-align:center; line-height:14px; }
+  .todo-list .text { color:var(--text-dim); }
+  .todo-list .text.done { color:var(--text-muted); text-decoration:line-through; }
+  code { font-family:var(--mono); font-size:.92em; background:var(--panel-2); padding:1px 4px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="hero">
+    <h1>MUAP 路线图与看板就绪状态</h1>
+    <div class="sub">Phase 0 已完整交付 · 当前基线 2026-05-27 · 下一步 PR-O2/O3</div>
+    <div class="hero-meta">
+      <div><div class="k">已完成</div><div class="v">Phase 0a + 0b/PR-O1</div></div>
+      <div><div class="k">飞书通道</div><div class="v">已接入</div></div>
+      <div><div class="k">LLM Provider</div><div class="v">sdk-openai (deepseek-v4-flash)</div></div>
+      <div><div class="k">可观测 Infra</div><div class="v">Phoenix + Grafana UP</div></div>
+      <div><div class="k">Dashboard 状态</div><div class="v" style="color:var(--warn)">占位 · 无真实 trace</div></div>
+      <div><div class="k">测试</div><div class="v">351 / 351 passed</div></div>
+    </div>
+  </header>
+
+  <h2 class="section">§0 看板就绪状态 · 当前能看什么 / 不能看什么</h2>
+
+  <div class="banner ok"><b>已就绪</b> · Phoenix + Grafana 基础设施已运行（PR-O1 交付）</div>
+
+  <table>
+    <thead>
+      <tr><th>组件</th><th>URL</th><th>状态</th><th>能看什么</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Phoenix UI</td>
+        <td><code>http://localhost:6006</code></td>
+        <td><span class="pill done">UP</span></td>
+        <td>Trace 接收端点就绪，但 <b>没有 trace 被发送进来</b>（host 未 instrument）</td>
+      </tr>
+      <tr>
+        <td>Phoenix Prom 指标</td>
+        <td><code>http://localhost:9090/metrics</code></td>
+        <td><span class="pill done">UP</span></td>
+        <td>Phoenix 自身的运行指标（内存、请求量）</td>
+      </tr>
+      <tr>
+        <td>Grafana</td>
+        <td><code>http://localhost:3001</code></td>
+        <td><span class="pill done">UP</span></td>
+        <td>一张占位 dashboard「MUAP Observability Bootstrap」，验证 provisioning 通路；<b>无业务数据</b></td>
+      </tr>
+      <tr>
+        <td>Host /metrics</td>
+        <td><code>http://localhost:3000/metrics</code></td>
+        <td><span class="pill partial">部分</span></td>
+        <td>10 个 Prometheus 指标族（入站、session、路由、容器退出、LLM 错误等），但 <b>未接入 Grafana</b></td>
+      </tr>
+      <tr>
+        <td>Distributed Traces</td>
+        <td>—</td>
+        <td><span class="pill blocked">缺失</span></td>
+        <td>Host 进程未装 OTel SDK → 没有 span 发射</td>
+      </tr>
+      <tr>
+        <td>LLM Usage Traces</td>
+        <td>—</td>
+        <td><span class="pill blocked">缺失</span></td>
+        <td>容器侧未 instrument → prompt/response/token 无 trace</td>
+      </tr>
+      <tr>
+        <td>Session Lifecycle Trace</td>
+        <td>—</td>
+        <td><span class="pill blocked">缺失</span></td>
+        <td>从飞书消息 → router → container spawn → LLM → reply 的完整链路无 trace</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="banner warn"><b>关键 gap</b> · 现在 Grafana 里只有一个「空壳」dashboard。要看真实的端到端 trace（飞书消息 → router → container → LLM → 回复），需要完成 PR-O2（host instrumentation）+ PR-O3（runner instrumentation）。</div>
+
+  <h2 class="section">§1 路线图 · 从当前基线到生产可用</h2>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Phase 0</div><div class="value" style="color:var(--ok)">✓ DONE</div><div class="sub">frontdesk + observability infra</div></div>
+    <div class="stat"><div class="label">PR-O2</div><div class="value" style="color:var(--inprog)">READY</div><div class="sub">host OTel SDK · ~0.4d</div></div>
+    <div class="stat"><div class="label">PR-O3</div><div class="value" style="color:var(--pending)">READY</div><div class="sub">runner spans · ~0.4d</div></div>
+    <div class="stat"><div class="label">Phase 1</div><div class="value" style="color:var(--pending)">PENDING</div><div class="sub">foundation hardening</div></div>
+    <div class="stat"><div class="label">Phase 2A</div><div class="value" style="color:var(--pending)">PENDING</div><div class="sub">ERP backend</div></div>
+    <div class="stat"><div class="label">Phase 2B</div><div class="value" style="color:var(--pending)">PENDING</div><div class="sub">hardware adapters</div></div>
+  </div>
+
+  <div class="roadmap" style="margin-top:20px;">
+
+    <div class="card done-card">
+      <div class="title"><span class="pill done">DONE</span> Phase 0 — 迁移启动期</div>
+      <div class="meta">2026-05-14 → 2026-05-27 · 已关闭</div>
+      <ul>
+        <li><b>Phase 0a</b> · frontdesk-lab 接入、多 frontdesk 拓扑、ADR-0008</li>
+        <li><b>Phase 0b / PR-O1</b> · observability infra（Phoenix + Grafana + provisioning）</li>
+        <li><b>PR-O1 QA</b> · 11/11 manual Docker QA PASS</li>
+        <li><b>最小演示</b> · CLI + mock / CLI + real LLM 双路径跑通</li>
+        <li><b>飞书接入</b> · App credential 配置，hybrid 模式就绪</li>
+      </ul>
+    </div>
+
+    <div class="card inprog-card">
+      <div class="title"><span class="pill inprog">NEXT</span> PR-O2 — Host Instrumentation</div>
+      <div class="meta">~0.4 天 · 前置：ADR-0009 contract · 产出：真实 trace 视图</div>
+      <ul>
+        <li>在 <code>src/index.ts</code> 入口初始化 OTel SDK（@opentelemetry/sdk-node）</li>
+        <li>配置 OTLP exporter → <code>http://localhost:4317</code>（gRPC）</li>
+        <li>给核心链路加手动 span：
+          <ul>
+            <li><code>feishu.receive</code> → <code>router.route</code> → <code>container.spawn</code> → <code>delivery.poll</code> → <code>response.deliver</code></li>
+          </ul>
+        </li>
+        <li>LLM usage span：prompt tokens、completion tokens、latency</li>
+        <li>Session 属性注入：user_id、agent_group、provider、channel</li>
+        <li>Grafana dashboard 接入 Prometheus（host :3000/metrics → Grafana）</li>
+      </ul>
+    </div>
+
+    <div class="card pending-card">
+      <div class="title"><span class="pill blocked">TODO</span> PR-O3 — Runner Instrumentation</div>
+      <div class="meta">~0.4 天 · 前置：PR-O2 完成 · 产出：容器侧 trace</div>
+      <ul>
+        <li>在 <code>container/agent-runner/src/index.ts</code> 初始化轻量 OTel SDK</li>
+        <li>Agent poll-loop span：receive → process → reply</li>
+        <li>LLM call span：provider.request → provider.response（含 retry）</li>
+        <li>MCP tool call span：tool name、latency、success/failure</li>
+        <li>跨进程 trace propagation：host span → container span 同一 trace_id</li>
+      </ul>
+    </div>
+
+    <div class="card pending-card">
+      <div class="title"><span class="pill blocked">TODO</span> Phase 1 — Foundation Hardening</div>
+      <div class="meta">时长未定 · 前置：PR-O2 + PR-O3</div>
+      <ul>
+        <li>Session TTL + 归档（已有代码，需配置化）</li>
+        <li>容器并发上限 + 资源限制验证</li>
+        <li>飞书群聊 per-user 隔离 stress test</li>
+        <li>ERP Gateway 端到端集成测试（mock / real）</li>
+        <li>Prometheus → Grafana 完整 dashboard（非占位）</li>
+        <li>Alerts / SLO baseline（可选）</li>
+      </ul>
+    </div>
+
+    <div class="card blocked-card">
+      <div class="title"><span class="pill blocked">BLOCKED</span> Phase 2A — ERP Backend</div>
+      <div class="meta">硬阻断：ERP backend 未实装</div>
+      <ul>
+        <li>ERP Gateway 5 端点（describe / authorize / execute / memory_get / memory_upsert）</li>
+        <li>用户映射 + 权限系统</li>
+        <li>审批工作流</li>
+      </ul>
+    </div>
+
+    <div class="card blocked-card">
+      <div class="title"><span class="pill blocked">BLOCKED</span> Phase 2B — Hardware Adapters</div>
+      <div class="meta">硬阻断：Phase 0.5 mock 基础设施验收 + Phase 2A</div>
+      <ul>
+        <li>Robot / chassis / pipette / camera 等硬件 MCP tool</li>
+        <li>V1 仿真基础设施 → 真实硬件切换</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <h2 class="section">§2 立即可执行的 TODO 清单</h2>
+
+  <h3 style="font-size:14px; margin-top:18px;">PR-O2 · Host Instrumentation（按优先级）</h3>
+  <ul class="todo-list">
+    <li><div class="check"></div><div class="text"><b>写 ADR-0011</b> · host instrumentation 决策（OTel SDK 选型、span 命名约定、采样策略）</div></li>
+    <li><div class="check"></div><div class="text"><b>安装依赖</b> · <code>@opentelemetry/sdk-node</code> + <code>@opentelemetry/exporter-otlp-grpc</code> + <code>@arizeai/openinference-semantic-conventions</code></div></li>
+    <li><div class="check"></div><div class="text"><b>初始化 OTel SDK</b> · 在 <code>src/index.ts</code> 顶部 <code>initObservability()</code>，配置 OTLP exporter → localhost:4317</div></li>
+    <li><div class="check"></div><div class="text"><b>飞书通道 span</b> · <code>feishu.receive_message</code>（含 user_id、chat_id、msg_type 属性）</div></li>
+    <li><div class="check"></div><div class="text"><b>Router span</b> · <code>router.route_inbound</code>（含 agent_group、session_id、provider）</div></li>
+    <li><div class="check"></div><div class="text"><b>Container spawn span</b> · <code>container.spawn</code>（含 image_tag、startup_ms）</div></li>
+    <li><div class="check"></div><div class="text"><b>Delivery span</b> · <code>delivery.poll_loop</code>（含 turn_count、duration_ms）</div></li>
+    <li><div class="check"></div><div class="text"><b>LLM usage span</b> · <code>llm.completion</code>（含 model、input_tokens、output_tokens、latency_ms）</div></li>
+    <li><div class="check"></div><div class="text"><b>Prometheus → Grafana</b> · 在 Grafana provisioning 中新增 Prometheus datasource（host :3000/metrics），替换占位 dashboard</div></li>
+    <li><div class="check"></div><div class="text"><b>验证</b> · <code>pnpm dev</code> → chat → Phoenix UI 能看到完整 trace 链路</div></li>
+  </ul>
+
+  <h3 style="font-size:14px; margin-top:18px;">PR-O3 · Runner Instrumentation（PR-O2 完成后启动）</h3>
+  <ul class="todo-list">
+    <li><div class="check"></div><div class="text"><b>容器侧 OTel SDK</b> · 轻量初始化（只配 OTLP exporter，不采 host 指标）</div></li>
+    <li><div class="check"></div><div class="text"><b>Agent 生命周期 span</b> · <code>agent.run</code> → <code>agent.turn</code> → <code>agent.reply</code></div></li>
+    <li><div class="check"></div><div class="text"><b>LLM provider span</b> · <code>provider.request</code>（含 model、transport、retry_count）</div></li>
+    <li><div class="check"></div><div class="text"><b>MCP tool span</b> · <code>mcp.tool_call</code>（含 tool_name、server_name、latency、is_error）</div></li>
+    <li><div class="check"></div><div class="text"><b>Trace propagation</b> · 通过 SQLite session DB 或 env 传递 trace_id / span_id</div></li>
+    <li><div class="check"></div><div class="text"><b>验证</b> · Phoenix UI 显示 host + container 合并的完整 trace</div></li>
+  </ul>
+
+  <h3 style="font-size:14px; margin-top:18px;">Phase 1 · Foundation（可并行准备）</h3>
+  <ul class="todo-list">
+    <li><div class="check"></div><div class="text"><b>Session TTL 配置化</b> · <code>FRONTLANE_SESSION_TTL_DAYS</code> + 归档 cron</div></li>
+    <li><div class="check"></div><div class="text"><b>容器资源限制验证</b> · <code>MAX_CONCURRENT_CONTAINERS</code> + <code>FRONTLANE_IDLE_EXIT_MS</code> 压测</div></li>
+    <li><div class="check"></div><div class="text"><b>飞书群聊 stress test</b> · 10 人并发 @机器人，验证 per-user 隔离</div></li>
+    <li><div class="check"></div><div class="text"><b>ERP mock 集成</b> · 用 mock HTTP server 验证 5 端点契约</div></li>
+  </ul>
+
+  <h2 class="section">§3 关键决策待你拍板</h2>
+
+  <table>
+    <thead>
+      <tr><th>决策</th><th>选项</th><th>影响</th><th>建议</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>是否立即启动 PR-O2？</td>
+        <td>A) 立即<br/>B) 先完善飞书功能（reaction、附件）<br/>C) 先接 ERP mock</td>
+        <td>A → 3 天后有 trace 视图<br/>B → 用户体验更好但 infra 不变<br/>C → 验证业务链路但无 trace</td>
+        <td><b>A</b> · PR-O2 是 dashboard「从空壳到可用」的关键，且工作量可控（~0.4d）</td>
+      </tr>
+      <tr>
+        <td>采样策略</td>
+        <td>A) 100% 采样（开发）<br/>B) 概率采样 10%（生产）</td>
+        <td>成本 vs 完整性</td>
+        <td><b>A</b> · 当前阶段以调试为主，100% 采样；生产切换时再加配置</td>
+      </tr>
+      <tr>
+        <td>是否保留 sdk-openai 长期？</td>
+        <td>A) 保留（简洁）<br/>B) 回归 openai 原生 provider（功能全）</td>
+        <td>A → 代码少但缺 continuation / 复杂 retry<br/>B → 功能全但代码量大</td>
+        <td><b>并行运行</b> · 保留 sdk-openai 做默认，原生 openai 做 fallback；ADRs 记录选型</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="banner info" style="margin-top:16px;">
+    <b>下一步行动</b> · 拍板 §3 决策 #1（是否启动 PR-O2）后，我可以立即开始：写 ADR-0011 → 安装 OTel SDK → 给核心链路加 span → 验证 Phoenix trace 视图。
+  </div>
+
+  <footer style="margin-top:32px; color:var(--text-muted); font-size:12px; border-top:1px solid var(--border); padding-top:12px;">
+    报告生成时间：2026-05-27 · 基线 commit：待 PR-O2 启动后更新 · 工作目录：MultiUserAgentPlatform/dxy-dev
+  </footer>
+
+</div>
+</body>
+</html>
