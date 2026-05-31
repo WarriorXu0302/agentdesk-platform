@@ -1,0 +1,13 @@
+ trace_rowid |           name           |     span_id      |    parent_id     |         start_time         
+-------------+--------------------------+------------------+------------------+----------------------------
+          11 | channel.cli.receive      | f26353a87bc164fd |                  | 2026-05-31 06:05:23.965+00
+          12 | router.route             | d49c892544cf2d13 |                  | 2026-05-31 06:05:23.965+00
+          12 | router.deliver_to_agent  | 44ce57852c2cb898 | d49c892544cf2d13 | 2026-05-31 06:05:23.966+00
+          12 | container.spawn          | eed070f3b26a86ac | 9dd6adea0afd7b76 | 2026-05-31 06:05:23.968+00
+          12 | container.wake           | 9dd6adea0afd7b76 | 44ce57852c2cb898 | 2026-05-31 06:05:23.968+00
+          12 | delivery.message.deliver | b4664b6da655ed3c | 8ea811a48c51ef61 | 2026-05-31 06:05:28.113+00
+          12 | delivery.session.drain   | 8ea811a48c51ef61 | 44ce57852c2cb898 | 2026-05-31 06:05:28.113+00
+          12 | delivery.channel.send    | bee5eb5961cc62f2 | b4664b6da655ed3c | 2026-05-31 06:05:28.114+00
+          12 | delivery.message.deliver | 757a8f54d6000f85 | 8ea811a48c51ef61 | 2026-05-31 06:05:28.118+00
+(9 rows)
+

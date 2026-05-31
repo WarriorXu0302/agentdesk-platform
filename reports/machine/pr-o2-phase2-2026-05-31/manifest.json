@@ -1,0 +1,59 @@
+{
+  "phase": "PR-O2 phase 2 - Wave A runtime span migration",
+  "plan": ".sisyphus/plans/observability-pr-o2-phase2.md",
+  "schema_authority": "docs/observability-span-schema.md (v1.0)",
+  "adr": "docs/decisions/ADR-0014-observability-span-schema.md",
+  "captured_at": "2026-05-31T06:11:15Z",
+  "git": {
+    "branch": "dxy-dev",
+    "head_at_capture": "75b44a45166c72f41bd7192d8c427e9795b39b1b",
+    "commits_landed_during_wave_a": [
+      "e2cbd01 build(obs): add openinference packages",
+      "d103c7e feat(obs): add openinference helper primitives",
+      "75b44a4 feat(obs): detach pre-session receive spans"
+    ]
+  },
+  "verification_commands": [
+    "pnpm typecheck",
+    "pnpm test",
+    "pnpm obs:reset",
+    "pnpm obs:up",
+    "pnpm dev > /tmp/muap-host.log 2>&1 &",
+    "pnpm chat \"hello PR-O2 phase 2 verify\""
+  ],
+  "test_baseline": "38 files / 354 tests",
+  "test_after_wave_a": "39 files / 361 tests",
+  "phoenix_endpoint": "http://localhost:6006",
+  "phoenix_backing_db_query_method": "docker exec ... psql -d phoenix -c \"SELECT name, attributes FROM spans ...\"",
+  "evidence_files": {
+    "task_a1_a14": "a1-*.txt through a14-*.txt (per-task verification)",
+    "a15_pre_run": "pre-typecheck.txt, pre-test.txt",
+    "a15_phoenix_setup": "a15-obs-reset.txt, a15-obs-up.txt, a15-phoenix-tables.txt, a15-spans-schema.txt",
+    "a15_runtime": "a15-host-pid.txt, a15-chat.txt",
+    "a15_phoenix_evidence": "a15-span-counts.txt, a15-span-attributes.txt, a15-spans-schema.txt, a15-recent-target-spans.txt, a15-trace-id-map.txt, a15-delivery-session-drain-all.txt, a15-latest-traces.txt",
+    "a15_phoenix_ui": "a15-phoenix-projects-snapshot.md, a15-phoenix-project-detail-snapshot.md, a15-phoenix-sessions-snapshot.md, a15-phoenix-sessions.png, a15-phoenix-session-detail-snapshot.md, a15-phoenix-session-detail.png",
+    "a15_test_run": "a15-test.txt, a15-typecheck.txt"
+  },
+  "schema_compliance_summary": {
+    "spans_observed_in_run": [
+      "channel.cli.receive",
+      "router.route",
+      "router.deliver_to_agent",
+      "container.spawn",
+      "container.wake",
+      "delivery.message.deliver",
+      "delivery.session.drain",
+      "delivery.channel.send"
+    ],
+    "all_carry_openinference_span_kind": true,
+    "router_container_wake_removed": true,
+    "feishu_event_received_renamed": "channel.feishu.receive (not exercised in CLI test)",
+    "cli_event_received_renamed": "channel.cli.receive (verified)",
+    "msg_kind_renamed_to_message_kind": true,
+    "router_deliver_to_agent_root_attrs_complete": true,
+    "delivery_channel_send_output_attrs_present": true,
+    "container_spawn_provider_real_value": "sdk-openai (no empty string)",
+    "delivery_session_drain_guard_active": "5 spans observed only when undelivered>=1",
+    "pre_session_root_separation": "channel.cli.receive is in a different trace (trace_rowid=11) from router.deliver_to_agent and below (trace_rowid=12)"
+  }
+}

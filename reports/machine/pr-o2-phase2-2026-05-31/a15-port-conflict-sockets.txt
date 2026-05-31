@@ -1,0 +1,7 @@
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    39801 desjajja   12u  unix 0x828570bd346fe69a      0t0      ->0xf1cd35fba6882ead
+node    39801 desjajja   17u  unix 0x8cefa12413d2e223      0t0      ->0x2e0c7a3458a301c9
+node    39801 desjajja   21u  unix 0x6f0da9186678f1ba      0t0      ->0x5ff69954f06c68e7
+node    39801 desjajja   22u  unix 0xd9ce49ca2fb9bb47      0t0      ->0xf790cce4c1858f53
+node    39801 desjajja   29u  unix 0x8aa7b5d7abab9c4c      0t0      /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/data/cli.sock
+node    39801 desjajja   32u  unix 0x87fdbb1c46b3ec8c      0t0      ->0x5e0c166b1f3df6a

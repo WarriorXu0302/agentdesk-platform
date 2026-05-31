@@ -1,0 +1,12 @@
+           name           | count 
+--------------------------+-------
+ channel.cli.receive      |     1
+ container.spawn          |     1
+ container.wake           |     1
+ delivery.channel.send    |     1
+ delivery.message.deliver |     2
+ delivery.session.drain   |     5
+ router.deliver_to_agent  |     1
+ router.route             |     1
+(8 rows)
+

@@ -1,0 +1,25 @@
+
+> frontlane-agent-platform@2.0.44 dev /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+> tsx src/index.ts
+
+[14:05:08.529] [33mWARN[39m [36mFeishu adapter starting without webhook callbacks because FEISHU_ENCRYPT_KEY is missing[39m [35meventMode[39m="hybrid"
+[14:05:08.530] [32mINFO[39m [36mFrontLane Agent Platform starting[39m
+[14:05:08.534] [32mINFO[39m [36mObservability SDK started[39m
+[14:05:08.544] [32mINFO[39m [36mCentral DB initialized[39m [35mpath[39m="/Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/data/v2.db"
+[14:05:08.544] [32mINFO[39m [36mCentral DB ready[39m [35mpath[39m="/Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/data/v2.db"
+[14:05:09.060] [32mINFO[39m [36mCLI channel listening[39m [35msock[39m="/Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/data/cli.sock"
+[14:05:09.060] [32mINFO[39m [36mChannel adapter started[39m [35mchannel[39m="cli" [35mtype[39m="cli"
+[14:05:09.079] [32mINFO[39m [36mFeishu adapter initialized[39m [35meventMode[39m="hybrid" [35mwebhookEnabled[39m=false [35mwebhookPath[39m="/webhook/feishu" [35mlongConnectionEnabled[39m=true [35mbotOpenId[39m=null
+[14:05:09.079] [32mINFO[39m [36mChannel adapter started[39m [35mchannel[39m="feishu" [35mtype[39m="feishu"
+[14:05:09.080] [32mINFO[39m [36mDelivery polls started[39m
+[14:05:09.083] [32mINFO[39m [36mHost sweep started[39m
+[14:05:09.083] [32mINFO[39m [36mFrontLane Agent Platform running[39m
+[14:05:09.087] [32mINFO[39m [36mOneCLI approval handler started[39m
+[14:05:09.089] [32mINFO[39m [36mWebhook server started[39m [35mport[39m=3000 [35madapters[39m=[]
+[14:05:09.555] [32mINFO[39m [36mFeishu long-connection ready[39m
+[14:05:23.965] [32mINFO[39m [36mCLI client connected[39m [35mtraceId[39m=057023193862368de62cd7b65ff20f03 [35mspanId[39m=f26353a87bc164fd
+[14:05:23.968] [32mINFO[39m [36mMessage routed[39m [35msessionId[39m="sess-1779868835294-d9ed3l" [35magentGroup[39m="ag-1779868765808-x90uj6" [35mengage_mode[39m="pattern" [35mkind[39m="chat" [35muserId[39m="cli:local" [35mwake[39m=true [35mcreated[39m=false [35magentGroupName[39m="Demo" [35mtraceId[39m=5bdbed9764b4bcf777369890faed35d2 [35mspanId[39m=44ce57852c2cb898
+[14:05:23.970] [32mINFO[39m [36mSkipping OneCLI gateway for direct-credential provider[39m [35mcontainerName[39m="frontlane-v2-cli-with-demo-1780207523970" [35mprovider[39m="sdk-openai" [35mtraceId[39m=5bdbed9764b4bcf777369890faed35d2 [35mspanId[39m=eed070f3b26a86ac
+[14:05:23.970] [32mINFO[39m [36mSpawning container[39m [35msessionId[39m="sess-1779868835294-d9ed3l" [35magentGroup[39m="Demo" [35mcontainerName[39m="frontlane-v2-cli-with-demo-1780207523970" [35mtraceId[39m=5bdbed9764b4bcf777369890faed35d2 [35mspanId[39m=eed070f3b26a86ac
+[14:05:28.115] [32mINFO[39m [36mMessage delivered[39m [35mid[39m="msg-1780207527140-cstmlv" [35mchannelType[39m="cli" [35mplatformId[39m="local" [35mplatformMsgId[39m=undefined [35mfileCount[39m=undefined [35mtraceId[39m=5bdbed9764b4bcf777369890faed35d2 [35mspanId[39m=b4664b6da655ed3c
+[14:05:30.126] [32mINFO[39m [36mCLI client disconnected[39m

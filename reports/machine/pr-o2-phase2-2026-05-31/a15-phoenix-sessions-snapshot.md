@@ -1,0 +1,156 @@
+- generic [ref=e5]:
+  - navigation [ref=e6]:
+    - 'link "version: 8.0.0" [ref=e7] [cursor=pointer]':
+      - /url: /
+      - img [ref=e8]
+    - generic [ref=e33]:
+      - list [ref=e34]:
+        - listitem [ref=e35]:
+          - link "Projects" [ref=e36] [cursor=pointer]:
+            - /url: /projects
+            - img [ref=e38]
+            - generic [ref=e46]: Projects
+        - listitem [ref=e47]:
+          - link "Datasets" [ref=e48] [cursor=pointer]:
+            - /url: /datasets
+            - img [ref=e50]
+            - generic [ref=e54]: Datasets
+        - listitem [ref=e55]:
+          - link "Playground" [ref=e56] [cursor=pointer]:
+            - /url: /playground
+            - img [ref=e58]
+            - generic [ref=e64]: Playground
+        - listitem [ref=e65]:
+          - link "Prompts" [ref=e66] [cursor=pointer]:
+            - /url: /prompts
+            - img [ref=e68]
+            - generic [ref=e76]: Prompts
+        - listitem [ref=e77]:
+          - link "APIs" [ref=e78] [cursor=pointer]:
+            - /url: /apis
+            - img [ref=e80]
+            - generic [ref=e86]: APIs
+      - list [ref=e87]:
+        - listitem [ref=e88]:
+          - link "Settings" [ref=e89] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e91]
+            - generic [ref=e97]: Settings
+        - listitem [ref=e98]:
+          - link "Documentation" [ref=e99] [cursor=pointer]:
+            - /url: https://docs.arize.com/phoenix
+            - img [ref=e101]
+            - generic [ref=e106]: Documentation
+        - listitem [ref=e107]:
+          - link "Support" [ref=e108] [cursor=pointer]:
+            - /url: /support
+            - img [ref=e110]
+            - generic [ref=e118]: Support
+        - listitem [ref=e119]:
+          - button "Dark" [ref=e120]:
+            - img [ref=e122]
+            - generic [ref=e127]: Dark
+  - generic [ref=e128]:
+    - navigation [ref=e129]:
+      - navigation "Breadcrumbs" [ref=e130]:
+        - list [ref=e131]:
+          - listitem [ref=e132]:
+            - link "projects" [ref=e203]
+            - img [ref=e205]
+          - listitem [ref=e210]:
+            - link "default" [disabled] [ref=e211]
+    - main [ref=e212]:
+      - generic [ref=e214]:
+        - generic [ref=e216]:
+          - generic [ref=e217]:
+            - heading "Total Traces" [level=3] [ref=e218]
+            - generic [ref=e219]: "12"
+          - generic [ref=e220]:
+            - heading "Total Tokens" [level=3] [ref=e221]
+            - generic [ref=e222]: "0"
+          - generic [ref=e223]:
+            - heading "Latency P50" [level=3] [ref=e224]
+            - generic [ref=e225]:
+              - img [ref=e228]
+              - generic [ref=e234]: 4.75ms
+          - generic [ref=e235]:
+            - heading "Latency P99" [level=3] [ref=e236]
+            - generic [ref=e237]:
+              - img [ref=e240]
+              - generic [ref=e246]: 3.88s
+        - generic [ref=e248]:
+          - generic [ref=e249]:
+            - switch "Stream" [checked] [ref=e250] [cursor=pointer]
+            - generic [ref=e252]: Stream
+          - button "Last 7 Days" [ref=e253] [cursor=pointer]:
+            - img [ref=e255]
+            - text: Last 7 Days
+      - generic [ref=e262]:
+        - tablist [ref=e263]:
+          - tab "Traces" [ref=e264] [cursor=pointer]:
+            - generic [ref=e265]: Traces
+          - tab "Spans" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]: Spans
+          - tab "Sessions" [active] [ref=e268] [cursor=pointer]:
+            - generic [ref=e269]: Sessions
+        - tabpanel [ref=e920]:
+          - generic [ref=e921]:
+            - generic [ref=e924]:
+              - img [ref=e928]
+              - textbox [ref=e936]:
+                - generic [ref=e937]:
+                  - generic "placeholder Search messages": Search messages
+            - table [ref=e939]:
+              - rowgroup [ref=e940]:
+                - row "session id first input last output start time end time p50 latency p99 latency total tokens total traces" [ref=e941]:
+                  - columnheader "session id" [ref=e942]:
+                    - generic [ref=e943]: session id
+                  - columnheader "first input" [ref=e944]:
+                    - generic [ref=e945]: first input
+                  - columnheader "last output" [ref=e946]:
+                    - generic [ref=e947]: last output
+                  - columnheader "start time" [ref=e948]:
+                    - generic [ref=e949] [cursor=pointer]: start time
+                  - columnheader "end time" [ref=e950]:
+                    - generic [ref=e951] [cursor=pointer]: end time
+                  - columnheader "p50 latency" [ref=e952]:
+                    - generic [ref=e953]: p50 latency
+                  - columnheader "p99 latency" [ref=e954]:
+                    - generic [ref=e955]: p99 latency
+                  - columnheader "total tokens" [ref=e956]:
+                    - generic [ref=e957] [cursor=pointer]: total tokens
+                  - columnheader "total traces" [ref=e958]:
+                    - generic [ref=e959] [cursor=pointer]: total traces
+              - rowgroup [ref=e960]:
+                - row "sess-1779902863057-eykjju -- -- 5/31/2026, 02:03 PM 5/31/2026, 02:04 PM 1.05ms 1.29ms 0 2" [ref=e961] [cursor=pointer]:
+                  - cell "sess-1779902863057-eykjju" [ref=e962]
+                  - cell "--" [ref=e963]
+                  - cell "--" [ref=e964]
+                  - cell "5/31/2026, 02:03 PM" [ref=e965]:
+                    - time [ref=e966]: 5/31/2026, 02:03 PM
+                  - cell "5/31/2026, 02:04 PM" [ref=e967]:
+                    - time [ref=e968]: 5/31/2026, 02:04 PM
+                  - cell "1.05ms" [ref=e969]:
+                    - generic [ref=e970]
+                  - cell "1.29ms" [ref=e980]:
+                    - generic [ref=e981]
+                  - cell "0" [ref=e991]:
+                    - generic [ref=e993]
+                  - cell "2" [ref=e1000]:
+                    - generic "2" [ref=e1001]
+                - row "sess-1779868835294-d9ed3l -- -- 5/31/2026, 02:03 PM 5/31/2026, 02:05 PM 2.20ms 4.07s 0 3" [ref=e1002] [cursor=pointer]:
+                  - cell "sess-1779868835294-d9ed3l" [ref=e1003]
+                  - cell "--" [ref=e1004]
+                  - cell "--" [ref=e1005]
+                  - cell "5/31/2026, 02:03 PM" [ref=e1006]:
+                    - time [ref=e1007]: 5/31/2026, 02:03 PM
+                  - cell "5/31/2026, 02:05 PM" [ref=e1008]:
+                    - time [ref=e1009]: 5/31/2026, 02:05 PM
+                  - cell "2.20ms" [ref=e1010]:
+                    - generic [ref=e1011]
+                  - cell "4.07s" [ref=e1021]:
+                    - generic [ref=e1022]
+                  - cell "0" [ref=e1032]:
+                    - generic [ref=e1034]
+                  - cell "3" [ref=e1041]:
+                    - generic "3" [ref=e1042]

@@ -1,0 +1,121 @@
+- generic [ref=e5]:
+  - navigation [ref=e6]:
+    - 'link "version: 8.0.0" [ref=e7] [cursor=pointer]':
+      - /url: /
+      - img [ref=e8]
+    - generic [ref=e33]:
+      - list [ref=e34]:
+        - listitem [ref=e35]:
+          - link "Projects" [ref=e36] [cursor=pointer]:
+            - /url: /projects
+            - img [ref=e38]
+            - generic [ref=e46]: Projects
+        - listitem [ref=e47]:
+          - link "Datasets" [ref=e48] [cursor=pointer]:
+            - /url: /datasets
+            - img [ref=e50]
+            - generic [ref=e54]: Datasets
+        - listitem [ref=e55]:
+          - link "Playground" [ref=e56] [cursor=pointer]:
+            - /url: /playground
+            - img [ref=e58]
+            - generic [ref=e64]: Playground
+        - listitem [ref=e65]:
+          - link "Prompts" [ref=e66] [cursor=pointer]:
+            - /url: /prompts
+            - img [ref=e68]
+            - generic [ref=e76]: Prompts
+        - listitem [ref=e77]:
+          - link "APIs" [ref=e78] [cursor=pointer]:
+            - /url: /apis
+            - img [ref=e80]
+            - generic [ref=e86]: APIs
+      - list [ref=e87]:
+        - listitem [ref=e88]:
+          - link "Settings" [ref=e89] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e91]
+            - generic [ref=e97]: Settings
+        - listitem [ref=e98]:
+          - link "Documentation" [ref=e99] [cursor=pointer]:
+            - /url: https://docs.arize.com/phoenix
+            - img [ref=e101]
+            - generic [ref=e106]: Documentation
+        - listitem [ref=e107]:
+          - link "Support" [ref=e108] [cursor=pointer]:
+            - /url: /support
+            - img [ref=e110]
+            - generic [ref=e118]: Support
+        - listitem [ref=e119]:
+          - button "Dark" [ref=e120]:
+            - img [ref=e122]
+            - generic [ref=e127]: Dark
+  - generic [ref=e128]:
+    - navigation [ref=e129]:
+      - navigation "Breadcrumbs" [ref=e130]:
+        - list [ref=e131]:
+          - listitem [ref=e132]:
+            - link "projects" [ref=e203]
+            - img [ref=e205]
+          - listitem [ref=e210]:
+            - link "default" [disabled] [ref=e211]
+    - main [ref=e212]:
+      - generic [ref=e214]:
+        - generic [ref=e216]:
+          - generic [ref=e217]:
+            - heading "Total Traces" [level=3] [ref=e218]
+            - generic [ref=e219]: "12"
+          - generic [ref=e220]:
+            - heading "Total Tokens" [level=3] [ref=e221]
+            - generic [ref=e222]: "0"
+          - generic [ref=e223]:
+            - heading "Latency P50" [level=3] [ref=e224]
+            - generic [ref=e225]:
+              - img [ref=e228]
+              - generic [ref=e234]: 4.75ms
+          - generic [ref=e235]:
+            - heading "Latency P99" [level=3] [ref=e236]
+            - generic [ref=e237]:
+              - img [ref=e240]
+              - generic [ref=e246]: 3.88s
+        - generic [ref=e248]:
+          - generic [ref=e249]:
+            - switch "Stream" [checked] [ref=e250] [cursor=pointer]
+            - generic [ref=e252]: Stream
+          - button "Last 7 Days" [ref=e253] [cursor=pointer]:
+            - img [ref=e255]
+            - text: Last 7 Days
+      - generic [ref=e262]:
+        - tablist [ref=e263]:
+          - tab "Traces" [ref=e264] [cursor=pointer]:
+            - generic [ref=e265]: Traces
+          - tab "Spans" [ref=e266] [cursor=pointer]:
+            - generic [ref=e267]: Spans
+          - tab "Sessions" [ref=e268] [cursor=pointer]:
+            - generic [ref=e269]: Sessions
+        - tabpanel [ref=e271]:
+          - generic [ref=e272]:
+            - generic [ref=e274]:
+              - generic [ref=e276]:
+                - img [ref=e280]
+                - textbox [ref=e288]
+                - button [ref=e291]
+              - button "Columns" [ref=e299] [cursor=pointer]:
+                - generic [ref=e301]
+                - img [ref=e306]
+            - table [ref=e312]:
+              - rowgroup [ref=e313]:
+                - row "Expand all rows kind name input output feedback start time latency total tokens status" [ref=e314]
+              - rowgroup [ref=e356]:
+                - row "Expand row chain router.route -- -- -- 5/31/2026, 02:05 PM 6.76ms 0 OK" [ref=e357] [cursor=pointer]
+                - row "chain channel.cli.receive -- -- -- 5/31/2026, 02:05 PM 3.56ms 0 OK" [ref=e407] [cursor=pointer]
+                - row "Expand row unknown GET -- -- -- 5/31/2026, 02:05 PM 0.26s 0 UNSET" [ref=e450] [cursor=pointer]
+                - row "unknown GET -- -- -- 5/31/2026, 02:05 PM 1.70s 0 ERROR" [ref=e503] [cursor=pointer]
+                - row "Expand row unknown tls.connect -- -- -- 5/31/2026, 02:05 PM 0.89s 0 UNSET" [ref=e550] [cursor=pointer]
+                - row "unknown dns.lookup -- -- -- 5/31/2026, 02:05 PM 2.98ms 0 UNSET" [ref=e603] [cursor=pointer]
+                - row "unknown dns.lookup -- -- -- 5/31/2026, 02:05 PM 5.93ms 0 UNSET" [ref=e649] [cursor=pointer]
+                - row "Expand row unknown POST -- -- -- 5/31/2026, 02:05 PM 0.23s 0 UNSET" [ref=e695] [cursor=pointer]
+                - row "unknown delivery.session.drain -- -- -- 5/31/2026, 02:04 PM 1.27ms 0 OK" [ref=e748] [cursor=pointer]
+                - row "unknown delivery.session.drain -- -- -- 5/31/2026, 02:04 PM 2.25ms 0 OK" [ref=e791] [cursor=pointer]
+                - row "unknown delivery.session.drain -- -- -- 5/31/2026, 02:03 PM 0.82ms 0 OK" [ref=e834] [cursor=pointer]
+                - row "unknown delivery.session.drain -- -- -- 5/31/2026, 02:03 PM 1.71ms 0 OK" [ref=e877] [cursor=pointer]

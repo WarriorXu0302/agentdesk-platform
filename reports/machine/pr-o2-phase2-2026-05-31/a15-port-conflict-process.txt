@@ -1,0 +1,1 @@
+39801 39795 01-16:45:48 /opt/homebrew/Cellar/node/25.6.1_1/bin/node --require /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/preflight.cjs --import file:///Users/desjajja/Dev/realityloop/MultiUserAgentPlatform/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/loader.mjs src/index.ts

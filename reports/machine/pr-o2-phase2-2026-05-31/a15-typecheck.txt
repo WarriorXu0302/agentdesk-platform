@@ -1,0 +1,4 @@
+
+> frontlane-agent-platform@2.0.44 typecheck /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+> tsc --noEmit
+
