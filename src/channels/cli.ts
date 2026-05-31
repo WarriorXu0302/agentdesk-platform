@@ -39,6 +39,7 @@ import path from 'path';
 
 import { DATA_DIR } from '../config.js';
 import { log } from '../log.js';
+import { chainAttrs, runInDetachedRoot } from '../observability/openinference.js';
 import { withSpan } from '../observability/with-span.js';
 import type { ChannelAdapter, ChannelSetup, DeliveryAddress, InboundEvent, OutboundMessage } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -180,71 +181,73 @@ function createAdapter(): ChannelAdapter {
   }
 
   async function handleLine(line: string, config: ChannelSetup, claimChatSlot: () => void): Promise<void> {
-    return withSpan('cli.event.received', { 'channel.type': 'cli' }, async () => {
-      let payload: {
-        text?: unknown;
-        to?: unknown;
-        reply_to?: unknown;
-        sender?: unknown;
-        senderId?: unknown;
-      };
-      try {
-        payload = JSON.parse(line);
-      } catch {
-        log.warn('CLI: ignoring non-JSON line from client', { line });
-        return;
-      }
-      if (typeof payload.text !== 'string' || payload.text.length === 0) return;
+    return runInDetachedRoot(() =>
+      withSpan('channel.cli.receive', chainAttrs({ 'channel.type': 'cli' }), async () => {
+        let payload: {
+          text?: unknown;
+          to?: unknown;
+          reply_to?: unknown;
+          sender?: unknown;
+          senderId?: unknown;
+        };
+        try {
+          payload = JSON.parse(line);
+        } catch {
+          log.warn('CLI: ignoring non-JSON line from client', { line });
+          return;
+        }
+        if (typeof payload.text !== 'string' || payload.text.length === 0) return;
 
-      const to = parseAddress(payload.to);
-      const replyTo = parseAddress(payload.reply_to);
+        const to = parseAddress(payload.to);
+        const replyTo = parseAddress(payload.reply_to);
 
-      if (to) {
-        // Routed message — admin transport. Build a full InboundEvent targeting
-        // `to`'s channel/platform, and let `reply_to` (if any) redirect replies.
-        // Does NOT claim the chat slot, so an active terminal chat isn't evicted.
-        const event: InboundEvent = {
-          channelType: to.channelType,
-          platformId: to.platformId,
-          threadId: to.threadId,
-          message: {
+        if (to) {
+          // Routed message — admin transport. Build a full InboundEvent targeting
+          // `to`'s channel/platform, and let `reply_to` (if any) redirect replies.
+          // Does NOT claim the chat slot, so an active terminal chat isn't evicted.
+          const event: InboundEvent = {
+            channelType: to.channelType,
+            platformId: to.platformId,
+            threadId: to.threadId,
+            message: {
+              id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              kind: 'chat',
+              timestamp: new Date().toISOString(),
+              content: JSON.stringify({
+                text: payload.text,
+                sender: typeof payload.sender === 'string' ? payload.sender : 'cli',
+                senderId: typeof payload.senderId === 'string' ? payload.senderId : `cli:${PLATFORM_ID}`,
+              }),
+            },
+            replyTo: replyTo ?? undefined,
+          };
+          try {
+            await config.onInboundEvent(event);
+          } catch (err) {
+            log.error('CLI: onInboundEvent threw', { err });
+          }
+          return;
+        }
+
+        // Plain chat — claim the slot (evicting any prior client) and route via
+        // the standard onInbound path (adapter injects its own channelType).
+        claimChatSlot();
+        try {
+          await config.onInbound(PLATFORM_ID, null, {
             id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             kind: 'chat',
             timestamp: new Date().toISOString(),
-            content: JSON.stringify({
+            content: {
               text: payload.text,
-              sender: typeof payload.sender === 'string' ? payload.sender : 'cli',
-              senderId: typeof payload.senderId === 'string' ? payload.senderId : `cli:${PLATFORM_ID}`,
-            }),
-          },
-          replyTo: replyTo ?? undefined,
-        };
-        try {
-          await config.onInboundEvent(event);
+              sender: 'cli',
+              senderId: `cli:${PLATFORM_ID}`,
+            },
+          });
         } catch (err) {
-          log.error('CLI: onInboundEvent threw', { err });
+          log.error('CLI: onInbound threw', { err });
         }
-        return;
-      }
-
-      // Plain chat — claim the slot (evicting any prior client) and route via
-      // the standard onInbound path (adapter injects its own channelType).
-      claimChatSlot();
-      try {
-        await config.onInbound(PLATFORM_ID, null, {
-          id: `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          kind: 'chat',
-          timestamp: new Date().toISOString(),
-          content: {
-            text: payload.text,
-            sender: 'cli',
-            senderId: `cli:${PLATFORM_ID}`,
-          },
-        });
-      } catch (err) {
-        log.error('CLI: onInbound threw', { err });
-      }
-    });
+      }),
+    );
   }
 
   function parseAddress(raw: unknown): DeliveryAddress | null {

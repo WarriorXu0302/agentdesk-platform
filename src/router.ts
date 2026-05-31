@@ -18,6 +18,7 @@
  * for policy refusals.
  */
 import { getChannelAdapter } from './channels/channel-registry.js';
+import { chainAttrs, runInDetachedRoot } from './observability/openinference.js';
 import { withSpan } from './observability/with-span.js';
 import { storeSessionSpanContext } from './observability/context-bridge.js';
 import { gateCommand } from './command-gate.js';
@@ -168,21 +169,23 @@ function isUserScopedSessionMode(
  * Creates messaging group + session if they don't exist yet.
  */
 export async function routeInbound(event: InboundEvent): Promise<void> {
-  await withSpan(
-    'router.route',
-    { 'channel.type': event.channelType || 'unknown' },
-    async () => {
-      const endTimer = startTimer('route');
-      try {
-        await routeInboundInner(event);
-        inboundTotal.labels(event.channelType, 'accepted').inc();
-      } catch (err) {
-        inboundTotal.labels(event.channelType, 'rejected').inc();
-        throw err;
-      } finally {
-        endTimer();
-      }
-    },
+  await runInDetachedRoot(() =>
+    withSpan(
+      'router.route',
+      chainAttrs({ 'channel.type': event.channelType || 'unknown' }),
+      async () => {
+        const endTimer = startTimer('route');
+        try {
+          await routeInboundInner(event);
+          inboundTotal.labels(event.channelType, 'accepted').inc();
+        } catch (err) {
+          inboundTotal.labels(event.channelType, 'rejected').inc();
+          throw err;
+        } finally {
+          endTimer();
+        }
+      },
+    ),
   );
 }
 
