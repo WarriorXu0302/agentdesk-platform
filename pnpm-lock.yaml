@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@arizeai/openinference-core':
+        specifier: ^2.2.0
+        version: 2.2.0
+      '@arizeai/openinference-semantic-conventions':
+        specifier: ^2.5.0
+        version: 2.5.0
       '@larksuiteoapi/node-sdk':
         specifier: 1.63.1
         version: 1.63.1
@@ -80,6 +86,12 @@ importers:
         version: 4.1.4(@opentelemetry/api@1.9.1)(@types/node@22.19.17)(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(tsx@4.21.0))
 
 packages:
+
+  '@arizeai/openinference-core@2.2.0':
+    resolution: {integrity: sha512-Ix1u/nphZj1yHqmyIfeBe2AVfnilTwgtvfXemJxc/6F+4JC7Rks6VMlPCfB8NXvMOhop2IveA6EyxYMkv/PH/A==}
+
+  '@arizeai/openinference-semantic-conventions@2.5.0':
+    resolution: {integrity: sha512-4ZeSwiFX3YxB0WSE6x568wM4PVHiYmz3yiOxic6WGKVrE/KIGggMFP/eqUNQhikBKP68IDV0qiILlZAIYnheAQ==}
 
   '@emnapi/core@1.9.2':
     resolution: {integrity: sha512-UC+ZhH3XtczQYfOlu3lNEkdW/p4dsJ1r/bP7H8+rhao3TTTMO1ATq/4DdIi23XuGoFY+Cz0JmCbdVl0hz9jZcA==}
@@ -2469,6 +2481,14 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@arizeai/openinference-core@2.2.0':
+    dependencies:
+      '@arizeai/openinference-semantic-conventions': 2.5.0
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/core': 1.30.1(@opentelemetry/api@1.9.1)
+
+  '@arizeai/openinference-semantic-conventions@2.5.0': {}
 
   '@emnapi/core@1.9.2':
     dependencies:
