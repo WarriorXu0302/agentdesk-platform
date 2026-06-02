@@ -1,0 +1,18 @@
+$pnpm obs:down
+
+> frontlane-agent-platform@2.0.44 obs:down /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+> docker compose -p muap-observability-prod -f infra/observability/docker-compose.prod.yml down
+
+[+] Running 4/4
+ ✔ Container muap-observability-prod-grafana-1   Removed                                                  0.2s 
+ ✔ Container muap-observability-prod-phoenix-1   Removed                                                  0.8s 
+ ✔ Container muap-observability-prod-postgres-1  Remove...                                                0.1s 
+ ✔ Network muap-observability-prod_default       Removed                                                  0.3s 
+
+$ docker ps -f name=muap-observability-prod
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+$ docker volume ls -f name=muap_
+DRIVER    VOLUME NAME
+local     muap-observability-prod_muap_grafana_data
+local     muap-observability-prod_muap_phoenix_postgres_data

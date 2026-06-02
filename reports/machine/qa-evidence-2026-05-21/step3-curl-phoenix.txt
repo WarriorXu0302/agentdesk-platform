@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Phoenix</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon"></link>
+    <meta charset="UTF-8" />
+    <meta name="title" content="Arize Phoenix" />
+    <meta name="description" content="AI Observability & Evaluation" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta property="og:title" content="Arize Phoenix" />
+    <meta property="og:description" content="AI Observability & Evaluation" />
+    <meta property="og:image" content="https://raw.githubusercontent.com/Arize-ai/phoenix-assets/main/images/socal/social-preview-horizontal.jpg" />
+    <meta name="theme-color" content="#ffffff" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap"
+    />
+    <link rel="stylesheet" href="/assets/vendor-Cg6lcjUC.css">
+  <script src="/modernizr.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>(function() {
+      Object.defineProperty(window, "Config", {
+          // Place any server-side injected config here
+          // E.g. default UMAP parameters etc. that needs to be
+          // injected into the client before React runs
+          value: Object.freeze({
+              basename: "",
+              platformVersion: "8.0.0",
+              hasInferences: Boolean("False" == "True"),
+              hasCorpus: Boolean("False" == "True"),
+              UMAP: {
+                minDist: parseFloat("0.0"),
+                nNeighbors: parseInt("30"),
+                nSamples: parseInt("500"),
+              },
+              authenticationEnabled: Boolean("False" == "True"),
+              oAuth2Idps: [],
+              websocketsEnabled: Boolean("True" == "True"),
+          }),
+          writable: false
+      });
+  })()</script>
+    <link rel="modulepreload" href="/assets/vendor-three-C-AGeJYv.js">
+    <link rel="modulepreload" href="/assets/vendor-DQp7CrDA.js">
+    <link rel="modulepreload" href="/assets/vendor-arizeai-C1nEIEQq.js">
+    <link rel="modulepreload" href="/assets/vendor-shiki-C8L-c9jT.js">
+    <link rel="modulepreload" href="/assets/vendor-codemirror-BZXYUIkP.js">
+    <link rel="modulepreload" href="/assets/components-B-qgPyHv.js">
+    <link rel="modulepreload" href="/assets/vendor-recharts-BUFpwCVD.js">
+    <link rel="modulepreload" href="/assets/pages-DdcuL3Rh.js">
+    <script type="module" src="/assets/index-D4KO1IcF.js"></script>
+    </body>
+</html>

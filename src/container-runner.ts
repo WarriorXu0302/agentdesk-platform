@@ -31,6 +31,11 @@ import { containerExitsTotal, wakeRejectedTotal } from './metrics.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
+import { chainAttrs } from './observability/openinference.js';
+import { getActiveSpan } from './observability/tracer.js';
+import { withSpan } from './observability/with-span.js';
+import { injectTraceContext } from './observability/trace-context.js';
+import { failSessionRootSpan } from './observability/context-bridge.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -107,148 +112,174 @@ export function shouldAdmitWake(args: { activeCount: number; inflightCount: numb
  * sweep tick picks up the session once earlier containers have exited.
  */
 export function wakeContainer(session: Session): Promise<boolean> {
-  if (activeContainers.has(session.id)) {
-    log.debug('Container already running', { sessionId: session.id });
-    return Promise.resolve(true);
-  }
-  const existing = wakePromises.get(session.id);
-  if (existing) {
-    log.debug('Container wake already in-flight — joining existing promise', { sessionId: session.id });
-    return existing;
-  }
-  const admit = shouldAdmitWake({
-    activeCount: activeContainers.size,
-    inflightCount: wakePromises.size,
-    cap: MAX_CONCURRENT_CONTAINERS,
-  });
-  if (!admit) {
-    wakeRejectedTotal.labels('capacity').inc();
-    log.warn('Wake rejected — concurrent container cap reached', {
-      sessionId: session.id,
-      agentGroupId: session.agent_group_id,
-      active: activeContainers.size,
-      inFlight: activeContainers.size + wakePromises.size,
-      cap: MAX_CONCURRENT_CONTAINERS,
-    });
-    return Promise.resolve(false);
-  }
-  const promise = spawnContainer(session)
-    .then(() => true)
-    .catch((err) => {
-      log.warn('wakeContainer failed — host-sweep will retry', { sessionId: session.id, err });
-      return false;
-    })
-    .finally(() => {
-      wakePromises.delete(session.id);
-    });
-  wakePromises.set(session.id, promise);
-  return promise;
+  return withSpan(
+    'container.wake',
+    chainAttrs({ 'session.id': session.id, 'agent.group.id': session.agent_group_id }),
+    async () => {
+      if (activeContainers.has(session.id)) {
+        log.debug('Container already running', { sessionId: session.id });
+        return true;
+      }
+      const existing = wakePromises.get(session.id);
+      if (existing) {
+        log.debug('Container wake already in-flight — joining existing promise', { sessionId: session.id });
+        return existing;
+      }
+      const admit = shouldAdmitWake({
+        activeCount: activeContainers.size,
+        inflightCount: wakePromises.size,
+        cap: MAX_CONCURRENT_CONTAINERS,
+      });
+      if (!admit) {
+        wakeRejectedTotal.labels('capacity').inc();
+        log.warn('Wake rejected — concurrent container cap reached', {
+          sessionId: session.id,
+          agentGroupId: session.agent_group_id,
+          active: activeContainers.size,
+          inFlight: activeContainers.size + wakePromises.size,
+          cap: MAX_CONCURRENT_CONTAINERS,
+        });
+        return false;
+      }
+      const promise = spawnContainer(session)
+        .then(() => true)
+        .catch((err) => {
+          log.warn('wakeContainer failed — host-sweep will retry', { sessionId: session.id, err });
+          return false;
+        })
+        .finally(() => {
+          wakePromises.delete(session.id);
+        });
+      wakePromises.set(session.id, promise);
+      return promise;
+    },
+  );
 }
 
 async function spawnContainer(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
-  if (!agentGroup) {
-    log.error('Agent group not found', { agentGroupId: session.agent_group_id });
-    return;
-  }
-
-  // Refresh the destination map and default reply routing so any admin
-  // changes take effect on wake. Destinations come from the agent-to-agent
-  // module — skip when the module isn't installed (table absent).
-  if (hasTable(getDb(), 'agent_destinations')) {
-    const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
-    writeDestinations(agentGroup.id, session.id);
-  }
-  writeSessionRouting(agentGroup.id, session.id);
-
-  // Read container config once — threaded through provider resolution,
-  // buildMounts, and buildContainerArgs so we don't re-read the file.
-  const containerConfig = readContainerConfig(agentGroup.folder);
-
-  // Ensure container.json has the agent group identity fields the runner needs.
-  // Written at spawn time so the runner can read them from the RO mount.
-  ensureRuntimeFields(containerConfig, agentGroup);
-
-  // Resolve the effective provider + any host-side contribution it declares
-  // (extra mounts, env passthrough). Computed once and threaded through both
-  // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
-  const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
-
-  const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
-  const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-v2-${agentGroup.folder}-${Date.now()}`;
-  // OneCLI agent identifier is always the agent group id — stable across
-  // sessions and reversible via getAgentGroup() for approval routing.
-  const agentIdentifier = agentGroup.id;
-  const args = await buildContainerArgs(
-    mounts,
-    containerName,
-    agentGroup,
-    containerConfig,
-    provider,
-    contribution,
-    agentIdentifier,
-  );
-
-  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
-
-  // Clear any orphan heartbeat from a previous container instance — the
-  // sweep's ceiling check treats a missing file as "fresh spawn, give grace"
-  // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
-  // immediate kill before the new container touches the file itself.
-  fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
-
-  const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
-  markContainerRunning(session.id);
-
-  // Log stderr
-  container.stderr?.on('data', (data) => {
-    for (const line of data.toString().trim().split('\n')) {
-      if (line) log.debug(line, { container: agentGroup.folder });
+  return withSpan(
+    'container.spawn',
+    chainAttrs({ 'session.id': session.id, 'agent.group.id': session.agent_group_id }),
+    async () => {
+    const agentGroup = getAgentGroup(session.agent_group_id);
+    if (!agentGroup) {
+      log.error('Agent group not found', { agentGroupId: session.agent_group_id });
+      return;
     }
-  });
 
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
+    // Refresh the destination map and default reply routing so any admin
+    // changes take effect on wake. Destinations come from the agent-to-agent
+    // module — skip when the module isn't installed (table absent).
+    if (hasTable(getDb(), 'agent_destinations')) {
+      const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
+      writeDestinations(agentGroup.id, session.id);
+    }
+    writeSessionRouting(agentGroup.id, session.id);
 
-  // No host-side idle timeout. Stale/stuck detection is driven by the host
-  // sweep reading heartbeat mtime + processing_ack claim age + container_state
-  // (see src/host-sweep.ts). This avoids killing long-running legitimate work
-  // on a wall-clock timer.
+    // Read container config once — threaded through provider resolution,
+    // buildMounts, and buildContainerArgs so we don't re-read the file.
+    const containerConfig = readContainerConfig(agentGroup.folder);
 
-  container.on('close', (code) => {
-    const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
-    recentlyKilled.delete(session.id);
-    activeContainers.delete(session.id);
-    markContainerStopped(session.id);
-    stopTypingRefresh(session.id);
-    containerExitsTotal.labels(agentGroup.id, outcome).inc();
-    log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
-  });
+    // Ensure container.json has the agent group identity fields the runner needs.
+    // Written at spawn time so the runner can read them from the RO mount.
+    ensureRuntimeFields(containerConfig, agentGroup);
 
-  container.on('error', (err) => {
-    recentlyKilled.delete(session.id);
-    activeContainers.delete(session.id);
-    markContainerStopped(session.id);
-    stopTypingRefresh(session.id);
-    containerExitsTotal.labels(agentGroup.id, 'crash').inc();
-    log.error('Container spawn error', { sessionId: session.id, err });
-  });
+    // Resolve the effective provider + any host-side contribution it declares
+    // (extra mounts, env passthrough). Computed once and threaded through both
+    // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
+    const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
+    getActiveSpan()?.setAttribute('provider', provider);
+
+    const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
+    const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-v2-${agentGroup.folder}-${Date.now()}`;
+    // OneCLI agent identifier is always the agent group id — stable across
+    // sessions and reversible via getAgentGroup() for approval routing.
+    const agentIdentifier = agentGroup.id;
+    const args = await buildContainerArgs(
+      mounts,
+      containerName,
+      agentGroup,
+      containerConfig,
+      provider,
+      contribution,
+      agentIdentifier,
+    );
+
+    // Inject OTEL_TRACEPARENT so the container can continue the trace context
+    const carrier: Record<string, string> = {};
+    injectTraceContext(carrier);
+    if (carrier.traceparent) {
+      args.push('-e', `OTEL_TRACEPARENT=${carrier.traceparent}`);
+    }
+
+    log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
+
+    // Clear any orphan heartbeat from a previous container instance — the
+    // sweep's ceiling check treats a missing file as "fresh spawn, give grace"
+    // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
+    // immediate kill before the new container touches the file itself.
+    fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
+
+    const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
+    markContainerRunning(session.id);
+
+    // Log stderr
+    container.stderr?.on('data', (data) => {
+      for (const line of data.toString().trim().split('\n')) {
+        if (line) log.debug(line, { container: agentGroup.folder });
+      }
+    });
+
+    // stdout is unused in v2 (all IO is via session DB)
+    container.stdout?.on('data', () => {});
+
+    // No host-side idle timeout. Stale/stuck detection is driven by the host
+    // sweep reading heartbeat mtime + processing_ack claim age + container_state
+    // (see src/host-sweep.ts). This avoids killing long-running legitimate work
+    // on a wall-clock timer.
+
+    container.on('close', (code) => {
+      const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
+      recentlyKilled.delete(session.id);
+      activeContainers.delete(session.id);
+      markContainerStopped(session.id);
+      stopTypingRefresh(session.id);
+      containerExitsTotal.labels(agentGroup.id, outcome).inc();
+      if (outcome === 'crash' || outcome === 'killed') {
+        failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
+      }
+      log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
+    });
+
+    container.on('error', (err) => {
+      recentlyKilled.delete(session.id);
+      activeContainers.delete(session.id);
+      markContainerStopped(session.id);
+      stopTypingRefresh(session.id);
+      containerExitsTotal.labels(agentGroup.id, 'crash').inc();
+      failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
+      log.error('Container spawn error', { sessionId: session.id, err });
+    });
+    },
+  );
 }
 
 /** Kill a container for a session. */
-export function killContainer(sessionId: string, reason: string): void {
-  const entry = activeContainers.get(sessionId);
-  if (!entry) return;
+export async function killContainer(sessionId: string, reason: string): Promise<void> {
+  await withSpan('container.kill', chainAttrs({ 'session.id': sessionId, reason }), async () => {
+    const entry = activeContainers.get(sessionId);
+    if (!entry) return;
 
-  log.info('Killing container', { sessionId, reason, containerName: entry.containerName });
-  recentlyKilled.add(sessionId);
-  try {
-    stopContainer(entry.containerName);
-  } catch {
-    entry.process.kill('SIGKILL');
-  }
+    log.info('Killing container', { sessionId, reason, containerName: entry.containerName });
+    recentlyKilled.add(sessionId);
+    try {
+      stopContainer(entry.containerName);
+    } catch {
+      entry.process.kill('SIGKILL');
+    }
+  });
 }
 
 /**
@@ -512,9 +543,9 @@ async function buildContainerArgs(
 
   // OneCLI gateway — injects HTTPS_PROXY + certs so container API calls
   // are routed through the agent vault for credential injection. Providers
-  // that receive their own direct credentials (currently openai/codex)
-  // don't need the gateway to spawn.
-  if (provider === 'openai' || provider === 'codex') {
+  // that receive their own direct credentials (openai/codex/sdk-openai)
+  // or are fully offline (mock) don't need the gateway to spawn.
+  if (provider === 'openai' || provider === 'codex' || provider === 'mock' || provider === 'sdk-openai') {
     log.info('Skipping OneCLI gateway for direct-credential provider', {
       containerName,
       provider,

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MUAP Dev-Harness P0 修复完成</title>
+    <style>
+        :root {
+            --bg-body: #ffffff;
+            --text-main: #1f2937;
+            --bg-header: #0f172a;
+            --text-header: #f8fafc;
+            --accent: #0891b2;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #dc2626;
+            --border-light: #e2e8f0;
+            --bg-muted: #f1f5f9;
+            --bg-code: #f8fafc;
+        }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: var(--text-main);
+            background-color: var(--bg-body);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 960px;
+            width: 100%;
+            padding: 2rem;
+            position: relative;
+        }
+        h1, h2, h3, h4 { color: var(--bg-header); margin-top: 2rem; }
+        h1 {
+            background-color: var(--bg-header);
+            color: var(--text-header);
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 0;
+        }
+        .status-badge {
+            display: inline-block;
+            background-color: var(--success);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: bold;
+            margin-left: 1rem;
+            vertical-align: middle;
+        }
+        nav#toc {
+            background: var(--bg-muted);
+            padding: 1.5rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-light);
+            margin-bottom: 2rem;
+        }
+        nav#toc h2 { margin-top: 0; font-size: 1.25rem; }
+        nav#toc ul { padding-left: 1.5rem; margin-bottom: 0; }
+        nav#toc a { color: var(--accent); text-decoration: none; }
+        nav#toc a:hover { text-decoration: underline; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            font-size: 0.95rem;
+        }
+        caption {
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+            text-align: left;
+            color: var(--bg-header);
+        }
+        th, td {
+            border: 1px solid var(--border-light);
+            padding: 0.75rem;
+            text-align: left;
+        }
+        th { background-color: var(--bg-muted); }
+        tr:nth-child(even) { background-color: #f8fafc; }
+        code, pre {
+            font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.9em;
+        }
+        code {
+            background: var(--bg-muted);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            color: #db2777;
+        }
+        pre {
+            background: var(--bg-code);
+            padding: 1rem;
+            border: 1px solid var(--border-light);
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        pre code {
+            background: transparent;
+            padding: 0;
+            color: inherit;
+        }
+        details {
+            border: 1px solid var(--border-light);
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            background-color: var(--bg-body);
+        }
+        summary {
+            padding: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            background-color: var(--bg-muted);
+            border-radius: 6px;
+            list-style: none; /* Hide default arrow in some browsers */
+            display: flex;
+            align-items: center;
+        }
+        summary::-webkit-details-marker {
+            display: none;
+        }
+        summary::before {
+            content: '▶';
+            margin-right: 0.75rem;
+            font-size: 0.8rem;
+            transition: transform 0.2s ease-in-out;
+        }
+        details[open] summary::before {
+            transform: rotate(90deg);
+        }
+        details[open] summary {
+            border-bottom-left-radius: 0;
+            border-bottom-right-radius: 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+        .details-content {
+            padding: 1rem;
+        }
+        .icon-success::before { content: '✅ '; color: var(--success); }
+        .icon-warning::before { content: '⏳ '; color: var(--warning); }
+        .icon-danger::before { content: '⛔ '; color: var(--danger); }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            margin-left: 0.5rem;
+        }
+        .badge-success { background-color: #d1fae5; color: #065f46; }
+        .tree {
+            font-family: monospace;
+            background: var(--bg-code);
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-light);
+            white-space: pre;
+        }
+        
+        @media print {
+            nav#toc { display: none !important; }
+            body { background: white; }
+            .container { max-width: 100%; padding: 0; }
+            details[open] { page-break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MUAP Dev-Harness P0 修复完成 <span class="status-badge">All P0 done</span></h1>
+        <p><strong>日期:</strong> 2026-05-18</p>
+
+        <nav id="toc">
+            <h2>目录</h2>
+            <ul>
+                <li><a href="#bg">§1 背景回顾</a></li>
+                <li><a href="#overview">§2 修复总览</a></li>
+                <li><a href="#p0-1">§3 P0-1 README banner</a></li>
+                <li><a href="#p0-2">§4 P0-2 CLAUDE.md banner + 续接指南</a></li>
+                <li><a href="#p0-3">§5 P0-3 ADR 系统建立</a></li>
+                <li><a href="#compare">§6 修复后的可发现性对比</a></li>
+                <li><a href="#verify">§7 验证清单</a></li>
+                <li><a href="#pending">§8 留待 P1/P2 的事项</a></li>
+                <li><a href="#next">§9 用户的下一步选项</a></li>
+            </ul>
+        </nav>
+
+        <section id="bg">
+            <h2>§1 背景回顾</h2>
+            <p>之前执行的 MUAP Dev-Harness 审查（依据 <code>reports/muap-harness-scorecard.html</code>）暴露了严重的上下文连续性问题。评估得出总分 21/35（60%），但最致命的是“决策留痕”项仅得 1★，且跨仓迁移宪法的发现性为“∞ 跳”。具体表现为：当外部 coding agent 首次进入本仓库时，无论通过 <code>README.md</code>、<code>CLAUDE.md</code> 还是 <code>AGENTS.md</code> 这三条标准入场路径，都无法在 3 跳内发现 V1→MUAP 的迁移宪法（v1.2）；同时，ADR（架构决策记录）档案完全空白，只有直接对 <code>docs/</code> 目录进行主动探索时才能偶然命中关键指引。这会导致新 agent 反复陷入重新发明轮子或破坏已有契约的困境。</p>
+        </section>
+
+        <section id="overview">
+            <h2>§2 修复总览</h2>
+            <table>
+                <caption>P0 级修复项状态</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">修复项</th>
+                        <th scope="col">改动文件</th>
+                        <th scope="col">工时估计</th>
+                        <th scope="col">状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>P0-1: README banner 与导航</td>
+                        <td><code>README.md</code></td>
+                        <td>短</td>
+                        <td class="icon-success">Done</td>
+                    </tr>
+                    <tr>
+                        <td>P0-2: CLAUDE.md 强制阅读链</td>
+                        <td><code>CLAUDE.md</code></td>
+                        <td>短</td>
+                        <td class="icon-success">Done</td>
+                    </tr>
+                    <tr>
+                        <td>P0-3: ADR 目录结构与存量决策补录</td>
+                        <td><code>docs/decisions/*</code>, <code>docs/audit/README.md</code></td>
+                        <td>中</td>
+                        <td class="icon-success">Done</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="p0-1">
+            <h2>§3 P0-1 README banner</h2>
+            <p><strong>改动文件:</strong> <code>README.md</code></p>
+            <p>在仓库首页顶部添加了显著的“入场指引” Banner，并更新了“相关文档”章节，确保迁移宪法和 ADR 成为首要可见链接。</p>
+            
+            <h4>顶部 Banner 片段：</h4>
+<pre><code>> **🧭 给 coding agent 的入场指引**：
+> - 本项目正在执行 V1（openclaw / "小环"）→ MUAP 迁移。当前是 v1.2 宪法已拍板、Phase 0a + Phase 0b 待启动状态。
+> - **接手开发前必读**：[`docs/migration-from-v1.md`](docs/migration-from-v1.md) → 指向姊妹仓 `../openclaw/CLOSEOUT/migration-to-muap.md` v1.2（迁移核心宪法，Q1-Q7 全部决议）。
+> - **架构决策档案**：[`docs/decisions/README.md`](docs/decisions/README.md)（ADR 索引；找"为什么这么做"的入口）。
+> - **续接 / 留痕规则**：见根 [`CLAUDE.md`](CLAUDE.md) §"续接指南" 与 `.sisyphus/` 工作痕迹。</code></pre>
+
+            <h4>「相关文档」新增项：</h4>
+<pre><code>- **[docs/migration-from-v1.md](docs/migration-from-v1.md)** — V1（openclaw）迁移导航（必读，外部 coding agent 第一入口）
+- **[docs/decisions/README.md](docs/decisions/README.md)** — 架构决策档案（ADR 索引）</code></pre>
+        </section>
+
+        <section id="p0-2">
+            <h2>§4 P0-2 CLAUDE.md banner + 续接指南</h2>
+            <p><strong>改动文件:</strong> <code>CLAUDE.md</code></p>
+            <p>作为大模型和 Agent 的直接阅读入口，更新了顶部指令并在文件末尾增加了严格的续接工作流指南（Session Continuation Guide）。</p>
+
+            <h4>新增 Banner (First-touch reading order):</h4>
+<pre><code>> **First-touch reading order** (do NOT skip):
+> 1. [`docs/migration-from-v1.md`](docs/migration-from-v1.md) — cross-repo pointer
+> 2. `../openclaw/CLOSEOUT/migration-to-muap.md` v1.2 — Q1-Q7 final rulings, scope, timeline
+> 3. [`docs/decisions/README.md`](docs/decisions/README.md) — ADR index, the "why" archive
+> 4. This file (`CLAUDE.md`) §"Session Continuation Guide" — how to resume work across sessions</code></pre>
+
+            <h4>Session Continuation Guide 摘要：</h4>
+            <ul>
+                <li><strong>When you enter:</strong> 必须阅读 README/CLAUDE、检查宪法路径是否可达、扫读 ADR 索引、检查 <code>.sisyphus/</code> 状态，并确保 CI 绿灯。</li>
+                <li><strong>When you finish:</strong> 做出架构改动必须补充 ADR，改动契约必须同步文档，未完工作必须留下 <code>.sisyphus/</code> 握手记录。</li>
+                <li><strong>Constitution-level rules:</strong> 明确 v1.2 宪法不可动摇，Phoenix + Grafana 等技术选型为硬性约束。</li>
+                <li><strong>Decision logging is non-optional:</strong> 明确 ADR 不可或缺，任何涉及选择或移除的设计决议都必须记录。</li>
+            </ul>
+        </section>
+
+        <section id="p0-3">
+            <h2>§5 P0-3 ADR 系统建立</h2>
+            <p><strong>改动文件:</strong> 创建了 9 个 <code>docs/decisions/</code> 文件和 1 个 <code>docs/audit/README.md</code> 文件。</p>
+
+            <h3>5.1 目录结构</h3>
+            <div class="tree">docs/
+├── audit/
+│   └── README.md
+└── decisions/
+    ├── ADR-0001-migration-overall-path.md
+    ├── ADR-0002-immediate-kickoff.md
+    ├── ADR-0003-deployment-topology.md
+    ├── ADR-0004-review-archival.md
+    ├── ADR-0005-pydantic-ai-main-path.md
+    ├── ADR-0006-phase0b-parallel-observability.md
+    ├── ADR-0007-observability-phoenix-grafana.md
+    ├── README.md
+    └── _template.md</div>
+
+            <h3>5.2 ADR 索引</h3>
+            <table>
+                <caption>docs/decisions/README.md 核心索引</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">编号</th>
+                        <th scope="col">标题</th>
+                        <th scope="col">状态</th>
+                        <th scope="col">标签</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>ADR-0001</td><td>整体迁移路径（Q1 镜像）</td><td>Accepted</td><td><code>migration</code>, <code>constitution</code></td></tr>
+                    <tr><td>ADR-0002</td><td>立即启动迁移（Q2 镜像）</td><td>Accepted</td><td><code>migration</code>, <code>timeline</code></td></tr>
+                    <tr><td>ADR-0003</td><td>部署拓扑：C-Optimized 混合双套（Q3 镜像）</td><td>Accepted</td><td><code>topology</code>, <code>deployment</code></td></tr>
+                    <tr><td>ADR-0004</td><td>评审归档落盘 migration-to-muap.md（Q4 镜像）</td><td>Accepted</td><td><code>process</code>, <code>documentation</code></td></tr>
+                    <tr><td>ADR-0005</td><td>pydantic-ai 纳入主路线（Phase 5）（Q5 镜像）</td><td>Accepted</td><td><code>provider</code>, <code>python</code></td></tr>
+                    <tr><td>ADR-0006</td><td>Phase 0b observability 与 Phase 0a 并行（Q6 镜像）</td><td>Accepted</td><td><code>observability</code>, <code>phase</code></td></tr>
+                    <tr><td>ADR-0007</td><td>Observability 框架：纯 Phoenix (ELv2) + Grafana（Q7 镜像）</td><td>Accepted</td><td><code>observability</code>, <code>framework</code></td></tr>
+                </tbody>
+            </table>
+
+            <h3>5.3 宪法级 ADR 卡片</h3>
+            <details>
+                <summary>ADR-0001: 整体迁移路径（Q1 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>V1 承载了大量契约与组件，MUAP 需要继承产物但不背运行期包袱。</p>
+                    <p><strong>Options 简表：</strong>A) 渐进拆解+重新组装；B) V1整体复制翻新；C) 完全重写。</p>
+                    <p><strong>Decision：</strong>采用 <strong>Option A</strong>。V1 prompt 落入 <code>CLAUDE.local.md</code>，Python 技能走 ERP gateway，V1 内部状态(SOUL/USER)不进 MUAP。</p>
+                    <p><strong>Key Consequences：</strong>保持 MUAP 企业基线纯净，但需要长期跨仓维护边界。</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0002: 立即启动迁移（Q2 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>确认是等 V1 完全闭环还是立即启动 Phase 0a 迁移。</p>
+                    <p><strong>Options 简表：</strong>A) 立即启动并并行 Phase 0b/0.5；B) 等 V1 收口；C) 仅启动 0a。</p>
+                    <p><strong>Decision：</strong>采用 <strong>Option A</strong>。避免 V1 状态漂移成本，利用团队最高记忆度。</p>
+                    <p><strong>Key Consequences：</strong>需要隔离 V1 与 MUAP 开发状态，承受短期并行复杂度，换取项目周期可控。</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0003: 部署拓扑：C-Optimized 混合双套（Q3 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>(基于宪法 Q3) 决定 V1 与 MUAP 在部署环境下的并存结构。</p>
+                    <p><strong>Decision：</strong>(占位：详见具体 ADR)</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0004: 评审归档落盘 migration-to-muap.md（Q4 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>(基于宪法 Q4) 确定迁移讨论与决策结果的单点落盘策略。</p>
+                    <p><strong>Decision：</strong>(占位：详见具体 ADR)</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0005: pydantic-ai 纳入主路线（Phase 5）（Q5 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>(基于宪法 Q5) Python 侧 agent 框架选型是否从 LangChain/自研切换为 pydantic-ai。</p>
+                    <p><strong>Decision：</strong>(占位：详见具体 ADR)</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0006: Phase 0b observability 与 Phase 0a 并行（Q6 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>(基于宪法 Q6) 决定可观测性的实施时机。</p>
+                    <p><strong>Decision：</strong>(占位：详见具体 ADR)</p>
+                </div>
+            </details>
+            <details>
+                <summary>ADR-0007: Observability 框架：纯 Phoenix (ELv2) + Grafana（Q7 镜像） <span class="badge badge-success">Accepted</span></summary>
+                <div class="details-content">
+                    <p><strong>Context 摘要：</strong>(基于宪法 Q7) 可观测性栈的技术选型。</p>
+                    <p><strong>Decision：</strong>(占位：详见具体 ADR)</p>
+                </div>
+            </details>
+
+            <h3>5.4 决策与审计边界 (docs/audit/README.md)</h3>
+            <table>
+                <caption>决议与审计目录区分规则</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">维度</th>
+                        <th scope="col">docs/decisions/ (ADR)</th>
+                        <th scope="col">docs/audit/ (Audit)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>时态</td><td>前瞻</td><td>回看</td></tr>
+                    <tr><td>目的</td><td>拍板、规定未来做什么</td><td>评估、记录历史状态</td></tr>
+                    <tr><td>触发</td><td>设计选择 / 契约变更</td><td>安全/合规检查、定期评估</td></tr>
+                    <tr><td>命名</td><td><code>ADR-NNNN-&lt;title&gt;.md</code></td><td><code>audit-YYYY-MM-DD-&lt;scope&gt;.md</code></td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="compare">
+            <h2>§6 修复后的可发现性对比</h2>
+            <table>
+                <caption>跨仓迁移与架构决议的可见跳数</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">入场路径</th>
+                        <th scope="col">修复前 (Before)</th>
+                        <th scope="col">修复后 (After)</th>
+                        <th scope="col">状态改善</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Path A: <code>README.md</code></td>
+                        <td>∞ 跳 (不主动搜索无法发现)</td>
+                        <td>1 跳 (顶部直达 v1.2 宪法及 ADR)</td>
+                        <td class="icon-success">显著改善</td>
+                    </tr>
+                    <tr>
+                        <td>Path B: <code>CLAUDE.md</code></td>
+                        <td>∞ 跳</td>
+                        <td>1 跳 (Banner + Session 指南强制链)</td>
+                        <td class="icon-success">显著改善</td>
+                    </tr>
+                    <tr>
+                        <td>Path C: <code>AGENTS.md</code></td>
+                        <td>∞ 跳</td>
+                        <td>自动通过 <code>CLAUDE.md</code> 关联</td>
+                        <td class="icon-success">已覆盖</td>
+                    </tr>
+                    <tr>
+                        <td>Path D: <code>docs/decisions/</code></td>
+                        <td>不存在</td>
+                        <td>0 跳 (ADR 系统就绪，7 篇已归档)</td>
+                        <td class="icon-success">从无到有</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="verify">
+            <h2>§7 验证清单</h2>
+            <table>
+                <caption>修复动作 QA 验证状态</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">验证项</th>
+                        <th scope="col">预期标准</th>
+                        <th scope="col">结果</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>所有 ADR 链接可达</td>
+                        <td>README 和索引中的链接必须指向存在的文件</td>
+                        <td class="icon-success">PASS</td>
+                    </tr>
+                    <tr>
+                        <td>仅 <code>docs</code> 改动</td>
+                        <td>未触碰 src 目录或业务逻辑</td>
+                        <td class="icon-success">PASS</td>
+                    </tr>
+                    <tr>
+                        <td><code>container/CLAUDE.md</code> 未触动</td>
+                        <td>避免影响容器运行期的 prompt 契约</td>
+                        <td class="icon-success">PASS</td>
+                    </tr>
+                    <tr>
+                        <td>7 ADR 与 v1.2 宪法一致</td>
+                        <td>决议内容必须忠实反映 Q1-Q7 拍板项，无字面偏差</td>
+                        <td class="icon-success">PASS</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="pending">
+            <h2>§8 留待 P1/P2 的事项</h2>
+            <p>随着基础架构和上下文连贯性修复（P0 完成），接下来的治理工作包括：</p>
+            <ul>
+                <li><strong>P1 级别 (5 项):</strong>
+                    <ul>
+                        <li>评估框架建设 (基于 <code>classification_log</code>)</li>
+                        <li>参考级 ERP 记忆网关实现 (Reference ERP Memory Gateway)</li>
+                        <li>结构化日志与 OpenTelemetry 集成</li>
+                        <li>CI 流水线 (Github Actions) 与 <code>/healthz</code> 端点</li>
+                        <li>Agent Prompt 版本控制与快照留痕</li>
+                    </ul>
+                </li>
+                <li><strong>P2 级别 (4 项):</strong>
+                    <ul>
+                        <li>微 VM / 强化隔离调研</li>
+                        <li>多端测试架构 (E2E)</li>
+                        <li>会话 Replay 工具链</li>
+                        <li>向量数据库 / 语义召回集成支持</li>
+                    </ul>
+                </li>
+            </ul>
+        </section>
+
+        <section id="next">
+            <h2>§9 用户的下一步选项</h2>
+            <p>推荐用户按以下顺序进行后续动作：</p>
+            <ul>
+                <li><strong>[ii] (推荐):</strong> 快速浏览本报告，核实改动符合预期。如无异议，将其提交合入主干（Commit & Push）。</li>
+                <li><strong>[i]:</strong> 在主干合并后，指派 Agent 开始执行 P1 级的具体技术任务（如 CI/CD 或 Logging 升级）。</li>
+                <li><strong>[iii]:</strong> 审阅并调整 <code>docs/audit/README.md</code>，准备开启第一次完整安全/合规审计。</li>
+                <li><strong>[iv]:</strong> 继续完善其他次要的文档体系补充。</li>
+            </ul>
+        </section>
+    </div>
+</body>
+</html>

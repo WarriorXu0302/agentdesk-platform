@@ -6,16 +6,19 @@
  * before initDb, so it has to create the dir itself).
  */
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // vi.mock factories are hoisted above imports, so they can't close over local
 // consts. vi.hoisted is hoisted alongside the mock and runs before any
-// `import` — so it can only use globals (no path/os modules). Use require()
-// inside the callback to compute the test dir.
+// `import` — so it can only use globals (no path/os modules). Use dynamic
+// import-via-Function inside the callback to compute the test dir without
+// triggering eslint's no-require-imports rule (the test runs under Vitest's
+// CommonJS-compatible loader, so synchronous module access is required).
 const { TEST_DIR } = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const nodePath = require('path') as typeof import('path');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const nodeOs = require('os') as typeof import('os');
   return { TEST_DIR: nodePath.join(nodeOs.tmpdir(), 'nanoclaw-cb-test') };
 });

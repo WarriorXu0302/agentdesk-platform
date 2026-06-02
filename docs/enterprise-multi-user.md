@@ -70,7 +70,7 @@ pnpm exec tsx scripts/init-enterprise-topology.ts
 
 That creates or reuses:
 
-- `frontlane-frontdesk`
+- `frontlane-template-frontdesk`
 - `frontlane-access-worker`
 - `frontlane-sales-worker`
 - `frontlane-finance-worker`
@@ -85,7 +85,7 @@ To wire a shared entry channel at the same time:
 pnpm exec tsx scripts/init-enterprise-topology.ts \
   --channel feishu \
   --platform-id oc_xxx \
-  --group-name "FrontLane Desk" \
+  --group-name "FrontLane Template Desk" \
   --threaded
 ```
 
@@ -135,11 +135,11 @@ The script is intentionally infra-only. It does not implement ERP auth, role res
 
 ## Runtime auto-ingress for Feishu
 
-If you want the first employee DM to land on `frontlane-frontdesk`
+If you want the first employee DM to land on `frontlane-template-frontdesk`
 without an owner approval step, enable the enterprise autowire policy:
 
 ```bash
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false
@@ -149,7 +149,7 @@ ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE=per-user
 Behavior:
 
 - first Feishu p2p message auto-creates the messaging group
-- that DM is auto-wired to `frontlane-frontdesk`
+- that DM is auto-wired to `frontlane-template-frontdesk`
 - the wiring is `pattern='.'`, `session_mode='shared'`
 - `unknown_sender_policy` is forced to `public`
 

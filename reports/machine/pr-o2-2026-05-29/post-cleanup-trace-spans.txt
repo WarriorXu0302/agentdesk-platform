@@ -1,0 +1,30 @@
+=== PR-O2 移除 poll traces 后证据 ===
+Date: 2026-05-29 21:16 UTC+8
+Test: pnpm chat "hello PR-O2 verify poll removal"
+New trace: e085ad655687dcbf4f6725f20d562229
+
+=== Trace spans (Phoenix DB query: SELECT name, span_id FROM spans WHERE trace_rowid = 1588 ORDER BY start_time) ===
+
+cli.event.received       | 5d803f1de9bf62fe
+router.route             | 61fa427b6c7b74b9
+router.deliver_to_agent  | 1413f8339c43cdc8
+container.wake           | 4ad58b96945d0fac
+router.container.wake    | 892d000208883c3b
+container.spawn          | d8c3720c84d78390
+delivery.session.drain   | da63430cfd137f47
+delivery.session.drain   | ad2fff1478214e50
+delivery.session.drain   | 158bb381c6f0b356
+delivery.session.drain   | 38abb9d78f04c2e2
+delivery.session.drain   | 36c66f021af38746
+delivery.channel.send    | 10855d28f3aef992
+delivery.message.deliver | aef061052a3e433c
+delivery.message.deliver | 559fc96dcbccc0db
+
+=== VERIFICATION: Removed spans NOT in trace ===
+- delivery.poll.active:   NOT PRESENT ✓
+- host.sweep:             NOT PRESENT ✓
+- host.sweep.sessions:    NOT PRESENT ✓
+
+=== CONCLUSION ===
+移除 delivery.poll.active / host.sweep / host.sweep.sessions 生效。
+新 trace 仅包含业务语义 spans，不再被高频空轮询 trace 淹没。

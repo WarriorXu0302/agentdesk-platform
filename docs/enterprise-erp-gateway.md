@@ -37,7 +37,7 @@ Optional examples:
 ```bash
 pnpm exec tsx scripts/configure-enterprise-gateway.ts \
   --base-url https://erp-gateway.internal/api/agent \
-  --folders frontlane-frontdesk,frontlane-finance-worker \
+  --folders frontlane-template-frontdesk,frontlane-finance-worker \
   --timeout-ms 20000 \
   --header x-tenant=erp-a
 ```
@@ -60,7 +60,7 @@ Each request includes:
 {
   "agent": {
     "agentGroupId": "ag-...",
-    "groupName": "FrontLane Desk",
+    "groupName": "FrontLane Template Desk",
     "assistantName": "Frontdesk"
   },
   "requester": {

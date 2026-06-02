@@ -22,7 +22,7 @@ function buildOpenAIContribution(): ProviderContainerContribution {
   const dotenv = readEnvFile([...OPENAI_ENV_KEYS]);
   const env: Record<string, string> = {};
   for (const key of OPENAI_ENV_KEYS) {
-    const value = dotenv[key];
+    const value = dotenv[key] || process.env[key];
     if (value) env[key] = value;
   }
   return { env };
@@ -30,3 +30,4 @@ function buildOpenAIContribution(): ProviderContainerContribution {
 
 registerProviderContainerConfig('openai', buildOpenAIContribution);
 registerProviderContainerConfig('codex', buildOpenAIContribution);
+registerProviderContainerConfig('sdk-openai', buildOpenAIContribution);

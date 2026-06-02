@@ -1,0 +1,15 @@
+Command:
+docker exec -e PGPASSWORD=phoenix_local_only muap-observability-prod-postgres-1 psql -U phoenix -d phoenix -t -c "SELECT name, count(*) FROM spans WHERE name IN ('cli.event.received','router.route','router.deliver_to_agent','router.container.wake','container.wake','container.spawn','delivery.session.drain','delivery.message.deliver','delivery.channel.send','host.sweep','host.sweep.sessions') GROUP BY name ORDER BY name;"
+
+Output:
+ cli.event.received       |     3
+ container.spawn          |     3
+ container.wake           |     3
+ delivery.channel.send    |     1
+ delivery.message.deliver |     2
+ delivery.session.drain   |   591
+ host.sweep               |    11
+ host.sweep.sessions      |    22
+ router.container.wake    |     3
+ router.deliver_to_agent  |     3
+ router.route             |     3

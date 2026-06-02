@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${PHOENIX_POSTGRES_USER:-phoenix}
+      POSTGRES_PASSWORD: ${PHOENIX_POSTGRES_PASSWORD:-phoenix_local_only}
+      POSTGRES_DB: ${PHOENIX_POSTGRES_DB:-phoenix}
+      PHOENIX_POSTGRES_GRAFANA_USER: ${PHOENIX_POSTGRES_GRAFANA_USER:-grafana_ro}
+      PHOENIX_POSTGRES_GRAFANA_PASSWORD: ${PHOENIX_POSTGRES_GRAFANA_PASSWORD:-grafana_readonly_local_only}
+    volumes:
+      - muap_phoenix_postgres_data:/var/lib/postgresql/data
+      - ./init/grafana_readonly.sql:/docker-entrypoint-initdb.d/10-grafana_readonly.sql:ro
+
+  phoenix:
+    image: arizephoenix/phoenix:version-8.0.0
+    depends_on:
+      - postgres
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+      - "9090:9090"
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://${PHOENIX_POSTGRES_USER:-phoenix}:${PHOENIX_POSTGRES_PASSWORD:-phoenix_local_only}@postgres:5432/${PHOENIX_POSTGRES_DB:-phoenix}
+      PHOENIX_ENABLE_PROMETHEUS: "true"
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    depends_on:
+      - postgres
+      - phoenix
+    ports:
+      - "${GRAFANA_HOST_PORT:-3001}:3000"
+    environment:
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-frontlane-local-observability}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      PHOENIX_POSTGRES_GRAFANA_USER: ${PHOENIX_POSTGRES_GRAFANA_USER:-grafana_ro}
+      PHOENIX_POSTGRES_GRAFANA_PASSWORD: ${PHOENIX_POSTGRES_GRAFANA_PASSWORD:-grafana_readonly_local_only}
+      PHOENIX_POSTGRES_DB: ${PHOENIX_POSTGRES_DB:-phoenix}
+    volumes:
+      - muap_grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  muap_phoenix_postgres_data:
+  muap_grafana_data:

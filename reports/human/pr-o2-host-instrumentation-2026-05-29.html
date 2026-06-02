@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PR-O2 Host Instrumentation Report</title>
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #1a1a1a;
+            --heading-color: #000000;
+            --code-bg: #f4f4f5;
+            --border-color: #e4e4e7;
+            --table-header-bg: #f4f4f5;
+            --link-color: #2563eb;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--heading-color);
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            line-height: 1.2;
+        }
+
+        h1 { font-size: 2.5rem; border-bottom: 2px solid var(--border-color); padding-bottom: 0.5rem; }
+        h2 { font-size: 1.8rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.3rem; }
+        h3 { font-size: 1.4rem; }
+
+        code {
+            background-color: var(--code-bg);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background-color: var(--code-bg);
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+        }
+
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            border-radius: 0;
+            border: none;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            border: 1px solid var(--border-color);
+        }
+
+        caption {
+            caption-side: top;
+            font-weight: 600;
+            text-align: left;
+            margin-bottom: 0.5rem;
+            color: var(--heading-color);
+        }
+
+        th, td {
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            text-align: left;
+        }
+
+        th {
+            background-color: var(--table-header-bg);
+            font-weight: 600;
+        }
+
+        ul, ol {
+            padding-left: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        @media print {
+            body {
+                padding: 0;
+                max-width: 100%;
+            }
+            @page {
+                margin: 2cm;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>PR-O2 Host Instrumentation Report</h1>
+        <p><strong>Date:</strong> May 29, 2026</p>
+    </header>
+
+    <main>
+        <section id="executive-summary">
+            <h2>Executive Summary</h2>
+            <p>
+                This report outlines the successful implementation of host-side OpenTelemetry instrumentation for PR-O2. 
+                The core observability framework was established, and distributed tracing was wired across the host routing, delivery, and container management subsystems. 
+                Critical QA bugs involving trace context loss during asynchronous delivery loops and exporter misconfigurations were identified and fully resolved.
+            </p>
+        </section>
+
+        <section id="what-changed">
+            <h2>What Changed</h2>
+            <p>The following structural updates were applied to the host to enable OpenTelemetry:</p>
+            <ul>
+                <li>Implemented core observability utilities for trace initialization and context propagation.</li>
+                <li>Instrumented routing (<code>router.route</code>, <code>router.deliver_to_agent</code>).</li>
+                <li>Instrumented delivery pipelines (<code>delivery.session.drain</code>, <code>delivery.message.deliver</code>).</li>
+                <li>Instrumented incoming channels (<code>cli.event.received</code>) and outgoing responses (<code>delivery.channel.send</code>).</li>
+                <li>Instrumented container management boundaries (<code>container.spawn</code>, <code>container.wake</code>).</li>
+                <li>Patched trace configuration to correctly export to the Arize Phoenix backend.</li>
+            </ul>
+        </section>
+
+        <section id="root-cause">
+            <h2>Root Cause Found During QA</h2>
+            <p>During testing, multiple issues prevented reliable trace propagation and exporting. The root causes and their respective fixes are documented below.</p>
+            
+            <h3>1. Session Context Loss</h3>
+            <p>
+                <strong>Cause:</strong> <code>consumeSessionSpanContext()</code> deleted the bridged session context during empty delivery polls, which happened <em>before</em> the agent actually wrote outbound messages.
+            </p>
+            <p>
+                <strong>Fix:</strong> Introduced a new <code>getSessionSpanContext()</code> peek API. Context is now cleared strictly <em>after</em> the actual outbound work is handled.
+            </p>
+
+            <h3>2. Exporter Failure</h3>
+            <p>
+                <strong>Cause:</strong> The <code>@opentelemetry/exporter-trace-otlp-http</code> module produced a <code>415 Unsupported Media Type</code> error when reporting to Phoenix.
+            </p>
+            
+            <h3>3. Sampler Trace Drop</h3>
+            <p>
+                <strong>Cause:</strong> The custom sampler returned <code>decision: 1</code> (which corresponds to <code>RECORD</code>), instead of <code>RECORD_AND_SAMPLED</code>. This resulted in spans being recorded locally but not exported to the collector.
+            </p>
+        </section>
+
+        <section id="phoenix-evidence">
+            <h2>Phoenix Evidence</h2>
+            <p>
+                Traces were verified against the local Arize Phoenix observability backend. 
+                The primary verification trace ID is <code>862db7e901c0e5ee594d61bdcadb4b24</code>.
+            </p>
+
+            <table>
+                <caption>Table 1: Phoenix Global Query Results</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Query</th>
+                        <th scope="col">Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>SELECT count(*) FROM traces;</code></td>
+                        <td>624</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <table>
+                <caption>Table 2: Span Counts by Operation</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Span Name</th>
+                        <th scope="col">Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>delivery.session.drain</code></td><td>591</td></tr>
+                    <tr><td><code>cli.event.received</code></td><td>3</td></tr>
+                    <tr><td><code>router.route</code></td><td>3</td></tr>
+                    <tr><td><code>router.deliver_to_agent</code></td><td>3</td></tr>
+                    <tr><td><code>container.spawn</code></td><td>3</td></tr>
+                    <tr><td><code>delivery.message.deliver</code></td><td>2</td></tr>
+                    <tr><td><code>delivery.channel.send</code></td><td>1</td></tr>
+                </tbody>
+            </table>
+
+            <h3>Fixed Execution Chain</h3>
+            <p>
+                The complete distributed trace chain under ID <code>862db7e901c0e5ee594d61bdcadb4b24</code> confirmed the context propagation fix:
+            </p>
+            <pre><code>cli.event.received
+ ↳ router.route
+    ↳ router.deliver_to_agent
+       ↳ router.container.wake
+          ↳ container.wake
+             ↳ container.spawn
+                ↳ delivery.session.drain
+                   ↳ delivery.message.deliver
+                      ↳ delivery.channel.send</code></pre>
+        </section>
+
+        <section id="verification-matrix">
+            <h2>Verification Matrix</h2>
+            <p>All host-side integration and unit tests related to observability and delivery passed successfully.</p>
+            <table>
+                <caption>Table 3: Automated Test Execution Results</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Command</th>
+                        <th scope="col">Outcome</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>pnpm exec vitest run src/delivery.test.ts</code></td>
+                        <td>5 passed (5)</td>
+                    </tr>
+                    <tr>
+                        <td><code>pnpm exec vitest run src/observability/with-span.test.ts</code></td>
+                        <td>1 passed (1)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="remaining-boundary">
+            <h2>Remaining Boundary</h2>
+            <p>
+                While the host-side instrumentation is complete, the <strong>PR-O3 boundary remains</strong>. 
+                This next phase will implement full end-to-end distributed tracing across the container boundaries, seamlessly linking host traces to the internal agent runner traces.
+            </p>
+        </section>
+
+        <section id="evidence-files">
+            <h2>Evidence Files</h2>
+            <p>The following files contain the implemented instrumentation and related documentation:</p>
+            <ul>
+                <li><code>src/observability/init.ts</code></li>
+                <li><code>src/observability/with-span.ts</code></li>
+                <li><code>src/observability/context-bridge.ts</code></li>
+                <li><code>src/observability/trace-context.ts</code></li>
+                <li><code>src/index.ts</code></li>
+                <li><code>src/router.ts</code></li>
+                <li><code>src/delivery.ts</code></li>
+                <li><code>src/container-runner.ts</code></li>
+                <li><code>src/channels/cli.ts</code></li>
+                <li><code>src/channels/feishu.ts</code></li>
+                <li><code>src/host-sweep.ts</code></li>
+                <li><code>src/log.ts</code></li>
+                <li><code>src/delivery.test.ts</code></li>
+                <li><code>src/observability/with-span.test.ts</code></li>
+                <li><code>docs/decisions/ADR-0011-host-otel-instrumentation.md</code></li>
+                <li><code>reports/machine/pr-o2-2026-05-29/</code></li>
+            </ul>
+        </section>
+    </main>
+</body>
+</html>

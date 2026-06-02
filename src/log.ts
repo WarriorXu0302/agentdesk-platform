@@ -1,3 +1,5 @@
+import { getActiveSpan } from './observability/tracer.js';
+
 const LEVELS = { debug: 20, info: 30, warn: 40, error: 50, fatal: 60 } as const;
 type Level = keyof typeof LEVELS;
 
@@ -43,7 +45,15 @@ function emit(level: Level, msg: string, data?: Record<string, unknown>): void {
   if (LEVELS[level] < threshold) return;
   const tag = `${COLORS[level]}${level.toUpperCase()}${level === 'fatal' ? FULL_RESET : RESET}`;
   const stream = LEVELS[level] >= LEVELS.warn ? process.stderr : process.stdout;
-  stream.write(`[${ts()}] ${tag} ${MSG_COLOR}${msg}${RESET}${data ? formatData(data) : ''}\n`);
+
+  let traceSuffix = '';
+  const span = getActiveSpan();
+  if (span) {
+    const ctx = span.spanContext();
+    traceSuffix = ` ${KEY_COLOR}traceId${RESET}=${ctx.traceId} ${KEY_COLOR}spanId${RESET}=${ctx.spanId}`;
+  }
+
+  stream.write(`[${ts()}] ${tag} ${MSG_COLOR}${msg}${RESET}${data ? formatData(data) : ''}${traceSuffix}\n`);
 }
 
 export const log = {

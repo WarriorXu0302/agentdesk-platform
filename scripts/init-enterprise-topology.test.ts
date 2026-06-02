@@ -57,7 +57,7 @@ describe('init-enterprise-topology', () => {
 
     await run(['--channel', 'feishu', '--platform-id', 'oc_123', '--threaded', '--unknown-sender-policy', 'strict']);
 
-    const frontdesk = getAgentGroupByFolder('frontlane-frontdesk');
+    const frontdesk = getAgentGroupByFolder('frontlane-template-frontdesk');
     const messagingGroup = getMessagingGroupByPlatform('feishu', 'feishu:oc_123');
     expect(frontdesk).toBeDefined();
     expect(messagingGroup).toBeDefined();
@@ -76,7 +76,7 @@ describe('init-enterprise-topology', () => {
   it('ensures workers have a stable frontdesk return alias', async () => {
     await run([]);
 
-    const frontdesk = getAgentGroupByFolder('frontlane-frontdesk');
+    const frontdesk = getAgentGroupByFolder('frontlane-template-frontdesk');
     const worker = getAgentGroupByFolder('frontlane-access-worker');
     expect(frontdesk).toBeDefined();
     expect(worker).toBeDefined();
@@ -99,14 +99,14 @@ describe('init-enterprise-topology', () => {
   it('writes root-session a2a policy into enterprise group configs', async () => {
     await run([]);
 
-    expect(readContainerConfig('frontlane-frontdesk').a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig('frontlane-template-frontdesk').a2aSessionMode).toBe('root-session');
     expect(readContainerConfig('frontlane-access-worker').a2aSessionMode).toBe('root-session');
   });
 
   it('writes conservative default resources for frontdesk and workers', async () => {
     await run([]);
 
-    const frontdeskResources = readContainerConfig('frontlane-frontdesk').resources;
+    const frontdeskResources = readContainerConfig('frontlane-template-frontdesk').resources;
     expect(frontdeskResources).toEqual({ memoryMb: 768, cpus: 1, pidsLimit: 384 });
 
     const workerResources = readContainerConfig('frontlane-access-worker').resources;
@@ -128,5 +128,73 @@ describe('init-enterprise-topology', () => {
 
     const after = readContainerConfig('frontlane-access-worker').resources;
     expect(after).toEqual({ memoryMb: 4096, cpus: 0.5, pidsLimit: 1024 });
+  });
+
+  it('provisions both primary and lab frontdesks by default (ADR-0008)', async () => {
+    await run([]);
+
+    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
+    const lab = getAgentGroupByFolder('frontlane-lab-frontdesk');
+    expect(primary).toBeDefined();
+    expect(primary?.name).toBe('FrontLane Template Desk');
+    expect(lab).toBeDefined();
+    expect(lab?.name).toBe('FrontLane Lab Desk');
+
+    const FRONTDESK_RESOURCES = { memoryMb: 768, cpus: 1, pidsLimit: 384 };
+    expect(readContainerConfig('frontlane-template-frontdesk').a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig('frontlane-lab-frontdesk').a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig('frontlane-template-frontdesk').resources).toEqual(FRONTDESK_RESOURCES);
+    expect(readContainerConfig('frontlane-lab-frontdesk').resources).toEqual(FRONTDESK_RESOURCES);
+  });
+
+  it('only the primary frontdesk owns reverse worker destinations (no double-bind)', async () => {
+    await run([]);
+
+    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
+    const lab = getAgentGroupByFolder('frontlane-lab-frontdesk');
+    const accessWorker = getAgentGroupByFolder('frontlane-access-worker');
+    expect(primary).toBeDefined();
+    expect(lab).toBeDefined();
+    expect(accessWorker).toBeDefined();
+
+    const reverse = getDestinationByName(accessWorker!.id, 'frontdesk');
+    expect(reverse).toBeDefined();
+    expect(reverse?.target_id).toBe(primary!.id);
+    expect(reverse?.target_id).not.toBe(lab!.id);
+
+    expect(getDestinationByName(lab!.id, 'access-worker')).toBeUndefined();
+  });
+
+  it('single-frontdesk back-compat: --frontdesk-folder skips secondary desks', async () => {
+    await run(['--frontdesk-folder', 'frontlane-template-frontdesk']);
+
+    expect(getAgentGroupByFolder('frontlane-template-frontdesk')).toBeDefined();
+    expect(getAgentGroupByFolder('frontlane-lab-frontdesk')).toBeUndefined();
+  });
+
+  it('--frontdesks accepts a custom comma-separated list', async () => {
+    await run(['--frontdesks', 'frontlane-template-frontdesk:FrontLane Template Desk,frontlane-research-desk:FrontLane Research Desk']);
+
+    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
+    const research = getAgentGroupByFolder('frontlane-research-desk');
+    expect(primary?.name).toBe('FrontLane Template Desk');
+    expect(research?.name).toBe('FrontLane Research Desk');
+    expect(getAgentGroupByFolder('frontlane-lab-frontdesk')).toBeUndefined();
+  });
+
+  it('rejects mixing --frontdesks with --frontdesk-folder', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        run(['--frontdesks', 'frontlane-template-frontdesk:FrontLane Template Desk', '--frontdesk-folder', 'frontlane-other']),
+      ).rejects.toThrow('process.exit called');
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

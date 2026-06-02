@@ -1,0 +1,17 @@
+ trace_rowid |           name           |         start_time         
+-------------+--------------------------+----------------------------
+          12 | delivery.message.deliver | 2026-05-31 06:05:28.118+00
+          12 | delivery.channel.send    | 2026-05-31 06:05:28.114+00
+          12 | delivery.session.drain   | 2026-05-31 06:05:28.113+00
+          12 | delivery.message.deliver | 2026-05-31 06:05:28.113+00
+          12 | container.wake           | 2026-05-31 06:05:23.968+00
+          12 | container.spawn          | 2026-05-31 06:05:23.968+00
+          12 | router.deliver_to_agent  | 2026-05-31 06:05:23.966+00
+          12 | router.route             | 2026-05-31 06:05:23.965+00
+          11 | channel.cli.receive      | 2026-05-31 06:05:23.965+00
+           4 | delivery.session.drain   | 2026-05-31 06:04:02.908+00
+           3 | delivery.session.drain   | 2026-05-31 06:04:02.906+00
+           2 | delivery.session.drain   | 2026-05-31 06:03:02.903+00
+           1 | delivery.session.drain   | 2026-05-31 06:03:02.901+00
+(13 rows)
+

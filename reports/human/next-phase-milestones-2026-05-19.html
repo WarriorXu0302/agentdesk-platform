@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MUAP 下一阶段工作 &amp; Milestone 看板 — 2026-05-19</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #30363d;
+    --border-strong: #586069;
+    --text: #e6edf3;
+    --text-dim: #adbac7;
+    --text-muted: #7d8590;
+    --accent: #58a6ff;
+    --accent-soft: rgba(88,166,255,.12);
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --block: #f85149;
+    --pending: #8b949e;
+    --inprog: #58a6ff;
+    --done: #3fb950;
+    --shadow: 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.5);
+    --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, kbd, .mono { font-family: var(--mono); font-size: .92em; }
+  .container { max-width: 1280px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  /* Hero */
+  header.hero {
+    background: linear-gradient(180deg, #1c2530 0%, #0e1117 100%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    box-shadow: var(--shadow);
+  }
+  header.hero h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: .2px; }
+  header.hero .sub { color: var(--text-dim); font-size: 13.5px; }
+  .hero-meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px; margin-top: 18px;
+  }
+  .hero-meta div {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    background: var(--panel-2);
+  }
+  .hero-meta .k { color: var(--text-muted); font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; }
+  .hero-meta .v { color: var(--text); font-size: 14px; margin-top: 4px; font-weight: 500; }
+  .hero-meta .v .mono { color: var(--accent); }
+
+  /* Section heading */
+  h2.section {
+    font-size: 17px; margin: 32px 0 12px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border); letter-spacing: .2px;
+  }
+  h2.section .pip { color: var(--text-muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+
+  /* Status pill */
+  .pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+    border: 1px solid var(--border);
+  }
+  .pill.done    { background: rgba(63,185,80,.12);  color: var(--done);   border-color: rgba(63,185,80,.35); }
+  .pill.inprog  { background: rgba(88,166,255,.12); color: var(--inprog); border-color: rgba(88,166,255,.4); }
+  .pill.pending { background: rgba(125,133,144,.15); color: var(--text-dim); border-color: rgba(125,133,144,.35); }
+  .pill.blocked { background: rgba(248,81,73,.12); color: var(--bad); border-color: rgba(248,81,73,.4); }
+  .pill.warn    { background: rgba(210,153,34,.13); color: var(--warn); border-color: rgba(210,153,34,.4); }
+  .pill.ghost   { background: transparent; color: var(--text-muted); border-color: var(--border); }
+
+  /* Kanban */
+  .kanban {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card.blocking { border-color: rgba(248,81,73,.5); box-shadow: 0 0 0 1px rgba(248,81,73,.18), var(--shadow); }
+  .card .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .card h3 { margin: 0; font-size: 15px; line-height: 1.3; }
+  .card .ph { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .card .meta {
+    display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 6px 12px; font-size: 12.5px;
+    margin-top: 4px;
+  }
+  .card .meta div { display: flex; gap: 6px; }
+  .card .meta .k { color: var(--text-muted); min-width: 56px; }
+  .card .meta .v { color: var(--text-dim); }
+  .card .meta .v .mono { color: var(--accent); }
+  .card ul { margin: 4px 0 0 18px; padding: 0; color: var(--text-dim); font-size: 13px; }
+  .card ul li { margin-bottom: 3px; }
+  .card .exit {
+    margin-top: 4px; padding: 8px 10px; background: var(--panel-2);
+    border-left: 3px solid var(--accent); border-radius: 4px;
+    font-size: 12.5px; color: var(--text-dim);
+  }
+  .card .exit b { color: var(--text); }
+  .card.blocking .exit { border-left-color: var(--bad); }
+
+  /* Table */
+  table.t {
+    width: 100%; border-collapse: collapse; margin-top: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden;
+  }
+  table.t th, table.t td {
+    padding: 8px 12px; text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; vertical-align: top;
+  }
+  table.t th {
+    background: var(--panel-2); color: var(--text-dim);
+    font-weight: 600; font-size: 12px; letter-spacing: .3px;
+    text-transform: uppercase;
+  }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t td.mono, table.t td .mono { color: var(--accent); }
+  table.t td.right { text-align: right; }
+  table.t td .pill { font-size: 10.5px; padding: 1px 6px; }
+
+  /* Two-col split */
+  .split2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .split2 { grid-template-columns: 1fr; } }
+
+  /* Inventory chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    background: var(--panel-2); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; font-family: var(--mono);
+  }
+  .chip.done    { color: var(--done);   border-color: rgba(63,185,80,.35); background: rgba(63,185,80,.08); }
+  .chip.missing { color: var(--bad);    border-color: rgba(248,81,73,.4);  background: rgba(248,81,73,.08); }
+  .chip.partial { color: var(--warn);   border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.08); }
+
+  /* Critical-path */
+  .timeline {
+    display: flex; align-items: stretch; overflow-x: auto; gap: 8px;
+    padding: 6px 2px 12px; margin-top: 4px;
+  }
+  .tnode {
+    flex: 0 0 auto; min-width: 144px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; background: var(--panel);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .tnode.blocking { border-color: rgba(248,81,73,.5); }
+  .tnode .wk { color: var(--text-muted); font-size: 11px; letter-spacing: .3px; text-transform: uppercase; }
+  .tnode .nm { color: var(--text); font-size: 13.5px; font-weight: 600; }
+  .tnode .ph { color: var(--text-dim); font-size: 12px; }
+  .tnode .sub { color: var(--text-muted); font-size: 11.5px; margin-top: 2px; }
+
+  /* Footer */
+  footer.foot {
+    margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12.5px; line-height: 1.7;
+  }
+  footer.foot ul { margin: 8px 0 0; padding: 0 0 0 18px; }
+  footer.foot code { background: var(--panel); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
+
+  /* Banner */
+  .banner {
+    border: 1px solid rgba(248,81,73,.5); background: rgba(248,81,73,.08);
+    border-radius: 8px; padding: 10px 14px; margin: 14px 0 0;
+    color: var(--text-dim); font-size: 13px;
+  }
+  .banner b { color: var(--bad); }
+  .banner.ok    { border-color: rgba(63,185,80,.45);  background: rgba(63,185,80,.08); }
+  .banner.ok b  { color: var(--done); }
+  .banner.info  { border-color: rgba(88,166,255,.4); background: rgba(88,166,255,.08); }
+  .banner.info b{ color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="hero">
+    <h1>MUAP 下一阶段工作 &amp; Milestone 看板</h1>
+    <div class="sub">基于 <code>openclaw/CLOSEOUT/migration-to-muap.md v1.2</code> 决议体系，结合 MUAP <code>dxy-dev</code> 当前仓状态</div>
+    <div class="hero-meta">
+      <div><div class="k">报告日期</div><div class="v">2026-05-19</div></div>
+      <div><div class="k">基线分支</div><div class="v"><span class="mono">dxy-dev</span> (commit <span class="mono">ce07ff8</span>)</div></div>
+      <div><div class="k">迁移宪法版本</div><div class="v">v1.2 (Q1-Q7 全部决议)</div></div>
+      <div><div class="k">总工期</div><div class="v">11-13 周（并行优化）</div></div>
+      <div><div class="k">硬阻断</div><div class="v"><span class="pill blocked">Phase 0.5 mock gate</span></div></div>
+      <div><div class="k">Observability 路线</div><div class="v">Phoenix + Grafana（方案 A）</div></div>
+    </div>
+
+    <div class="banner info">
+      <b>阅读顺序</b> · §1 关键路径甘特 → §2 阶段 kanban → §3 MUAP 当前状态盘点 → §4 ERP 操作冻结快速索引 → §5 风险登记摘录 → §6 验收门集合 → §7 立即可执行行动
+    </div>
+  </header>
+
+  <!-- §1 关键路径 -->
+  <h2 class="section">§1 关键路径与里程碑 <span class="pip">(week 0 → week 16+)</span></h2>
+  <div class="timeline">
+    <div class="tnode">
+      <div class="wk">W0</div>
+      <div class="nm">Phase 0a</div>
+      <div class="ph">Bootstrap · 0.5 d</div>
+      <div class="sub">frontlane-lab-frontdesk + V1 prompt 迁入</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W0 (并行)</div>
+      <div class="nm">Phase 0b</div>
+      <div class="ph">Observability · 2.5 d</div>
+      <div class="sub">Phoenix + Grafana baseline</div>
+    </div>
+    <div class="tnode blocking">
+      <div class="wk">W2-4</div>
+      <div class="nm">Phase 0.5</div>
+      <div class="ph">Mock cluster · 2 wk</div>
+      <div class="sub">Q3 阻断 gate · 9 项验收</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W5-7</div>
+      <div class="nm">Phase 1</div>
+      <div class="ph">Foundation · 3 wk</div>
+      <div class="sub">G19 cancel + G03 SkillContract + G06 SafetyGuard</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W8-10</div>
+      <div class="nm">Phase 2A</div>
+      <div class="ph">ERP backend · 3 wk</div>
+      <div class="sub">G13/G14/G12 — 知识 + 实验管理</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W8-10 (并行)</div>
+      <div class="nm">Phase 2B</div>
+      <div class="ph">硬件适配 · 3 wk</div>
+      <div class="sub">G04/G05/G07/G09 — Robot + MQTT + Camera + PPE</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W11-13</div>
+      <div class="nm">Phase 3</div>
+      <div class="ph">GUI + 工具 · 3 wk</div>
+      <div class="sub">G08/G15/G20 — Chromeleon + PDF + HITL</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W14-15</div>
+      <div class="nm">Phase 4</div>
+      <div class="ph">Cutover · 2 wk</div>
+      <div class="sub">V1 切流到 frontlane-lab-frontdesk + 双跑 1 wk</div>
+    </div>
+    <div class="tnode">
+      <div class="wk">W16+</div>
+      <div class="nm">Phase 5</div>
+      <div class="ph">Hardening · 持续</div>
+      <div class="sub">pydantic-ai · E-Stop · restricted memory</div>
+    </div>
+  </div>
+
+  <!-- §2 阶段 kanban -->
+  <h2 class="section">§2 阶段详情看板</h2>
+  <div class="kanban">
+
+    <!-- Phase 0a -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 0a — Bootstrap</h3>
+          <div class="ph">V1 prompt 契约迁入 MUAP frontlane-lab-frontdesk</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">0.5 工程师日</span></div>
+        <div><span class="k">前置</span><span class="v">— 无</span></div>
+        <div><span class="k">并行项</span><span class="v">Phase 0b</span></div>
+        <div><span class="k">交付包</span><span class="v"><span class="mono">phase0-implementation-pack/</span></span></div>
+      </div>
+      <b>交付物</b>
+      <ul>
+        <li>拷 <span class="mono">groups/frontlane-lab-frontdesk/</span> 子树到 MUAP（含 <span class="mono">container.json</span> + <span class="mono">CLAUDE.local.md</span>）</li>
+        <li><span class="mono">scripts/init-enterprise-topology.ts</span> 追加 frontlane-lab-frontdesk 到 FRONTDESKS 列表</li>
+        <li>合并 <span class="mono">env-template.example</span> 入 <span class="mono">.env.local</span>（占位符按 redaction guardrails 替换）</li>
+        <li>跑 <span class="mono">pnpm init:enterprise</span> + <span class="mono">pnpm exec tsx scripts/configure-enterprise-gateway.ts --folders ...,frontlane-lab-frontdesk,...</span></li>
+      </ul>
+      <div class="exit">
+        <b>出口（C01-C08）</b>：DB row 创建、container.json 字段保留、<span class="mono">pnpm chat "你好，小环"</span> 返回 IDENTITY.md 风格自我介绍、硬件操作触发 HITL 确认卡片。
+      </div>
+    </div>
+
+    <!-- Phase 0b -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 0b — Observability baseline</h3>
+          <div class="ph">LLM-native：Phoenix + Grafana（方案 A）</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">2.5 工程师日</span></div>
+        <div><span class="k">前置</span><span class="v">— 无</span></div>
+        <div><span class="k">并行项</span><span class="v">Phase 0a</span></div>
+        <div><span class="k">交付包</span><span class="v"><span class="mono">PR-O1 ~ PR-O7</span></span></div>
+      </div>
+      <b>7 个 PR 拆分</b>
+      <ul>
+        <li><b>PR-O1</b> · 0.4 d · <span class="mono">infra/observability/</span> docker-compose（sim 1 容器 / prod 3 容器）+ Grafana provisioning + 只读 SQL</li>
+        <li><b>PR-O2</b> · 0.4 d · host: <span class="mono">src/observability/init.ts</span>（OpenTelemetry SDK + OpenInference semconv）</li>
+        <li><b>PR-O3</b> · 0.4 d · container: <span class="mono">container/agent-runner/src/observability.ts</span> + Anthropic instrumentation</li>
+        <li><b>PR-O4</b> · 0.3 d · <span class="mono">session.id / user.id / muap.*</span> attribute 透传（router / delivery / runner）</li>
+        <li><b>PR-O5</b> · 0.2 d · Python skill svc: <span class="mono">services/&lt;skill&gt;/observability.py</span> 模板 (<span class="mono">arize-phoenix-otel</span>)</li>
+        <li><b>PR-O6</b> · 0.5 d · Grafana 4 仪表盘 JSON：MUAP Overview / Per-Group Drill / Failure Analysis / Cost Tracking</li>
+        <li><b>PR-O7</b> · 0.3 d · <span class="mono">docs/observability.md</span> + Phase 0.5 gate 更新</li>
+      </ul>
+      <div class="exit">
+        <b>出口（8 项 Acceptance Gate）</b>：4 层 span 在 Phoenix UI 同根 trace；prompt 内容 UI 可读；必填 attributes 可过滤；trace 保留 ≥7 天；cancel/E-Stop span 标 ERROR + failure.category=cancel；Grafana 4 dashboard 开箱可见；只读账号写入失败；Phoenix 关停 MUAP 业务不阻塞（fail-open）。
+      </div>
+    </div>
+
+    <!-- Phase 0.5 — BLOCKING -->
+    <div class="card blocking">
+      <div class="head">
+        <div>
+          <h3>Phase 0.5 — V1 Mock cluster <span class="pill blocked">BLOCKING</span></h3>
+          <div class="ph">Q3 专项 · MUAP 同主机仿真集群</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">2 周（3 人并行）</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 0a + Phase 0b</span></div>
+        <div><span class="k">硬阻断</span><span class="v">Phase 2B 不可开</span></div>
+        <div><span class="k">技术债</span><span class="v">V1 11 个 F-MISSING skill</span></div>
+      </div>
+      <b>需建 mock 服务（6 件）</b>
+      <ul>
+        <li><span class="mono">sim-demo-server</span>（standard-demo + demo-fixed-qa 移植，FastAPI :8003）</li>
+        <li><span class="mono">sim-robot-task-server</span>（FastAPI :8001，覆盖 remote-liquid-exec / robot-grasp，含失败注入 + cancel）</li>
+        <li><span class="mono">sim-mqtt-broker</span>（mosquitto :1883 + echo bridge，覆盖 chassis / pipette / hand / gimbal / experiment-mode）</li>
+        <li><span class="mono">sim-camera-server</span>（FastAPI :8002，覆盖 ppe-alert / lab-monitor / orbbec-tracking-control）</li>
+        <li><span class="mono">sim-ui-automation-server</span>（FastAPI :8004，覆盖 win-remote + chromeleon — Phase 0.5 极简版）</li>
+        <li><span class="mono">sim-knowledge-cache</span>（FastAPI :8005，覆盖 websearch / arxiv / semantic-scholar）</li>
+      </ul>
+      <div class="exit">
+        <b>出口（F01-F09 + O01-O03 + I01-I03 + M01-M03 + 14+5 demo 回归）</b>：mock 路径与真实路径 trace shape 一致；session.id 透传 4 层 span；prompt 完整捕获；<span class="mono">RUNTIME_MODE</span> 未设置时启动即 fail-closed；V1 standard-demo 14 trigger + demo-fixed-qa 5 场景 100% 通过。
+      </div>
+    </div>
+
+    <!-- Phase 1 -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 1 — Foundation</h3>
+          <div class="ph">安全基线：cancel / SkillContract / SafetyGuard</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">3 周</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 0a + 0b + 0.5 通过</span></div>
+        <div><span class="k">阻断</span><span class="v">Phase 2A / 2B 前置</span></div>
+        <div><span class="k">PR 数</span><span class="v">3 个</span></div>
+      </div>
+      <b>三条工作流（G18 已前置至 Phase 0b，不再重复）</b>
+      <ul>
+        <li><b>G19 · cancel system message 协议</b>（host: <span class="mono">cancel-broker.ts</span>；container: poll-loop → <span class="mono">query.abort()</span>）· 3-5 天 · 高风险</li>
+        <li><b>G03 · SkillContract JSON envelope</b>（<span class="mono">container/agent-runner/src/poll-loop.ts</span> + 新 <span class="mono">skill-contract.ts</span>）· 3-5 天 · 中风险</li>
+        <li><b>G06 · SafetyGuard host 模块 + ERP <code>/authorize</code> 增强</b>（host: <span class="mono">modules/safety-guard/</span>）· 1 周 · 高风险</li>
+      </ul>
+      <div class="exit">
+        <b>出口</b>：MUAP 具备承接硬件 skill 的安全基线 — risk_class / requires_confirmation / evidence_required 集中策略；cancel 协议端到端；SkillContract envelope 不破坏既有 <span class="mono">&lt;message to=&gt;</span> 文本协议。
+      </div>
+    </div>
+
+    <!-- Phase 2A -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 2A — 知识 &amp; ERP backend</h3>
+          <div class="ph">A 类 5 skills + E 类 6 skills + 4 doc skills</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">3 周</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 1（G06 强依赖）</span></div>
+        <div><span class="k">并行项</span><span class="v">Phase 2B</span></div>
+        <div><span class="k">关键产物</span><span class="v"><span class="mono">erp-operations-frozen-v1.md</span></span></div>
+      </div>
+      <b>三条工作流</b>
+      <ul>
+        <li><b>G13 · A 类 5 skills</b>：a) <span class="mono">knowledge.{arxiv,semantic_scholar,websearch}</span> 三个 TS MCP；b) <span class="mono">erp_memory_get/upsert</span> 走 RAG · 1 周</li>
+        <li><b>G14 · E 类 6 skills</b>：ERP backend 实现 <span class="mono">experiment.daily_tasks.run / plan.create / card.{create,read,update} / lab.db.{search,read,write,anomaly_analyze}</span> 等 · 2 周</li>
+        <li><b>G12 · 4 doc skills</b>：<span class="mono">experiment.archive.create</span> + 日报 + experiment-card · 1.5 周</li>
+      </ul>
+      <div class="exit">
+        <b>出口</b>：ERP <code>/execute</code> 50 op 中 ~20 个上线；A+E+doc 类 15 skills 通过 mock 集群闭环；frontdesk 路由 → ERP authorize → ERP execute → mock skill → SkillContract 全链验证。
+      </div>
+    </div>
+
+    <!-- Phase 2B -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 2B — 硬件适配 &amp; cancel 集成</h3>
+          <div class="ph">Robot / MQTT / Camera / PPE — 4 条服务化</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">3 周</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 0.5 + Phase 1（G06）</span></div>
+        <div><span class="k">并行项</span><span class="v">Phase 2A</span></div>
+        <div><span class="k">硬阻断</span><span class="v">Phase 0.5 必须通过</span></div>
+      </div>
+      <b>四条工作流（B 类 7 skills + D 类 3 skills）</b>
+      <ul>
+        <li><b>G04 · RobotTaskClient</b>：V1 <span class="mono">remote_liquid_exec.py</span> 包装成 FastAPI + ERP <span class="mono">liquid.task.{submit,poll,log,cancel}</span> · 1 周</li>
+        <li><b>G05 · MqttBus</b>：<span class="mono">mqtt_daemon.py</span> 常驻服务 + REST 控制面 + ERP <span class="mono">mqtt.experiment_mode.*</span> + <span class="mono">chassis.move.*</span> · 1 周</li>
+        <li><b>G09 · CameraClient</b>：Orbbec HTTP API 包装服务 + ERP <span class="mono">camera.snapshot.fetch / camera.list</span> · 1 周</li>
+        <li><b>G07 · PpeGate</b>：独立 Python 服务（PPE 推断 + 状态机 + 摄像头联动）+ ERP <span class="mono">safety.ppe.{check,confirm_resume}</span> · 2 周</li>
+      </ul>
+      <div class="exit">
+        <b>出口</b>：在 production 模式（LAN 真实硬件）跑通至少 chassis-move + ppe-alert + remote-liquid-exec 端到端；PPE 状态机回归测试通过；cancel 沿 host→runner→ERP→服务 全链路生效。
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 3 — GUI &amp; 工具</h3>
+          <div class="ph">Chromeleon / nano-pdf / HITL 通用门</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">3 周</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 2B</span></div>
+      </div>
+      <ul>
+        <li><b>G08 · win-remote-control + chromeleon-remote</b>：保留 Python（RapidOCR + UIAutomation 无 TS 替代）服务化 + ERP <span class="mono">gui.{screenshot,action.*,window.*}</span> + <span class="mono">chromeleon.sop.execute / queue.read / pump.off</span> · 2 周</li>
+        <li><b>G15 · nano-pdf MCP</b>：TS MCP 工具（pdf-lib / pdfkit）· 3 天</li>
+        <li><b>G20 · HITL 通用门</b>：扩展 <span class="mono">interactive</span> MCP + 飞书卡片回调（risk-class-driven 卡片样式）· 1 周</li>
+      </ul>
+      <div class="exit">
+        <b>出口</b>：化学实验 5 个用例（V1 test-task-catalog）端到端通过；Chromeleon SOP 序列在 production 模式可执行。
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 4 — Migration cutover</h3>
+          <div class="ph">V1 → MUAP 切流 + 双跑监控</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">2 周</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 3</span></div>
+      </div>
+      <ul>
+        <li>V1 用户切换到 <span class="mono">frontlane-lab-frontdesk</span> + 飞书 autowire 切换</li>
+        <li>G22 端点漂移修复（一次性扫码 + redaction）· 2 天</li>
+        <li>V1 进入 read-only 维护期（git tag <span class="mono">v1-frozen-pre-migration</span>）</li>
+        <li>双跑监控 1 周（V1 + MUAP 同时存活，Grafana 对比指标）</li>
+      </ul>
+      <div class="exit">
+        <b>出口</b>：V1 实验业务 0 incident 切换；R01 风险（用户感知到迁移）通过 1 周双跑闭合。
+      </div>
+    </div>
+
+    <!-- Phase 5 -->
+    <div class="card">
+      <div class="head">
+        <div>
+          <h3>Phase 5 — Hardening &amp; pydantic-ai</h3>
+          <div class="ph">持续演进（week 16+）</div>
+        </div>
+        <span class="pill pending">待启动</span>
+      </div>
+      <div class="meta">
+        <div><span class="k">工期</span><span class="v">持续</span></div>
+        <div><span class="k">前置</span><span class="v">Phase 4</span></div>
+      </div>
+      <ul>
+        <li><b>pydantic-ai 集群</b>：强 schema 校验 / 复杂 ML 推断（Q5 决议纳入主路线）</li>
+        <li><b>E-Stop 跨设备 coordinator</b>：跨 robot / camera / chromeleon 的硬停止</li>
+        <li><b>AGENT_MEMORY/08-lab-local restricted memory</b> → ERP <span class="mono">memory_*</span></li>
+        <li><b>Observability 增强</b>：Phoenix <span class="mono">/metrics</span> + Prometheus + Grafana 健康面板（Phase 0b 选项 §5.3）</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- §3 MUAP 当前状态盘点 -->
+  <h2 class="section">§3 MUAP 当前状态盘点 <span class="pip">(dxy-dev / commit ce07ff8)</span></h2>
+  <div class="split2">
+    <div>
+      <b>Phase 0a 准备度</b>
+      <table class="t">
+        <thead><tr><th>条目</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><span class="mono">scripts/init-enterprise-topology.ts</span></td><td><span class="pill done">已存在</span></td><td>需追加 frontlane-lab-frontdesk 到 FRONTDESKS 列表</td></tr>
+          <tr><td><span class="mono">scripts/configure-enterprise-gateway.ts</span></td><td><span class="pill done">已存在</span></td><td>需在 <code>--folders</code> 加 frontlane-lab-frontdesk</td></tr>
+          <tr><td><span class="mono">groups/frontlane-lab-frontdesk/</span></td><td><span class="pill blocked">缺失</span></td><td>需从 <span class="mono">openclaw/CLOSEOUT/phase0-implementation-pack/groups/</span> 拷入</td></tr>
+          <tr><td>身份信任链（identity / a2a origin / HMAC / audit）</td><td><span class="pill done">完成</span></td><td>宪法级要求，已不可削弱</td></tr>
+          <tr><td>frontdesk → worker 派活（a2a + root-session）</td><td><span class="pill done">完成</span></td><td>覆盖 V1 dispatcher 全部 routing 需求</td></tr>
+          <tr><td>容器隔离（per-session Docker + memoryMb / cpus / pidsLimit）</td><td><span class="pill done">完成</span></td><td>强于 V1，无需补</td></tr>
+          <tr><td>ERP 5 端点（describe/authorize/execute/memory_get/memory_upsert）</td><td><span class="pill done">完成</span></td><td>等 ERP backend 实装即可承接 Phase 2A/2B</td></tr>
+          <tr><td>classify_intent</td><td><span class="pill done">完成</span></td><td>Q21 已强于 V1（含 bypass metrics + outcome_ref loop）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <b>Phase 0b 准备度</b>
+      <table class="t">
+        <thead><tr><th>条目</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><span class="mono">src/observability/init.ts</span></td><td><span class="pill blocked">缺失</span></td><td>PR-O2 新建（OTel SDK + OpenInference semconv）</td></tr>
+          <tr><td><span class="mono">container/agent-runner/src/observability.ts</span></td><td><span class="pill blocked">缺失</span></td><td>PR-O3 新建（OTel + Anthropic instrumentation）</td></tr>
+          <tr><td><span class="mono">infra/observability/</span></td><td><span class="pill blocked">缺失</span></td><td>PR-O1 新建（docker-compose sim + prod，Grafana provisioning，只读 SQL）</td></tr>
+          <tr><td><span class="mono">services/&lt;skill&gt;/observability.py</span> 模板</td><td><span class="pill blocked">缺失</span></td><td>PR-O5 新建（arize-phoenix-otel）</td></tr>
+          <tr><td>Prometheus metrics（host）</td><td><span class="pill partial">部分</span></td><td>已有 10 个指标族；Phase 0b 不强制接 Prometheus，留待 Phase 1</td></tr>
+          <tr><td>结构化日志（pino + correlation ID）</td><td><span class="pill blocked">缺失</span></td><td>当前 64 行 console-only；R14 需替换为 OTel 注入路径</td></tr>
+        </tbody>
+      </table>
+      <b style="margin-top:14px;display:block;">Phase 0.5 准备度</b>
+      <table class="t">
+        <thead><tr><th>条目</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><span class="mono">services/</span> monorepo 子目录</td><td><span class="pill blocked">缺失</span></td><td>Phase 0.5 立即可执行行动 #1</td></tr>
+          <tr><td><span class="mono">compose.sim.yml</span></td><td><span class="pill blocked">缺失</span></td><td>Phase 0.5 立即可执行行动 #2</td></tr>
+          <tr><td>6 个 mock 服务</td><td><span class="pill blocked">缺失</span></td><td>11 个 F-MISSING skills + 2 demo + 3 部分移植</td></tr>
+          <tr><td><span class="mono">RUNTIME_MODE</span> 环境变量切换</td><td><span class="pill blocked">缺失</span></td><td>必填、无默认、fail-closed</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- §4 ERP /execute 冻结表快速索引 -->
+  <h2 class="section">§4 ERP <span class="mono">/execute</span> 命名表快速索引 <span class="pip">(50 op 冻结，新增需 review)</span></h2>
+  <table class="t">
+    <thead>
+      <tr><th>Domain</th><th>覆盖 V1 skill</th><th>代表 operation</th><th>风险等级</th><th>requires_confirmation</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><span class="mono">knowledge</span></td><td>arxiv / semantic-scholar / websearch</td><td><span class="mono">knowledge.arxiv.search</span> · <span class="mono">knowledge.websearch.query</span></td><td><span class="pill ghost">low</span></td><td>false</td></tr>
+      <tr><td><span class="mono">erp_memory</span> (built-in)</td><td>remote-rag-expert / rag-upload</td><td><span class="mono">erp_memory_get</span> · <span class="mono">erp_memory_upsert</span></td><td><span class="pill ghost">low/medium</span></td><td>upsert=true</td></tr>
+      <tr><td><span class="mono">liquid</span></td><td>remote-liquid-exec</td><td><span class="mono">liquid.task.submit/poll/log/cancel</span></td><td><span class="pill blocked">high</span></td><td>submit=true</td></tr>
+      <tr><td><span class="mono">chassis</span></td><td>chassis-move</td><td><span class="mono">chassis.move.publish/poll</span></td><td><span class="pill blocked">high</span></td><td>publish=true</td></tr>
+      <tr><td><span class="mono">grasp / hand / pipette / gimbal</span></td><td>robot-grasp / robot-hand / robot-pipette / robot-gimbal</td><td><span class="mono">grasp.task.submit</span> · <span class="mono">hand.command.publish</span> · <span class="mono">pipette.command.publish</span></td><td><span class="pill blocked">high</span></td><td>publish/submit=true</td></tr>
+      <tr><td><span class="mono">tracking</span></td><td>orbbec-tracking-control</td><td><span class="mono">tracking.target.start/stop/status</span></td><td><span class="pill warn">medium</span></td><td>start/stop=true</td></tr>
+      <tr><td><span class="mono">gui</span></td><td>win-remote-control</td><td><span class="mono">gui.action.click/click_finalize/type</span></td><td><span class="pill warn">medium</span></td><td>action=true</td></tr>
+      <tr><td><span class="mono">chromeleon</span></td><td>chromeleon-remote</td><td><span class="mono">chromeleon.sop.execute</span> · <span class="mono">chromeleon.pump.off</span></td><td><span class="pill blocked">high</span></td><td>execute/pump.off=true</td></tr>
+      <tr><td><span class="mono">mqtt</span></td><td>mqtt-experiment-mode</td><td><span class="mono">mqtt.experiment_mode.{enable,disable,status}</span></td><td><span class="pill warn">medium</span></td><td>enable/disable=true</td></tr>
+      <tr><td><span class="mono">safety.ppe</span></td><td>ppe-alert</td><td><span class="mono">safety.ppe.check</span> · <span class="mono">safety.ppe.confirm_resume</span></td><td><span class="pill blocked">high</span></td><td>true</td></tr>
+      <tr><td><span class="mono">camera</span></td><td>lab-monitor</td><td><span class="mono">camera.snapshot.fetch</span> · <span class="mono">camera.list</span></td><td><span class="pill ghost">low</span></td><td>false</td></tr>
+      <tr><td><span class="mono">experiment / lab.db</span></td><td>daily-tasks / task-planner / experiment-card / lab-db / experiment-archive / daily-report</td><td><span class="mono">experiment.plan.create</span> · <span class="mono">lab.db.{search,read,write,anomaly_analyze}</span></td><td><span class="pill warn">medium</span></td><td>write/create=true</td></tr>
+    </tbody>
+  </table>
+
+  <!-- §5 风险登记摘录 -->
+  <h2 class="section">§5 风险登记摘录 <span class="pip">(v1.2，含 Phase 0b 新增 R15/R16)</span></h2>
+  <table class="t">
+    <thead>
+      <tr><th>#</th><th>风险</th><th>严重度</th><th>概率</th><th>缓解措施</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>R11</td><td>V1 仿真基础设施缺失被低估（Q3 阻断）</td><td><span class="pill blocked">极高</span></td><td><span class="pill warn">已确认</span></td><td>Phase 0.5 强制 gate；mock 服务先行；不通过不开 Phase 2B</td></tr>
+      <tr><td>R13</td><td>Phase 0b observability baseline 滞后导致 Phase 0.5 mock O01-O03 无法验收</td><td><span class="pill blocked">极高</span></td><td><span class="pill ghost">低</span></td><td>Phase 0b 与 0a 并行启动；OpenInference 自动 instrumentation + 单容器 sim 显著降风险</td></tr>
+      <tr><td>R12</td><td>混合双套部署切换 bug（sim ↔ prod）</td><td><span class="pill warn">高</span></td><td><span class="pill warn">中</span></td><td><span class="mono">RUNTIME_MODE</span> 环境变量 + container.json 显式标注；不允许默认值</td></tr>
+      <tr><td>R14</td><td>既有 <span class="mono">console.error</span> 散点未替换为 OTel 注入路径，留有可观测黑洞</td><td><span class="pill warn">中</span></td><td><span class="pill warn">中</span></td><td>CI lint：MUAP host/runner 业务代码须通过 <span class="mono">src/observability/init.ts</span> 注入；Python skill svc 通过 <span class="mono">arize-phoenix-otel</span> 启动</td></tr>
+      <tr><td>R15</td><td>Phoenix 单节点 OOM 导致 trace 写入丢失</td><td><span class="pill warn">中</span></td><td><span class="pill ghost">低</span></td><td>fail-open OTLP exporter；prod 用 PG 持久化；容器 <span class="mono">restart: unless-stopped</span>；保留 7 天数据卷快照</td></tr>
+      <tr><td>R16</td><td>prompt 含 PII 被全量上链</td><td><span class="pill warn">中</span></td><td><span class="pill warn">高</span></td><td>SDK 层 redaction（手机号/身份证/JWT/cookies）；CI 加 <span class="mono">TOOL_CALL_TEXT_LEAK</span> 检测（继承 V1 langfuse-observer 经验）</td></tr>
+      <tr><td>R01</td><td>V1 用户感知到迁移（reply 风格、响应延迟）</td><td><span class="pill warn">高</span></td><td><span class="pill warn">中</span></td><td>Phase 4 双跑 1 周；MEMORY.md 精确迁移</td></tr>
+      <tr><td>R02</td><td>ERP backend 迟迟未实装，Phase 2A/2B 卡住</td><td><span class="pill warn">高</span></td><td><span class="pill warn">中</span></td><td>Phase 1 末必须冻结 ERP <span class="mono">/execute</span> operation 命名表（已交付 <span class="mono">erp-operations-frozen-v1.md</span>）</td></tr>
+    </tbody>
+  </table>
+
+  <!-- §6 验收门集合 -->
+  <h2 class="section">§6 验收门集合 <span class="pip">(全部 gates 必须通过)</span></h2>
+  <div class="split2">
+    <div>
+      <b>Phase 0a · C01-C10（10 项）</b>
+      <table class="t">
+        <thead><tr><th>#</th><th>验收项</th></tr></thead>
+        <tbody>
+          <tr><td>C01-C04</td><td>group 目录存在 / DB row 创建 / init:enterprise 保留字段 / configure-enterprise-gateway 注入</td></tr>
+          <tr><td>C05-C06</td><td><span class="mono">pnpm dev</span> 无错 / <span class="mono">pnpm chat "你好，小环"</span> 返回 IDENTITY.md 风格</td></tr>
+          <tr><td>C07</td><td>"演示 SOP 生成" 返回 standard-demo 内容（依赖 Phase 0.5 mock）</td></tr>
+          <tr><td>C08</td><td>触发硬件操作前看到 HITL 卡片</td></tr>
+          <tr><td>C09</td><td>OTel trace 在 host + container 双侧都有 span（依赖 Phase 0b）</td></tr>
+          <tr><td>C10</td><td><span class="mono">RUNTIME_MODE</span> 隔离测试通过（依赖 Phase 0.5）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <b>Phase 0b · 8 项 Acceptance Gate</b>
+      <table class="t">
+        <thead><tr><th>#</th><th>验收项</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>frontdesk(Node) → worker(Node) → ERP(Node→Python) → mock skill(Python) 的 trace；4 层 span 在 Phoenix UI 同一棵树</td></tr>
+          <tr><td>2</td><td>prompt 内容（system + user + tool）在 LLM span 详情可读</td></tr>
+          <tr><td>3</td><td>必填 attributes（<span class="mono">muap.runtime_mode</span> / <span class="mono">muap.channel.id</span> / <span class="mono">session.id</span> / <span class="mono">user.id</span> / <span class="mono">muap.failure.category</span>）UI 可过滤</td></tr>
+          <tr><td>4</td><td>trace 数据保留至少 7 天；UI 重启后仍可查</td></tr>
+          <tr><td>5</td><td>cancel / E-Stop 路径产生的 span <span class="mono">status=ERROR</span> + <span class="mono">muap.failure.category=cancel</span></td></tr>
+          <tr><td>6</td><td>Grafana 4 块仪表盘开箱可见；MUAP Overview 显示 24h trace/token/cost/failure 分布</td></tr>
+          <tr><td>7</td><td>Grafana 只读账号<b>不能</b>修改 Phoenix-PG（<span class="mono">INSERT/UPDATE/DELETE</span> 全部失败）</td></tr>
+          <tr><td>8</td><td>关闭 Phoenix 容器，MUAP 业务流不阻塞（fail-open exporter）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;">
+    <b>Phase 0.5 · F01-F09 + O01-O03 + I01-I03 + M01-M03 + V1 demo 回归（约 25 项）</b>
+    <table class="t">
+      <thead><tr><th>类别</th><th>关键验收项</th></tr></thead>
+      <tbody>
+        <tr><td>F01-F09 功能验收</td><td>6 mock 服务 healthy / standard-demo 14 trigger / demo-fixed-qa 5 场景 / chassis-move SimulationMode / ppe-alert SimulationMode / robot task API 闭环 / MQTT 7 topic 三态 ACK / UI 自动化端点 / 知识 API 缓存零公网</td></tr>
+        <tr><td>O01-O03 OTel 一致性</td><td>mock 路径与真实路径 trace shape 一致（attribute 名 / 层次 / parent-child 一致）/ 关键指标 mock 路径下也增量 / correlation ID 串联同 sessionId</td></tr>
+        <tr><td>I01-I03 失败注入</td><td>rate_limit 429 / timeout SLO 超时触发 R6 fallback / cancel 中途打断 50% 长任务全链路通畅</td></tr>
+        <tr><td>M01-M03 模式切换</td><td>simulation 模式禁真实硬件调用 / production 模式禁 fallback 到 mock / <span class="mono">RUNTIME_MODE</span> 未设置时启动即报错（fail-closed）</td></tr>
+        <tr><td>V1 demo 回归</td><td>standard-demo 14 trigger 100% / demo-fixed-qa 5 场景 100%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- §7 立即可执行行动 -->
+  <h2 class="section">§7 立即可执行行动 <span class="pip">(接下来 3-5 天)</span></h2>
+  <table class="t">
+    <thead>
+      <tr><th>#</th><th>行动</th><th>负责人</th><th>状态</th><th>落点产物</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>启动 Phase 0a — 拷 <span class="mono">phase0-implementation-pack/groups/frontlane-lab-frontdesk</span> 入 MUAP；按 README 5 步走</td>
+        <td>运维 / 开发</td>
+        <td><span class="pill pending">待启动</span></td>
+        <td><span class="mono">groups/frontlane-lab-frontdesk/</span></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>启动 Phase 0b observability baseline（与 Phase 0a 并行）</td>
+        <td>MUAP 开发 + DevOps（1-2 人）</td>
+        <td><span class="pill pending">待启动</span></td>
+        <td>PR-O1 ~ PR-O7（7 个 PR，2.5 工程师日）</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>起 <span class="mono">services/</span> monorepo 子目录 + <span class="mono">compose.sim.yml</span></td>
+        <td>MUAP 开发</td>
+        <td><span class="pill pending">待启动</span></td>
+        <td>Phase 0.5 前置基础设施</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>V1 进入冻结期（git tag <span class="mono">v1-frozen-pre-migration</span>）— 不再加新 skill；只接 bugfix</td>
+        <td>V1 维护者</td>
+        <td><span class="pill pending">待启动</span></td>
+        <td>V1 master 冻结 tag</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Phase 0b 完成后立即触发 Phase 0.5 mock 集群开发（3 人并行 2 周）</td>
+        <td>后端 A/B/C + DevOps</td>
+        <td><span class="pill pending">待启动</span></td>
+        <td>6 mock 服务 + 9 项验收 gate</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>Phase 1 三条工作流 PR draft（cancel / SkillContract / SafetyGuard）</td>
+        <td>MUAP 开发</td>
+        <td><span class="pill pending">待启动（Phase 0/0.5 完成后）</span></td>
+        <td>3 个 PR draft</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- §8 "不做的事" -->
+  <h2 class="section">§8 明确边界 <span class="pip">(宪法级，不可妥协)</span></h2>
+  <div class="banner">
+    <b>禁线（违反需用户授权）</b>
+    <ul style="margin:6px 0 0 18px;">
+      <li>不改 host↔runner 的 SQLite 轮询协议（架构地基）</li>
+      <li>不把硬件控制塞进 MUAP host 进程</li>
+      <li>不把 Python skills 重写为 TypeScript（除非纯逻辑无依赖）</li>
+      <li>不让 MUAP 直接读取 V1 的 <span class="mono">memory/YYYY-MM-DD*.md</span>（违反 AGENTS.md）</li>
+      <li>不绕过 ERP gateway 调硬件（破坏审计链）</li>
+      <li>不在评审过程中真触达任何硬件、API、MQTT broker</li>
+      <li>不在 Q3 mock 基础设施验收通过前，开 Phase 2B 硬件服务化</li>
+      <li>不在 observability 路径引入 Logfire 或 Langfuse 等额外耦合层（v1.2 新增）</li>
+      <li>不让 Grafana 持有 Phoenix-PG 写权限（v1.2 新增，仅 <span class="mono">grafana_ro</span> 只读账号）</li>
+    </ul>
+  </div>
+
+  <footer class="foot">
+    <b>主参考文件</b>
+    <ul>
+      <li><code>openclaw/CLOSEOUT/migration-to-muap.md</code> v1.2 — 迁移核心宪法（Q1-Q7 决议、Phase 0/0.5/1/2A/2B/3/4/5 路线图、风险登记 R01-R16）</li>
+      <li><code>openclaw/CLOSEOUT/agent-observability-design.md</code> v1.0 — Phase 0b 终稿（Phoenix + Grafana，2.5 d，PR-O1 ~ PR-O7，8 项验收 gate）</li>
+      <li><code>openclaw/CLOSEOUT/v1-mock-simulation-replication-plan.md</code> 1.0 — Phase 0.5 Q3 专项（6 mock 服务，9 项验收 gate，6 周路线压缩至 2 周并行）</li>
+      <li><code>openclaw/CLOSEOUT/phase0-implementation-pack/README.md</code> — Phase 0a 5 步运维手册（C01-C10 验收）</li>
+      <li><code>openclaw/CLOSEOUT/erp-operations-frozen-v1.md</code> 1.0 — ERP <code>/execute</code> 50 op 冻结命名表</li>
+      <li><code>MultiUserAgentPlatform/docs/decisions/ADR-0001 ~ ADR-0007</code> — MUAP 本地 ADR 镜像（Q1-Q7）</li>
+      <li><code>MultiUserAgentPlatform/docs/migration-from-v1.md</code> — 仓内跨仓迁移指针</li>
+      <li><code>MultiUserAgentPlatform/reports/README.md</code> — 报告目录治理约定（human / machine 分目录）</li>
+    </ul>
+    <div style="margin-top:10px;">报告由 Sisyphus 生成 · 2026-05-19 · 基线 commit <code>ce07ff8</code> · 工作目录 <code>MultiUserAgentPlatform/dxy-dev</code></div>
+  </footer>
+
+</div>
+</body>
+</html>

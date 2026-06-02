@@ -1,0 +1,5 @@
+Command:
+docker exec -e PGPASSWORD=phoenix_local_only muap-observability-prod-postgres-1 psql -U phoenix -d phoenix -t -c "SELECT count(*) FROM traces;"
+
+Output:
+   624

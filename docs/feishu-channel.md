@@ -50,7 +50,7 @@ the official long-connection event subscription mode.
 For the enterprise frontdesk pattern, these runtime flags are also useful:
 
 ```bash
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false

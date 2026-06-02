@@ -21,7 +21,7 @@ vi.mock('./config.js', async () => {
 
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
 const { createAgentGroup } = await import('./db/agent-groups.js');
-const { createSession, getSession, getSessionsByAgentGroup, updateSession } = await import('./db/sessions.js');
+const { createSession, getSession, getSessionsByAgentGroup } = await import('./db/sessions.js');
 const { sessionDir } = await import('./session-manager.js');
 const { archiveSession, hardDeleteArchivedSession, runSessionLifecycleSweep } = await import('./session-archive.js');
 

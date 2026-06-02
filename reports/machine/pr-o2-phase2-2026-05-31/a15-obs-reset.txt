@@ -1,0 +1,22 @@
+
+> frontlane-agent-platform@2.0.44 obs:reset /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+> docker compose -p muap-observability-prod -f infra/observability/docker-compose.prod.yml down -v
+
+ Container muap-observability-prod-grafana-1  Stopping
+ Container muap-observability-prod-grafana-1  Stopped
+ Container muap-observability-prod-grafana-1  Removing
+ Container muap-observability-prod-grafana-1  Removed
+ Container muap-observability-prod-phoenix-1  Stopping
+ Container muap-observability-prod-phoenix-1  Stopped
+ Container muap-observability-prod-phoenix-1  Removing
+ Container muap-observability-prod-phoenix-1  Removed
+ Container muap-observability-prod-postgres-1  Stopping
+ Container muap-observability-prod-postgres-1  Stopped
+ Container muap-observability-prod-postgres-1  Removing
+ Container muap-observability-prod-postgres-1  Removed
+ Volume muap-observability-prod_muap_grafana_data  Removing
+ Volume muap-observability-prod_muap_phoenix_postgres_data  Removing
+ Network muap-observability-prod_default  Removing
+ Volume muap-observability-prod_muap_phoenix_postgres_data  Removed
+ Volume muap-observability-prod_muap_grafana_data  Removed
+ Network muap-observability-prod_default  Removed

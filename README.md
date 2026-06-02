@@ -1,5 +1,11 @@
 # FrontLane Agent Platform
 
+> **🧭 给 coding agent 的入场指引**：
+> - 本项目正在执行 V1（openclaw / "小环"）→ MUAP 迁移。当前是 v1.2 宪法已拍板、Phase 0a + Phase 0b 待启动状态。
+> - **接手开发前必读**：[`docs/migration-from-v1.md`](docs/migration-from-v1.md) → 指向姊妹仓 `../openclaw/CLOSEOUT/migration-to-muap.md` v1.2（迁移核心宪法，Q1-Q7 全部决议）。
+> - **架构决策档案**：[`docs/decisions/README.md`](docs/decisions/README.md)（ADR 索引；找"为什么这么做"的入口）。
+> - **续接 / 留痕规则**：见根 [`CLAUDE.md`](CLAUDE.md) §"续接指南" 与 `.sisyphus/` 工作痕迹。
+
 一个面向企业飞书入口、多人隔离上下文、ERP 派活协同的多用户 Agent 基础设施。
 
 当前代码的目标不是“个人 AI 助手”，而是做一层企业入口 Agent 平台：
@@ -20,7 +26,7 @@
 - 支持 shared、per-user、per-user-per-thread 等 session 隔离模式
 - 支持 frontdesk -> worker 的 agent-to-agent 派活
 - 支持 `root-session` worker 会话模式：同一个员工的请求会带着自己的根会话上下文进入 worker
-- 支持企业前台自动接线：员工第一次私聊飞书机器人时可自动接到 `frontlane-frontdesk`
+- 支持企业前台自动接线：员工第一次私聊飞书机器人时可自动接到 `frontlane-template-frontdesk`
 - 飞书通道支持用 reaction 做“处理中”状态提示，避免机器人先发一条废话消息
 
 **身份与审计（企业场景的信任链）**
@@ -56,7 +62,7 @@
 ```text
 飞书用户 / 群聊
   -> Feishu Bot
-  -> frontlane-frontdesk
+  -> frontlane-template-frontdesk
   -> user-scoped session
   -> worker agents
   -> ERP gateway
@@ -137,7 +143,7 @@ OPENAI_BASE_URL=https://www.d1token.com/
 OPENAI_API_KEY=sk-xxx
 OPENAI_MODEL=gpt-5.4
 
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false
@@ -180,7 +186,7 @@ pnpm init:enterprise
 
 这一步会创建或复用：
 
-- `frontlane-frontdesk`
+- `frontlane-template-frontdesk`
 - `frontlane-access-worker`
 - `frontlane-sales-worker`
 - `frontlane-finance-worker`
@@ -195,7 +201,7 @@ pnpm init:enterprise
 pnpm exec tsx scripts/init-enterprise-topology.ts \
   --channel feishu \
   --platform-id oc_xxx \
-  --group-name "FrontLane Desk" \
+  --group-name "FrontLane Template Desk" \
   --threaded
 ```
 
@@ -291,6 +297,8 @@ FEISHU_EVENT_MODE=hybrid
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 开发者上手指南
 - [docs/ERP-INTEGRATION-GUIDE.md](docs/ERP-INTEGRATION-GUIDE.md) — ERP 后端集成教程
 - [docs/architecture.md](docs/architecture.md)
+- **[docs/migration-from-v1.md](docs/migration-from-v1.md)** — V1（openclaw）迁移导航（必读，外部 coding agent 第一入口）
+- **[docs/decisions/README.md](docs/decisions/README.md)** — 架构决策档案（ADR 索引）
 - [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md)
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md)
 - [docs/isolation-model.md](docs/isolation-model.md)

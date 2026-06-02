@@ -204,70 +204,70 @@ function sampleAllStatusCounts(): void {
 }
 
 async function sweepSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
-  if (!agentGroup) return;
+    const agentGroup = getAgentGroup(session.agent_group_id);
+    if (!agentGroup) return;
 
-  const inPath = inboundDbPath(agentGroup.id, session.id);
-  if (!fs.existsSync(inPath)) return;
+    const inPath = inboundDbPath(agentGroup.id, session.id);
+    if (!fs.existsSync(inPath)) return;
 
-  let inDb: Database.Database;
-  let outDb: Database.Database | null = null;
-  try {
-    inDb = openInboundDb(agentGroup.id, session.id);
-  } catch {
-    return;
-  }
-
-  try {
-    outDb = openOutboundDb(agentGroup.id, session.id);
-  } catch {
-    // outbound.db might not exist yet (container hasn't started)
-  }
-
-  try {
-    // 1. Sync processing_ack → messages_in status
-    if (outDb) {
-      syncProcessingAcks(inDb, outDb);
+    let inDb: Database.Database;
+    let outDb: Database.Database | null = null;
+    try {
+      inDb = openInboundDb(agentGroup.id, session.id);
+    } catch {
+      return;
     }
 
-    // 2. Wake a container if work is due and nothing is running. Ordered
-    // before the crashed-container cleanup so a fresh container gets a chance
-    // to clean its own orphan processing_ack rows on startup (see
-    // container/agent-runner/src/db/connection.ts). Otherwise the reset path
-    // would keep bumping process_after into the future, dueCount would stay 0,
-    // and the wake would never fire.
-    const dueCount = countDueMessages(inDb);
-    if (dueCount > 0 && !isContainerRunning(session.id)) {
-      log.info('Waking container for due messages', { sessionId: session.id, count: dueCount });
-      // wakeContainer never throws — transient spawn failures (OneCLI down,
-      // etc.) return false and leave messages pending for the next tick.
-      await wakeContainer(session);
+    try {
+      outDb = openOutboundDb(agentGroup.id, session.id);
+    } catch {
+      // outbound.db might not exist yet (container hasn't started)
     }
 
-    const alive = isContainerRunning(session.id);
+    try {
+      // 1. Sync processing_ack → messages_in status
+      if (outDb) {
+        syncProcessingAcks(inDb, outDb);
+      }
 
-    // 3. Running-container SLA: absolute ceiling + per-claim stuck rules.
-    if (alive && outDb) {
-      enforceRunningContainerSla(inDb, outDb, session, agentGroup.id);
+      // 2. Wake a container if work is due and nothing is running. Ordered
+      // before the crashed-container cleanup so a fresh container gets a chance
+      // to clean its own orphan processing_ack rows on startup (see
+      // container/agent-runner/src/db/connection.ts). Otherwise the reset path
+      // would keep bumping process_after into the future, dueCount would stay 0,
+      // and the wake would never fire.
+      const dueCount = countDueMessages(inDb);
+      if (dueCount > 0 && !isContainerRunning(session.id)) {
+        log.info('Waking container for due messages', { sessionId: session.id, count: dueCount });
+        // wakeContainer never throws — transient spawn failures (OneCLI down,
+        // etc.) return false and leave messages pending for the next tick.
+        await wakeContainer(session);
+      }
+
+      const alive = isContainerRunning(session.id);
+
+      // 3. Running-container SLA: absolute ceiling + per-claim stuck rules.
+      if (alive && outDb) {
+        await enforceRunningContainerSla(inDb, outDb, session, agentGroup.id);
+      }
+
+      // 4. Crashed-container cleanup: processing rows left behind get retried.
+      // Only fires when wake in step 2 didn't pick up the work (no due messages,
+      // or wake failed). resetStuckProcessingRows itself is idempotent — it
+      // skips messages already scheduled for a future retry.
+      if (!alive && outDb) {
+        resetStuckProcessingRows(inDb, outDb, session, 'container not running');
+      }
+
+      // 5. Recurrence fanout for completed recurring tasks.
+      // MODULE-HOOK:scheduling-recurrence:start
+      const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
+      await handleRecurrence(inDb, session);
+      // MODULE-HOOK:scheduling-recurrence:end
+    } finally {
+      inDb.close();
+      outDb?.close();
     }
-
-    // 4. Crashed-container cleanup: processing rows left behind get retried.
-    // Only fires when wake in step 2 didn't pick up the work (no due messages,
-    // or wake failed). resetStuckProcessingRows itself is idempotent — it
-    // skips messages already scheduled for a future retry.
-    if (!alive && outDb) {
-      resetStuckProcessingRows(inDb, outDb, session, 'container not running');
-    }
-
-    // 5. Recurrence fanout for completed recurring tasks.
-    // MODULE-HOOK:scheduling-recurrence:start
-    const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
-    await handleRecurrence(inDb, session);
-    // MODULE-HOOK:scheduling-recurrence:end
-  } finally {
-    inDb.close();
-    outDb?.close();
-  }
 }
 
 function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
@@ -284,12 +284,12 @@ function bashTimeoutMs(state: ContainerState | null): number | null {
   return typeof state.tool_declared_timeout_ms === 'number' ? state.tool_declared_timeout_ms : null;
 }
 
-function enforceRunningContainerSla(
+async function enforceRunningContainerSla(
   inDb: Database.Database,
   outDb: Database.Database,
   session: Session,
   agentGroupId: string,
-): void {
+): Promise<void> {
   const decision = decideStuckAction({
     now: Date.now(),
     heartbeatMtimeMs: heartbeatMtimeMs(agentGroupId, session.id),
@@ -305,7 +305,7 @@ function enforceRunningContainerSla(
       heartbeatAgeMs: decision.heartbeatAgeMs,
       ceilingMs: decision.ceilingMs,
     });
-    killContainer(session.id, 'absolute-ceiling');
+    await killContainer(session.id, 'absolute-ceiling');
     resetStuckProcessingRows(inDb, outDb, session, 'absolute-ceiling');
     return;
   }
@@ -316,7 +316,7 @@ function enforceRunningContainerSla(
     claimAgeMs: decision.claimAgeMs,
     toleranceMs: decision.toleranceMs,
   });
-  killContainer(session.id, 'claim-stuck');
+  await killContainer(session.id, 'claim-stuck');
   resetStuckProcessingRows(inDb, outDb, session, 'claim-stuck');
 }
 

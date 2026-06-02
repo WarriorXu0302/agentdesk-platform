@@ -1,0 +1,9 @@
+
+ RUN  v4.1.4 /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  13:40:00
+   Duration  184ms (transform 15ms, setup 0ms, import 82ms, tests 4ms, environment 0ms)
+

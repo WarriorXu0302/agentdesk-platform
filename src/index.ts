@@ -1,3 +1,5 @@
+import { initObservability, shutdownObservability } from './observability/init.js';
+
 /**
  * FrontLane Agent Platform — main entry point.
  *
@@ -61,7 +63,10 @@ import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from 
 async function main(): Promise<void> {
   log.info(`${PLATFORM_NAME} starting`);
 
-  // 0. Circuit breaker — backoff on rapid restarts
+  // 0. Observability — must be first, before any async work
+  initObservability();
+
+  // 0b. Circuit breaker — backoff on rapid restarts
   await enforceStartupBackoff();
 
   // 1. Init central DB
@@ -191,7 +196,8 @@ async function shutdown(signal: string): Promise<void> {
     // via SIGTERM/SIGINT, not a crash, so the next start shouldn't be counted
     // as one.
     resetCircuitBreaker();
-    process.exit(0);
+  await shutdownObservability();
+  process.exit(0);
   }
 }
 

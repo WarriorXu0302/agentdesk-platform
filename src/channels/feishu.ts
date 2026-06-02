@@ -16,6 +16,8 @@ import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 import { markInboundSeen } from '../db/inbound-dedup.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { chainAttrs, runInDetachedRoot } from '../observability/openinference.js';
+import { withSpan } from '../observability/with-span.js';
 import { inboundTotal } from '../metrics.js';
 import { registerWebhookHandler } from '../webhook-server.js';
 import type { ChannelAdapter, ChannelSetup, OutboundMessage } from './adapter.js';
@@ -400,60 +402,81 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
 
   async function handleMessageReceive(event: FeishuMessageEvent): Promise<void> {
     if (!setupConfig) return;
+
     const senderId =
       readString(event.sender.sender_id.open_id) ||
       readString(event.sender.sender_id.user_id) ||
       readString(event.sender.sender_id.union_id);
-    if (config.botOpenId && senderId === config.botOpenId) return;
 
-    const platformId = normalizeFeishuPlatformId({
-      chatId: event.message.chat_id,
-      chatType: event.message.chat_type,
-      senderOpenId: senderId,
-    });
-    if (!platformId) {
-      log.warn('Feishu message dropped: missing sender identity for p2p chat', {
-        chatId: event.message.chat_id,
-        messageId: event.message.message_id,
-      });
-      return;
+    // Build span attributes (only include non-undefined values)
+    const spanAttributes: Record<string, unknown> = {
+      'channel.type': 'feishu',
+    };
+    if (event.message.chat_type !== undefined) {
+      spanAttributes['feishu.chat_type'] = event.message.chat_type;
     }
-    if (!markInboundSeen('feishu', `msg:${event.message.message_id}`)) {
-      inboundTotal.labels('feishu', 'deduped').inc();
-      return;
+    if (senderId !== undefined) {
+      spanAttributes['feishu.sender_id'] = senderId;
     }
+    // message.kind is always 'chat' for FeishuMessageEvent, but read from event for flexibility
+    const messageKind = (event as { message?: { kind?: string } }).message?.kind ?? 'chat';
+    spanAttributes['message.kind'] = messageKind;
 
-    const isGroup = event.message.chat_type === 'group';
-    const text = parseTextContent(event.message.content, event.message.message_type);
-    const isMention = isGroup ? mentionsBot(event, config) : true;
-    log.info('Feishu inbound message accepted', {
-      messageId: event.message.message_id,
-      chatId: event.message.chat_id,
-      chatType: event.message.chat_type,
-      senderId: senderId || null,
-      isGroup,
-      isMention,
-    });
-    await setupConfig.onInbound(platformId, resolveThreadId(event), {
-      id: event.message.message_id,
-      kind: 'chat',
-      timestamp: timestampToIso(event.message.create_time),
-      content: {
-        senderId: senderId || undefined,
-        sender: senderId || 'feishu-user',
-        text,
-        chatId: event.message.chat_id,
-        chatType: event.message.chat_type,
-        messageType: event.message.message_type,
-        messageId: event.message.message_id,
-        rootId: event.message.root_id,
-        parentId: event.message.parent_id,
-        threadId: event.message.thread_id,
-        mentions: event.message.mentions ?? [],
-      },
-      isMention,
-      isGroup,
-    });
+    return runInDetachedRoot(() =>
+      withSpan('channel.feishu.receive', chainAttrs(spanAttributes), async () => {
+        if (config.botOpenId && senderId === config.botOpenId) return;
+
+        const platformId = normalizeFeishuPlatformId({
+          chatId: event.message.chat_id,
+          chatType: event.message.chat_type,
+          senderOpenId: senderId,
+        });
+        if (!platformId) {
+          log.warn('Feishu message dropped: missing sender identity for p2p chat', {
+            chatId: event.message.chat_id,
+            messageId: event.message.message_id,
+          });
+          return;
+        }
+        if (!markInboundSeen('feishu', `msg:${event.message.message_id}`)) {
+          inboundTotal.labels('feishu', 'deduped').inc();
+          return;
+        }
+
+        const isGroup = event.message.chat_type === 'group';
+        const text = parseTextContent(event.message.content, event.message.message_type);
+        const isMention = isGroup ? mentionsBot(event, config) : true;
+        log.info('Feishu inbound message accepted', {
+          messageId: event.message.message_id,
+          chatId: event.message.chat_id,
+          chatType: event.message.chat_type,
+          senderId: senderId || null,
+          isGroup,
+          isMention,
+        });
+        const cfg = setupConfig!;
+        await cfg.onInbound(platformId, resolveThreadId(event), {
+          id: event.message.message_id,
+          kind: 'chat',
+          timestamp: timestampToIso(event.message.create_time),
+          content: {
+            senderId: senderId || undefined,
+            sender: senderId || 'feishu-user',
+            text,
+            chatId: event.message.chat_id,
+            chatType: event.message.chat_type,
+            messageType: event.message.message_type,
+            messageId: event.message.message_id,
+            rootId: event.message.root_id,
+            parentId: event.message.parent_id,
+            threadId: event.message.thread_id,
+            mentions: event.message.mentions ?? [],
+          },
+          isMention,
+          isGroup,
+        });
+      }),
+    );
   }
 
   async function startLongConnection(): Promise<void> {

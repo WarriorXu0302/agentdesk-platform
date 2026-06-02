@@ -20,7 +20,7 @@ import {
 
 const runtime = {
   assistantName: 'Frontdesk',
-  groupName: 'FrontLane Desk',
+  groupName: 'FrontLane Template Desk',
   agentGroupId: 'ag-frontdesk',
 };
 
@@ -82,7 +82,7 @@ describe('erp gateway mcp tools', () => {
     expect(body).toEqual({
       agent: {
         agentGroupId: 'ag-frontdesk',
-        groupName: 'FrontLane Desk',
+        groupName: 'FrontLane Template Desk',
         assistantName: 'Frontdesk',
       },
       requester: {

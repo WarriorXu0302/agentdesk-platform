@@ -30,6 +30,8 @@ import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGr
 import { resolveSession, outboundDbPath } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
 import { maybeStartProgressStatus } from './modules/progress-status/index.js';
+import { consumeSessionSpanContext, storeSessionSpanContext } from './observability/context-bridge.js';
+import type { SpanContext } from '@opentelemetry/api';
 
 function now(): string {
   return new Date().toISOString();
@@ -101,6 +103,34 @@ afterEach(() => {
 });
 
 describe('deliverSessionMessages — concurrent invocations', () => {
+  it('keeps bridged trace context across empty polls until outbound work is processed', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const spanContext: SpanContext = {
+      traceId: '11111111111111111111111111111111',
+      spanId: '2222222222222222',
+      traceFlags: 1,
+      isRemote: false,
+    };
+
+    storeSessionSpanContext(session.id, spanContext);
+    await deliverSessionMessages(session);
+
+    expect(consumeSessionSpanContext(session.id)).toEqual(spanContext);
+
+    storeSessionSpanContext(session.id, spanContext);
+    insertOutbound('ag-1', session.id, 'out-with-context');
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-msg-id';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(consumeSessionSpanContext(session.id)).toBeUndefined();
+  });
+
   it('delivers a message exactly once when active and sweep polls overlap', async () => {
     seedAgentAndChannel();
     const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
