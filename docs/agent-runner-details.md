@@ -1,4 +1,4 @@
-# FrontLane Agent-Runner Details
+# AgentDesk Agent-Runner Details
 
 Implementation-level details for the agent-runner inside the container. See [architecture.md](architecture.md) for the high-level design.
 
@@ -6,7 +6,7 @@ Implementation-level details for the agent-runner inside the container. See [arc
 
 The agent-runner has two layers:
 
-1. **Agent-runner core** — owns the poll loop, message formatting, DB reads/writes, MCP tool implementations, routing, status management, media handling. This is FrontLane-specific and shared across all providers.
+1. **Agent-runner core** — owns the poll loop, message formatting, DB reads/writes, MCP tool implementations, routing, status management, media handling. This is AgentDesk-specific and shared across all providers.
 
 2. **Agent provider** — owns the SDK interaction. Takes formatted prompts, pushes them to the SDK, yields events back. Trunk ships the `claude` provider; additional providers (OpenCode, Codex, etc.) are installed by `/add-<provider>` skills from the `providers` branch.
 
@@ -413,7 +413,7 @@ The agent-runner transforms messages_in rows into a prompt string. The provider 
 
 Mixed kinds (e.g., a chat message + a system response) are combined with clear delimiters. Each section is labeled by kind.
 
-**Command detection:** Messages starting with `/` are checked against a command list. Recognized commands bypass formatting and are passed raw to the provider (for Claude's slash command handling) or intercepted by the agent-runner (for FrontLane-level commands like session reset).
+**Command detection:** Messages starting with `/` are checked against a command list. Recognized commands bypass formatting and are passed raw to the provider (for Claude's slash command handling) or intercepted by the agent-runner (for AgentDesk-level commands like session reset).
 
 ### Routing
 
@@ -447,7 +447,7 @@ pending → processing → completed
 
 ### MCP Tools
 
-The agent-runner runs an MCP server that exposes FrontLane tools to the agent. All tools write to the session DB.
+The agent-runner runs an MCP server that exposes AgentDesk tools to the agent. All tools write to the session DB.
 
 **DB path:** The MCP server receives the session DB path via environment variable. It opens a second connection to the same SQLite file (WAL mode allows concurrent access).
 

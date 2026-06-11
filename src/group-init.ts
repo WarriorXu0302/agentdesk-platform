@@ -51,7 +51,7 @@ function buildDefaultSettingsJson(disableAutoMemory: boolean): string {
  */
 export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: string }): void {
   const initialized: string[] = [];
-  const disableAutoMemory = readContainerConfig(group.folder).memoryMode === 'erp';
+  const disableAutoMemory = readContainerConfig(group.folder).memoryMode === 'gateway';
 
   // 1. groups/<folder>/ — group memory + working dir
   const groupDir = path.resolve(GROUPS_DIR, group.folder);

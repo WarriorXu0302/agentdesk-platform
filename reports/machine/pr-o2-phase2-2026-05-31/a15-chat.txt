@@ -1,5 +1,0 @@
-
-> frontlane-agent-platform@2.0.44 chat /Users/desjajja/Dev/realityloop/MultiUserAgentPlatform
-> tsx scripts/chat.ts 'hello PR-O2 phase 2 verify'
-
-Hello! I'm Demo, ready for PR-O2 phase 2 verification. How can I assist you today?

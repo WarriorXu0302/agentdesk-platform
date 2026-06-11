@@ -10,7 +10,7 @@
  * so existing skill text reads identically. Mutations run via
  * stmt.run() (single statement) or db.exec() (compound).
  *
- * Why this exists: FrontLane does not assume the `sqlite3` CLI binary is
+ * Why this exists: The platform does not assume the `sqlite3` CLI binary is
  * present on the host. Skills or scripts that shell out to `sqlite3`
  * therefore fail on clean machines. This wrapper preserves the same text
  * interface (path then SQL string) while routing through the project's

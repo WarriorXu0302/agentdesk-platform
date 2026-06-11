@@ -120,7 +120,7 @@ async function main(): Promise<void> {
   initGroupFilesystem(ag, {
     instructions:
       `# ${args.agentName}\n\n` +
-      `You are ${args.agentName}, a FrontLane agent for ${args.displayName}. ` +
+      `You are ${args.agentName}, an agent for ${args.displayName}. ` +
       'When the user first reaches out, introduce yourself briefly and invite them to chat. Keep replies concise.',
   });
 

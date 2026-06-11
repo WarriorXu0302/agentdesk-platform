@@ -3,7 +3,7 @@
  *
  * The container's poll loop emits a `kind='system', action='provider_error'`
  * outbound whenever `provider.query(...)` throws. The host catches it here
- * and increments `frontlane_provider_errors_total{provider, code}`.
+ * and increments `<namespace>_provider_errors_total{provider, code}`.
  *
  * Without this hook the metric stays at zero regardless of what the
  * container is actually encountering — a dashboard hazard worse than no

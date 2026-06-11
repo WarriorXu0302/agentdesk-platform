@@ -18,15 +18,13 @@ vi.mock('../src/config.js', async () => {
 import { readContainerConfig } from '../src/container-config.js';
 import { run } from './configure-enterprise-gateway.js';
 
+const FRONTDESK_FOLDER = 'agentdesk-frontdesk';
+const FINANCE_WORKER_FOLDER = 'agentdesk-finance-worker';
+
 beforeEach(() => {
   if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-template-frontdesk'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-lab-frontdesk'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-access-worker'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-sales-worker'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-finance-worker'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-approval-worker'), { recursive: true });
-  fs.mkdirSync(path.join(TEST_ROOT, 'groups', 'frontlane-ops-worker'), { recursive: true });
+  fs.mkdirSync(path.join(TEST_ROOT, 'groups', FRONTDESK_FOLDER), { recursive: true });
+  fs.mkdirSync(path.join(TEST_ROOT, 'groups', FINANCE_WORKER_FOLDER), { recursive: true });
 });
 
 afterEach(() => {
@@ -37,110 +35,104 @@ describe('configure-enterprise-gateway', () => {
   it('writes gateway config into the selected group container configs', async () => {
     await run([
       '--base-url',
-      'https://erp-gateway.internal/api/agent',
+      'https://gateway.internal/api/agent',
       '--folders',
-      'frontlane-template-frontdesk,frontlane-finance-worker',
+      `${FRONTDESK_FOLDER},${FINANCE_WORKER_FOLDER}`,
       '--timeout-ms',
       '20000',
       '--header',
-      'x-tenant=erp-a',
+      'x-tenant=a',
     ]);
 
-    const frontdesk = readContainerConfig('frontlane-template-frontdesk');
-    const finance = readContainerConfig('frontlane-finance-worker');
+    const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+    const finance = readContainerConfig(FINANCE_WORKER_FOLDER);
 
-    expect(frontdesk.enterpriseGateway).toEqual({
-      baseUrl: 'https://erp-gateway.internal/api/agent',
+    expect(frontdesk.backendGateway).toEqual({
+      baseUrl: 'https://gateway.internal/api/agent',
       timeoutMs: 20000,
-      defaultHeaders: { 'x-tenant': 'erp-a' },
+      defaultHeaders: { 'x-tenant': 'a' },
     });
-    expect(frontdesk.memoryMode).toBe('erp');
+    expect(frontdesk.memoryMode).toBe('gateway');
     expect(frontdesk.a2aSessionMode).toBe('root-session');
-    expect(finance.enterpriseGateway).toEqual({
-      baseUrl: 'https://erp-gateway.internal/api/agent',
+    expect(finance.backendGateway).toEqual({
+      baseUrl: 'https://gateway.internal/api/agent',
       timeoutMs: 20000,
-      defaultHeaders: { 'x-tenant': 'erp-a' },
+      defaultHeaders: { 'x-tenant': 'a' },
     });
-    expect(finance.memoryMode).toBe('erp');
+    expect(finance.memoryMode).toBe('gateway');
     expect(finance.a2aSessionMode).toBe('root-session');
   });
 
-  it('includes frontlane-lab-frontdesk in the default folder list', async () => {
-    await run(['--base-url', 'https://erp-gateway.internal/api/agent']);
+  it('targets the template frontdesk by default', async () => {
+    await run(['--base-url', 'https://gateway.internal/api/agent']);
 
-    const labDesk = readContainerConfig('frontlane-lab-frontdesk');
-    expect(labDesk.enterpriseGateway?.baseUrl).toBe('https://erp-gateway.internal/api/agent');
-    expect(labDesk.memoryMode).toBe('erp');
-    expect(labDesk.a2aSessionMode).toBe('root-session');
-
-    const frontdesk = readContainerConfig('frontlane-template-frontdesk');
-    expect(frontdesk.enterpriseGateway?.baseUrl).toBe('https://erp-gateway.internal/api/agent');
-
-    const opsWorker = readContainerConfig('frontlane-ops-worker');
-    expect(opsWorker.enterpriseGateway?.baseUrl).toBe('https://erp-gateway.internal/api/agent');
+    const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+    expect(frontdesk.backendGateway?.baseUrl).toBe('https://gateway.internal/api/agent');
+    expect(frontdesk.memoryMode).toBe('gateway');
+    expect(frontdesk.a2aSessionMode).toBe('root-session');
   });
 
-  it('falls back to ERP_GATEWAY_BASE_URL when --base-url is omitted', async () => {
-    const prev = process.env.ERP_GATEWAY_BASE_URL;
-    process.env.ERP_GATEWAY_BASE_URL = 'https://erp-gateway-from-env.example/api/agent';
+  it('falls back to GATEWAY_BASE_URL when --base-url is omitted', async () => {
+    const prev = process.env.GATEWAY_BASE_URL;
+    process.env.GATEWAY_BASE_URL = 'https://gateway-from-env.example/api/agent';
     try {
-      await run(['--folders', 'frontlane-template-frontdesk']);
+      await run(['--folders', FRONTDESK_FOLDER]);
 
-      const frontdesk = readContainerConfig('frontlane-template-frontdesk');
-      expect(frontdesk.enterpriseGateway?.baseUrl).toBe('https://erp-gateway-from-env.example/api/agent');
+      const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+      expect(frontdesk.backendGateway?.baseUrl).toBe('https://gateway-from-env.example/api/agent');
     } finally {
-      if (prev === undefined) delete process.env.ERP_GATEWAY_BASE_URL;
-      else process.env.ERP_GATEWAY_BASE_URL = prev;
+      if (prev === undefined) delete process.env.GATEWAY_BASE_URL;
+      else process.env.GATEWAY_BASE_URL = prev;
     }
   });
 
-  it('preserves pack-provided defaultHeaders and timeoutMs (ADR-0008 merge semantics)', async () => {
+  it('preserves existing defaultHeaders and timeoutMs (merge semantics)', async () => {
     const { writeContainerConfig } = await import('../src/container-config.js');
-    const seeded = readContainerConfig('frontlane-lab-frontdesk');
-    seeded.enterpriseGateway = {
-      baseUrl: '${ERP_GATEWAY_BASE_URL}',
+    const seeded = readContainerConfig(FINANCE_WORKER_FOLDER);
+    seeded.backendGateway = {
+      baseUrl: '${GATEWAY_BASE_URL}',
       timeoutMs: 30000,
-      defaultHeaders: { 'X-FrontLane-Source': 'frontlane-lab-frontdesk' },
+      defaultHeaders: { 'X-Agent-Source': 'finance-worker' },
     };
-    writeContainerConfig('frontlane-lab-frontdesk', seeded);
+    writeContainerConfig(FINANCE_WORKER_FOLDER, seeded);
 
     await run([
       '--base-url',
-      'https://erp-gateway.internal/api/agent',
+      'https://gateway.internal/api/agent',
       '--folders',
-      'frontlane-lab-frontdesk',
+      FINANCE_WORKER_FOLDER,
       '--header',
-      'x-tenant=erp-a',
+      'x-tenant=a',
     ]);
 
-    const after = readContainerConfig('frontlane-lab-frontdesk');
-    expect(after.enterpriseGateway?.baseUrl).toBe('https://erp-gateway.internal/api/agent');
-    expect(after.enterpriseGateway?.timeoutMs).toBe(30000);
-    expect(after.enterpriseGateway?.defaultHeaders).toEqual({
-      'X-FrontLane-Source': 'frontlane-lab-frontdesk',
-      'x-tenant': 'erp-a',
+    const after = readContainerConfig(FINANCE_WORKER_FOLDER);
+    expect(after.backendGateway?.baseUrl).toBe('https://gateway.internal/api/agent');
+    expect(after.backendGateway?.timeoutMs).toBe(30000);
+    expect(after.backendGateway?.defaultHeaders).toEqual({
+      'X-Agent-Source': 'finance-worker',
+      'x-tenant': 'a',
     });
   });
 
   it('CLI --header overrides a same-key header from the existing config', async () => {
     const { writeContainerConfig } = await import('../src/container-config.js');
-    const seeded = readContainerConfig('frontlane-template-frontdesk');
-    seeded.enterpriseGateway = {
-      baseUrl: '${ERP_GATEWAY_BASE_URL}',
-      defaultHeaders: { 'x-tenant': 'erp-old' },
+    const seeded = readContainerConfig(FRONTDESK_FOLDER);
+    seeded.backendGateway = {
+      baseUrl: '${GATEWAY_BASE_URL}',
+      defaultHeaders: { 'x-tenant': 'old' },
     };
-    writeContainerConfig('frontlane-template-frontdesk', seeded);
+    writeContainerConfig(FRONTDESK_FOLDER, seeded);
 
     await run([
       '--base-url',
-      'https://erp-gateway.internal/api/agent',
+      'https://gateway.internal/api/agent',
       '--folders',
-      'frontlane-template-frontdesk',
+      FRONTDESK_FOLDER,
       '--header',
-      'x-tenant=erp-new',
+      'x-tenant=new',
     ]);
 
-    const after = readContainerConfig('frontlane-template-frontdesk');
-    expect(after.enterpriseGateway?.defaultHeaders).toEqual({ 'x-tenant': 'erp-new' });
+    const after = readContainerConfig(FRONTDESK_FOLDER);
+    expect(after.backendGateway?.defaultHeaders).toEqual({ 'x-tenant': 'new' });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * nc — chat with your FrontLane agent from the terminal.
+ * nc — chat with your agent from the terminal.
  *
  * Usage:
  *   pnpm run chat <message...>
@@ -7,7 +7,7 @@
  * Sends the message through the CLI channel (Unix socket) to the wired agent.
  * Reads replies until the stream goes quiet, then exits.
  *
- * Preconditions: FrontLane host service running, an agent group wired to
+ * Preconditions: host service running, an agent group wired to
  * `cli/local` via `/init-first-agent` or `/manage-channels`.
  */
 import net from 'net';
@@ -35,7 +35,7 @@ function main(): void {
   socket.on('error', (err) => {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'ENOENT' || e.code === 'ECONNREFUSED') {
-      console.error(`FrontLane daemon not reachable at ${socketPath()}.`);
+      console.error(`Agent daemon not reachable at ${socketPath()}.`);
       console.error('Start the service (launchctl/systemd) before running nc.');
     } else {
       console.error('CLI socket error:', err);

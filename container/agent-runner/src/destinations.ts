@@ -93,15 +93,15 @@ export function buildSystemPromptAddendum(assistantName?: string, memoryMode?: M
     );
   }
 
-  if (memoryMode === 'erp') {
+  if (memoryMode === 'gateway') {
     sections.push(
       [
         '## Memory policy',
         '',
-        'Do not store durable user, employee, permission, ERP, customer, or business memory in `/workspace/agent/CLAUDE.local.md` or other workspace files.',
+        'Do not store durable user, employee, permission, customer, or business memory in `/workspace/agent/CLAUDE.local.md` or other workspace files.',
         'Treat workspace files as temporary scratch space only.',
-        'For long-lived memory, user preferences, identity mapping, approval context, and business facts, use the ERP memory tools (`erp_memory_get`, `erp_memory_upsert`).',
-        'If the ERP memory backend is unavailable, say so explicitly and do not fall back to shared workspace memory.',
+        'For long-lived memory, user preferences, identity mapping, approval context, and business facts, use the backend memory tools (`gateway_memory_get`, `gateway_memory_upsert`).',
+        'If the backend memory store is unavailable, say so explicitly and do not fall back to shared workspace memory.',
       ].join('\n'),
     );
   }

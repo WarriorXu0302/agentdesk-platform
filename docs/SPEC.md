@@ -1,8 +1,10 @@
-# FrontLane Agent Platform Specification
+# AgentDesk Agent Platform Specification
 
 ## Overview
 
-FrontLane is an enterprise-oriented multi-user agent platform.
+AgentDesk is an enterprise-oriented multi-user agent platform.
+
+> The brand is configurable. The default display name is `AgentDesk` and the machine namespace is `agentdesk` (override via `BRAND_NAME` / `BRAND_NAMESPACE`). This spec uses the defaults.
 
 Its primary deployment model is:
 
@@ -11,15 +13,15 @@ Feishu / CLI
   -> frontdesk agent
   -> user-scoped session
   -> worker agents
-  -> ERP gateway
+  -> backend gateway
   -> ERP / approval / permission systems
 ```
 
-The platform is responsible for message ingress, session isolation, agent routing, tool execution, and reply delivery. Business authorization, approval policy, audit, and long-term memory are intentionally pushed to the ERP gateway layer.
+The platform is responsible for message ingress, session isolation, agent routing, tool execution, and reply delivery. Business authorization, approval policy, audit, and long-term memory are intentionally pushed to the backend gateway layer.
 
 ## Product Positioning
 
-FrontLane is not a generic personal assistant shell.
+AgentDesk is not a generic personal assistant shell.
 
 It is designed for:
 
@@ -27,9 +29,9 @@ It is designed for:
 - per-user context isolation by default
 - frontdesk-to-worker delegation
 - Feishu-first enterprise deployment
-- ERP-backed authorization and memory
+- backend-gateway-backed authorization and memory
 
-It is not designed to encode ERP-specific business rules inside the model runtime.
+It is not designed to encode backend-specific business rules inside the model runtime.
 
 ## Core Components
 
@@ -74,7 +76,7 @@ Responsibilities:
 - route work to worker agents
 - preserve the employee's session boundary while delegating
 
-The frontdesk should not become the permanent owner of business permissions. It may ask for authorization context, but the final decision belongs to the ERP gateway.
+The frontdesk should not become the permanent owner of business permissions. It may ask for authorization context, but the final decision belongs to the backend gateway.
 
 ### Worker Agents
 
@@ -99,9 +101,9 @@ Each active session runs inside an isolated containerized agent runner. The runn
 
 The host and runner communicate through per-session SQLite files and filesystem signals, not direct process IPC.
 
-### ERP Gateway
+### Backend Gateway
 
-The ERP gateway is the stable backend contract between FrontLane and any concrete ERP system.
+The backend gateway is the stable backend contract between AgentDesk and any concrete business system (e.g. ERP, CRM, ticketing).
 
 Recommended endpoints:
 
@@ -119,7 +121,7 @@ This layer should own:
 - idempotency
 - audit logging
 - long-term memory persistence
-- ERP-specific schema translation
+- backend-specific schema translation
 
 ## Session Isolation Model
 
@@ -148,7 +150,7 @@ This means the delegated worker sees the same root employee context that origina
 
 ## Memory Model
 
-FrontLane has two memory layers.
+AgentDesk has two memory layers.
 
 ### Short-Term Working Memory
 
@@ -159,10 +161,10 @@ Short-term context lives in the current session history and container workspace.
 Long-term business memory should use:
 
 ```text
-memoryMode=erp
+memoryMode=gateway
 ```
 
-In this mode, durable memory is stored behind the ERP gateway instead of the agent workspace. Recommended records include:
+In this mode, durable memory is stored behind the backend gateway instead of the agent workspace. Recommended records include:
 
 - user preferences
 - business summaries
@@ -174,17 +176,17 @@ In this mode, durable memory is stored behind the ERP gateway instead of the age
 
 Typical private-chat flow:
 
-1. Feishu sends a message event to FrontLane.
+1. Feishu sends a message event to AgentDesk.
 2. The router resolves the sender, conversation, and session scope.
-3. Enterprise autowire connects the sender to `frontlane-template-frontdesk` if needed.
+3. Enterprise autowire connects the sender to `agentdesk-frontdesk` if needed.
 4. The frontdesk session is woken and processes the request.
 5. If needed, frontdesk delegates to a worker agent.
-6. The worker uses ERP Gateway tools for authorization, execution, or memory.
+6. The worker uses backend gateway tools for authorization, execution, or memory.
 7. The final reply is delivered back through Feishu.
 
 ## Concurrency Model
 
-FrontLane scales through session-level isolation:
+AgentDesk scales through session-level isolation:
 
 - different users map to different sessions
 - each active session can wake its own agent runner
@@ -204,21 +206,21 @@ Security is intentionally layered:
 
 Important rule:
 
-High-risk writes must not rely only on chat-layer heuristics or group membership. They should require ERP gateway authorization.
+High-risk writes must not rely only on chat-layer heuristics or group membership. They should require backend gateway authorization.
 
 ## Extension Model
 
-FrontLane is meant to be extended in three stable directions:
+AgentDesk is meant to be extended in three stable directions:
 
 - channel adapters
 - model providers
-- ERP gateway implementations
+- backend gateway implementations
 
 The goal is to keep the platform core generic while allowing business systems to vary behind the gateway.
 
 ## Non-Goals
 
-FrontLane does not try to be:
+AgentDesk does not try to be:
 
 - a full ERP implementation
 - a generic workflow engine
@@ -227,4 +229,4 @@ FrontLane does not try to be:
 
 ## Naming and Compatibility
 
-Some low-level script names, env vars, metric names, and migration notes still use legacy identifiers inherited from the original fork history. Those are treated as transitional — the active product identity, default enterprise topology, and current docs all use `FrontLane`.
+The brand name and machine namespace are configurable through `BRAND_NAME` and `BRAND_NAMESPACE`. Runtime tags derived from the namespace — metric prefix, HMAC header prefix, OTEL service name, default frontdesk folder — all follow the configured value (default `agentdesk`). A small number of low-level environment variable names still carry a legacy prefix for backward compatibility; these are read as-is by the host and do not affect the configurable brand identity.

@@ -8,9 +8,10 @@ import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
 } from '@opentelemetry/semantic-conventions';
 import { log } from '../log.js';
+import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 
 const DEFAULT_TRACES_ENDPOINT = 'http://localhost:6006/v1/traces';
-const DEFAULT_SERVICE_NAME = 'frontlane-host';
+const DEFAULT_SERVICE_NAME = `${PLATFORM_PROTOCOL_NAMESPACE}-host`;
 const DEFAULT_SERVICE_VERSION = '2.0.44';
 const SHUTDOWN_TIMEOUT_MS = 5000;
 

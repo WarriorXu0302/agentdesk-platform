@@ -4,43 +4,43 @@
  * Scoped to the four signals most useful for diagnosing enterprise-scale
  * concurrency problems:
  *
- *   - frontlane_inbound_total{channel,outcome}
+ *   - <namespace>_inbound_total{channel,outcome}
  *       webhook/long-connection ingress counter. `outcome` is one of
  *       `accepted` | `deduped` | `rejected`.
  *
- *   - frontlane_session_count{agent_group,status}
+ *   - <namespace>_session_count{agent_group,status}
  *       gauge of sessions per agent group, grouped by lifecycle status
  *       (active / archived / closed). Sampled by the host sweep.
  *
- *   - frontlane_session_lifecycle_total{action}
+ *   - <namespace>_session_lifecycle_total{action}
  *       counter of session lifecycle transitions applied by the sweep.
  *       `action` is `archived` or `hard_deleted`.
  *
- *   - frontlane_wake_rejected_total{reason}
+ *   - <namespace>_wake_rejected_total{reason}
  *       counter of wake requests the host refused to spawn (e.g. global
  *       concurrency cap hit). Host sweep retries the underlying session
  *       on its next tick, so this metric measures back-pressure, not
  *       permanent failure.
  *
- *   - frontlane_route_seconds{phase}
+ *   - <namespace>_route_seconds{phase}
  *       histogram of router-side phase latencies. `phase` is `route` (full
  *       routeInbound duration) or `wake` (wakeContainer duration).
  *
- *   - frontlane_provider_errors_total{provider,code}
+ *   - <namespace>_provider_errors_total{provider,code}
  *       container-provider error counter. Emitted via the delivery path when
  *       the container reports an error; left at zero when nothing registers.
  *
- *   - frontlane_classifications_total{action}
+ *   - <namespace>_classifications_total{action}
  *       counter of frontdesk classify_intent calls by declared action.
  *
- *   - frontlane_classification_bypass_total{reason,surface}
+ *   - <namespace>_classification_bypass_total{reason,surface}
  *       counter of agent-destination deliveries (or clarifications) that
  *       had no matching prior classify_intent call. Persistent non-zero
  *       rate means frontdesk is skipping the REQUIRED tool and silently
  *       routing — fail-open observability for the classification
  *       protocol.
  *
- *   - frontlane_classification_log_failures_total{reason}
+ *   - <namespace>_classification_log_failures_total{reason}
  *       classification rows lost to DB write errors. Alert on non-zero.
  *
  * The /metrics endpoint is attached to the shared webhook server so it
@@ -50,34 +50,35 @@ import http from 'http';
 
 import client from 'prom-client';
 
+import { METRIC_PREFIX } from './branding.js';
 import { log } from './log.js';
 
 const registry = new client.Registry();
 client.collectDefaultMetrics({ register: registry });
 
 export const inboundTotal = new client.Counter({
-  name: 'frontlane_inbound_total',
+  name: `${METRIC_PREFIX}_inbound_total`,
   help: 'Inbound message events by channel + outcome',
   labelNames: ['channel', 'outcome'] as const,
   registers: [registry],
 });
 
 export const sessionCount = new client.Gauge({
-  name: 'frontlane_session_count',
+  name: `${METRIC_PREFIX}_session_count`,
   help: 'Session count per agent group and lifecycle status',
   labelNames: ['agent_group', 'status'] as const,
   registers: [registry],
 });
 
 export const sessionLifecycleTotal = new client.Counter({
-  name: 'frontlane_session_lifecycle_total',
+  name: `${METRIC_PREFIX}_session_lifecycle_total`,
   help: 'Session lifecycle transitions applied by the sweep',
   labelNames: ['action'] as const,
   registers: [registry],
 });
 
 export const classificationsTotal = new client.Counter({
-  name: 'frontlane_classifications_total',
+  name: `${METRIC_PREFIX}_classifications_total`,
   help: 'Frontdesk classification events by the agent-declared action',
   // `action`: delegate | clarify | reject | answer_self. Lets dashboards
   // show the routing mix at a glance and notice skew (e.g. a sudden
@@ -88,7 +89,7 @@ export const classificationsTotal = new client.Counter({
 });
 
 export const classificationBypassTotal = new client.Counter({
-  name: 'frontlane_classification_bypass_total',
+  name: `${METRIC_PREFIX}_classification_bypass_total`,
   help: 'Routing actions that lacked a matching prior classify_intent call',
   // `reason`:
   //   - `no_classification_id`   : send_message/ask_user_question
@@ -102,7 +103,7 @@ export const classificationBypassTotal = new client.Counter({
 });
 
 export const classificationLogFailuresTotal = new client.Counter({
-  name: 'frontlane_classification_log_failures_total',
+  name: `${METRIC_PREFIX}_classification_log_failures_total`,
   help: 'Classification log writes that failed (DB error, etc.)',
   // Dashboard panel for this should alert on any non-zero rate — the
   // table is the regression corpus, silent drops here invalidate later
@@ -112,7 +113,7 @@ export const classificationLogFailuresTotal = new client.Counter({
 });
 
 export const wakeRejectedTotal = new client.Counter({
-  name: 'frontlane_wake_rejected_total',
+  name: `${METRIC_PREFIX}_wake_rejected_total`,
   help: 'Container wake requests rejected without spawning',
   // `reason` is currently only `capacity` (global cap reached) but kept as
   // a label so future rejection reasons (per-group cap, OneCLI unreachable
@@ -122,7 +123,7 @@ export const wakeRejectedTotal = new client.Counter({
 });
 
 export const containerExitsTotal = new client.Counter({
-  name: 'frontlane_container_exits_total',
+  name: `${METRIC_PREFIX}_container_exits_total`,
   help: 'Container exit events by outcome',
   // `outcome`:
   //   - `idle`   : container exit code 0, likely idle-exit (needs
@@ -135,7 +136,7 @@ export const containerExitsTotal = new client.Counter({
 });
 
 export const routeSeconds = new client.Histogram({
-  name: 'frontlane_route_seconds',
+  name: `${METRIC_PREFIX}_route_seconds`,
   help: 'Router-side latency by phase',
   labelNames: ['phase'] as const,
   // Cover webhook-response budgets (<1s) through stuck-container timeouts.
@@ -144,7 +145,7 @@ export const routeSeconds = new client.Histogram({
 });
 
 export const providerErrorsTotal = new client.Counter({
-  name: 'frontlane_provider_errors_total',
+  name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',
   labelNames: ['provider', 'code'] as const,
   registers: [registry],

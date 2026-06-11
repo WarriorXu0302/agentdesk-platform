@@ -1,7 +1,0 @@
-Command:
-docker exec -e PGPASSWORD=phoenix_local_only muap-observability-prod-postgres-1 psql -U phoenix -d phoenix -t -c "SELECT name, span_id, parent_id, start_time FROM spans WHERE name IN ('delivery.message.deliver','delivery.channel.send') ORDER BY start_time DESC LIMIT 10;"
-
-Output:
- delivery.message.deliver | 7b12dbf8e09bf546 | 1c10d068a93f47ef | 2026-05-29 10:28:56.478+00
- delivery.channel.send    | bff56f0838bb39aa | 69e439b9521fe525 | 2026-05-29 10:28:56.474+00
- delivery.message.deliver | 69e439b9521fe525 | 1c10d068a93f47ef | 2026-05-29 10:28:56.468+00

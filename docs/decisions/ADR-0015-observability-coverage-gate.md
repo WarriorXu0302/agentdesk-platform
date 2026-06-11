@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-05-31
 - **Decider(s)**: User (approval), Sisyphus (orchestration), Prometheus (planning), Sisyphus-Junior (execution)
-- **Tags**: `observability`, `phase0b`, `tracing`, `ci`, `schema-governance`
+- **Tags**: `observability`, `tracing`, `ci`, `schema-governance`
 - **Supersedes**: None
 - **Superseded by**: None
 
@@ -11,7 +11,7 @@
 
 ## Context
 
-ADR-0014 made `docs/observability-span-schema.md` v1.0 the binding contract for manual span names, namespaces, and OpenInference attribute expectations. Wave A of PR-O2 phase 2 then migrated the existing host span surface to that schema. At that point the runtime was aligned, but the alignment remained fragile: a future PR could still introduce an unregistered namespace, forget a `openinference.span.kind`, or remove a required Keep/Rename target without any CI signal.
+ADR-0014 made `docs/observability-span-schema.md` v1.0 the binding contract for manual span names, namespaces, and OpenInference attribute expectations. A first migration wave then aligned the existing host span surface to that schema. At that point the runtime was aligned, but the alignment remained fragile: a future PR could still introduce an unregistered namespace, forget a `openinference.span.kind`, or remove a required Keep/Rename target without any CI signal.
 
 Known constraints at decision time:
 
@@ -27,13 +27,13 @@ Without a gate, the schema becomes advisory in practice and drift prevention dep
 
 - **Option A**: Rely on code review and the schema markdown alone. Lowest implementation cost, but the same manual discipline problem that created drift in the first place remains unresolved.
 - **Option B**: Add a CI-grade source scanner and coverage report for current production manual spans. Slightly more process and maintenance overhead, but it creates an immediate failure when runtime code diverges from schema v1.0.
-- **Option C**: Enforce both host and runner tracing now with one broad gate. Stronger long-term coverage, but it expands Wave B beyond the approved host-side scope and risks blocking current work on future runner instrumentation that is not yet landed.
+- **Option C**: Enforce both host and runner tracing now with one broad gate. Stronger long-term coverage, but it expands this change beyond the approved host-side scope and risks blocking current work on future runner instrumentation that is not yet landed.
 
 ## Decision
 
 > **拍板**：选 Option B。
 
-Install an observability coverage gate as part of PR-O2 phase 2.
+Install an observability coverage gate.
 
 The accepted gate:
 
@@ -44,7 +44,7 @@ The accepted gate:
    - backward presence/absence against schema §7 migration targets;
    - host-side `openinference.span.kind` coverage for `src/**/*.ts` manual spans;
 4. treats new top-level namespaces as schema-governed changes that still require a schema amendment plus ADR approval before runtime code lands;
-5. explicitly waives runner-side kind enforcement for now: inventory scanning may observe `container/agent-runner/src/**`, but Wave B does not fail CI on missing runner span kinds until a later runner-tracing wave is approved.
+5. explicitly waives runner-side kind enforcement for now: inventory scanning may observe `container/agent-runner/src/**`, but this gate does not fail CI on missing runner span kinds until a later runner-tracing wave is approved.
 
 ## Consequences
 
@@ -54,7 +54,7 @@ The accepted gate:
 
 ## Implementation Notes
 
-- Landed files: `scripts/observability-coverage-lib.ts`, `scripts/observability-coverage.test.ts`, `scripts/generate-observability-coverage-report.ts`, `reports/human/observability-coverage-2026-05-31.html`, `package.json`
+- Landed files: `scripts/observability-coverage-lib.ts`, `scripts/observability-coverage.test.ts`, `scripts/generate-observability-coverage-report.ts`, `package.json`
 - Parent decisions: `docs/decisions/ADR-0011-host-otel-instrumentation.md`, `docs/decisions/ADR-0014-observability-span-schema.md`
 - Direct operator entrypoint: `pnpm obs:coverage`
 - Ongoing acceptance points:
@@ -70,4 +70,3 @@ The accepted gate:
 - `docs/observability-span-schema.md`
 - `scripts/observability-coverage.test.ts`
 - `scripts/observability-coverage-lib.ts`
-- `reports/human/observability-coverage-2026-05-31.html`

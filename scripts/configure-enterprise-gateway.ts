@@ -1,56 +1,45 @@
 /**
- * Configure the built-in ERP gateway tools for enterprise agent groups.
+ * Configure the built-in backend gateway tools for enterprise agent groups.
  *
  * This writes the shared HTTP gateway config into `groups/<folder>/container.json`
  * so frontdesk and worker agents all call the same backend contract even if
- * the real ERP implementation differs behind the gateway.
+ * the real backend implementation (ERP, CRM, internal API, ticketing, …)
+ * differs behind the gateway.
  *
  * Usage:
  *   pnpm exec tsx scripts/configure-enterprise-gateway.ts \
- *     --base-url https://erp-gateway.internal/api/agent
+ *     --base-url https://gateway.internal/api/agent
  *
  *   pnpm exec tsx scripts/configure-enterprise-gateway.ts \
- *     --base-url https://erp-gateway.internal/api/agent \
- *     --folders frontlane-template-frontdesk,frontlane-finance-worker \
+ *     --base-url https://gateway.internal/api/agent \
+ *     --folders my-frontdesk,my-finance-worker \
  *     --timeout-ms 20000 \
- *     --memory-mode erp \
- *     --header x-tenant=erp-a \
+ *     --memory-mode gateway \
+ *     --header x-tenant=a \
  *     --header x-env=prod
  *
- * The base URL falls back to `process.env.ERP_GATEWAY_BASE_URL` when
- * --base-url is omitted, so `pnpm setup:lab-frontdesk` (the Phase 0a
- * orchestration alias) can run unattended after the operator merges the
- * relevant key from `.env.local.proposed` into `.env.local`.
+ * The base URL falls back to `process.env.GATEWAY_BASE_URL` (or the legacy
+ * `ERP_GATEWAY_BASE_URL`) when --base-url is omitted.
+ *
+ * By default this targets only the template frontdesk. Pass `--folders` to
+ * target your own desks/workers.
  */
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import {
-  buildLegacyWorkerFolder,
-  buildWorkerFolder,
-  DEFAULT_FRONTDESK_FOLDER,
-  LEGACY_FRONTDESK_FOLDER,
-} from '../src/branding.js';
+import { DEFAULT_FRONTDESK_FOLDER } from '../src/branding.js';
 import { GROUPS_DIR } from '../src/config.js';
 import { updateContainerConfig } from '../src/container-config.js';
 
-const DEFAULT_FOLDERS = [
-  DEFAULT_FRONTDESK_FOLDER,
-  'frontlane-lab-frontdesk',
-  buildWorkerFolder('access-worker'),
-  buildWorkerFolder('sales-worker'),
-  buildWorkerFolder('finance-worker'),
-  buildWorkerFolder('approval-worker'),
-  buildWorkerFolder('ops-worker'),
-];
+const DEFAULT_FOLDERS = [DEFAULT_FRONTDESK_FOLDER];
 
 interface Args {
   baseUrl: string;
   folders: string[];
   timeoutMs: number | null;
   headers: Record<string, string>;
-  memoryMode: 'workspace' | 'erp';
+  memoryMode: 'workspace' | 'gateway';
 }
 
 function parseArgs(argv: string[]): Args {
@@ -58,7 +47,7 @@ function parseArgs(argv: string[]): Args {
   let foldersRaw: string | undefined;
   let timeoutMs: number | null = null;
   const headers: Record<string, string> = {};
-  let memoryMode: Args['memoryMode'] = 'erp';
+  let memoryMode: Args['memoryMode'] = 'gateway';
 
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
@@ -93,7 +82,7 @@ function parseArgs(argv: string[]): Args {
         break;
       }
       case '--memory-mode':
-        if (val !== 'workspace' && val !== 'erp') {
+        if (val !== 'workspace' && val !== 'gateway') {
           fatal(`Invalid --memory-mode: ${val}`);
         }
         memoryMode = val;
@@ -106,11 +95,11 @@ function parseArgs(argv: string[]): Args {
   }
 
   if (!baseUrl) {
-    const fromEnv = process.env.ERP_GATEWAY_BASE_URL?.trim();
+    const fromEnv = (process.env.GATEWAY_BASE_URL || process.env.ERP_GATEWAY_BASE_URL)?.trim();
     if (fromEnv) {
       baseUrl = fromEnv;
     } else {
-      fatal('Missing required arg: --base-url (or set ERP_GATEWAY_BASE_URL in the environment).');
+      fatal('Missing required arg: --base-url (or set GATEWAY_BASE_URL in the environment).');
     }
   }
 
@@ -130,48 +119,31 @@ export async function run(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
 
   for (const requestedFolder of args.folders) {
-    let folder = requestedFolder;
-    let groupDir = path.join(GROUPS_DIR, folder);
-    if (!fs.existsSync(groupDir)) {
-      if (folder === DEFAULT_FRONTDESK_FOLDER) {
-        const legacyDir = path.join(GROUPS_DIR, LEGACY_FRONTDESK_FOLDER);
-        if (fs.existsSync(legacyDir)) {
-          folder = LEGACY_FRONTDESK_FOLDER;
-          groupDir = legacyDir;
-        }
-      } else if (folder.startsWith('frontlane-')) {
-        const localName = folder.slice('frontlane-'.length);
-        const legacyFolder = buildLegacyWorkerFolder(localName);
-        const legacyDir = path.join(GROUPS_DIR, legacyFolder);
-        if (fs.existsSync(legacyDir)) {
-          folder = legacyFolder;
-          groupDir = legacyDir;
-        }
-      }
-    }
+    const folder = requestedFolder;
+    const groupDir = path.join(GROUPS_DIR, folder);
     if (!fs.existsSync(groupDir)) {
       throw new Error(`Group folder not found: ${requestedFolder}`);
     }
 
     updateContainerConfig(folder, (config) => {
-      const existingHeaders = config.enterpriseGateway?.defaultHeaders ?? {};
+      const existingHeaders = config.backendGateway?.defaultHeaders ?? {};
       const mergedHeaders = { ...existingHeaders, ...args.headers };
       const hasHeaders = Object.keys(mergedHeaders).length > 0;
 
-      config.enterpriseGateway = {
+      config.backendGateway = {
         baseUrl: args.baseUrl,
-        timeoutMs: args.timeoutMs ?? config.enterpriseGateway?.timeoutMs,
+        timeoutMs: args.timeoutMs ?? config.backendGateway?.timeoutMs,
         defaultHeaders: hasHeaders ? mergedHeaders : undefined,
       };
       config.memoryMode = args.memoryMode;
       config.a2aSessionMode = 'root-session';
     });
 
-    console.log(`Configured ERP gateway for ${folder}`);
+    console.log(`Configured backend gateway for ${folder}`);
   }
 
   console.log('');
-  console.log('Enterprise gateway configuration updated.');
+  console.log('Backend gateway configuration updated.');
   console.log(`  baseUrl: ${args.baseUrl}`);
   console.log(`  folders: ${args.folders.join(', ')}`);
   console.log(`  memoryMode: ${args.memoryMode}`);

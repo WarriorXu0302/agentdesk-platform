@@ -1,27 +1,31 @@
-# Enterprise ERP Gateway Contract
+# Backend Gateway Contract
 
-To keep FrontLane generic across different ERP systems, do not teach the
+To keep AgentDesk generic across different backend systems, do not teach the
 agents a vendor-specific API surface. Put a thin HTTP gateway in front of
-your ERP backend and make every backend implement the same contract.
+your backend (ERP, CRM, ticketing, or any internal system) and make every
+backend implement the same contract.
+
+> The brand namespace below (`agentdesk`) is the default; signing-header
+> prefixes follow `BRAND_NAMESPACE` if you override it.
 
 ## Why this shape
 
-FrontLane then stays stable at the agent layer:
+AgentDesk then stays stable at the agent layer:
 
 - frontdesk and workers always call the same built-in MCP tools
-- different ERP products only swap the gateway implementation
+- different backend products only swap the gateway implementation
 - auth, permission checks, and business-side audit stay on your backend
 
 ## Built-in agent tools
 
-When `enterpriseGateway` is configured in `container.json`, agents get one
+When `backendGateway` is configured in `container.json`, agents get one
 stable tool surface:
 
-- `erp_describe`
-- `erp_authorize`
-- `erp_execute`
-- `erp_memory_get`
-- `erp_memory_upsert`
+- `gateway_describe`
+- `gateway_authorize`
+- `gateway_execute`
+- `gateway_memory_get`
+- `gateway_memory_upsert`
 
 ## Configure it on enterprise groups
 
@@ -29,17 +33,17 @@ Use the helper script after `init-enterprise-topology`:
 
 ```bash
 pnpm exec tsx scripts/configure-enterprise-gateway.ts \
-  --base-url https://erp-gateway.internal/api/agent
+  --base-url https://gateway.internal/api/agent
 ```
 
 Optional examples:
 
 ```bash
 pnpm exec tsx scripts/configure-enterprise-gateway.ts \
-  --base-url https://erp-gateway.internal/api/agent \
-  --folders frontlane-template-frontdesk,frontlane-finance-worker \
+  --base-url https://gateway.internal/api/agent \
+  --folders agentdesk-frontdesk,agentdesk-finance-worker \
   --timeout-ms 20000 \
-  --header x-tenant=erp-a
+  --header x-tenant=tenant-a
 ```
 
 ## Expected HTTP endpoints
@@ -60,7 +64,7 @@ Each request includes:
 {
   "agent": {
     "agentGroupId": "ag-...",
-    "groupName": "FrontLane Template Desk",
+    "groupName": "AgentDesk Frontdesk",
     "assistantName": "Frontdesk"
   },
   "requester": {
@@ -96,7 +100,7 @@ what it could resolve at the start of the batch. See
 When frontdesk delegates to a worker (`messages_out.channel_type = 'agent'`),
 the host copies the originating employee's namespaced user id onto the
 target session's inbound row as `origin_user_id`. The worker's batch
-identity resolver prefers that column, so an ERP call from a deeply-nested
+identity resolver prefers that column, so a gateway call from a deeply-nested
 worker still attributes to the real human, not to a generic
 `agent-asserted` fallback.
 
@@ -106,12 +110,12 @@ user id whether frontdesk or a 3-hop worker made the call.
 
 ## HMAC request signing
 
-If `container.json`'s `enterpriseGateway.signingKey` is set, every gateway
-request carries three headers:
+If `container.json`'s `backendGateway.signingKey` is set, every gateway
+request carries three headers (the `agentdesk` prefix follows `BRAND_NAMESPACE`):
 
-- `x-frontlane-timestamp` — unix seconds
-- `x-frontlane-nonce` — 32-char hex
-- `x-frontlane-signature` — HMAC-SHA256 over `<timestamp>.<nonce>.<body>`
+- `x-agentdesk-timestamp` — unix seconds
+- `x-agentdesk-nonce` — 32-char hex
+- `x-agentdesk-signature` — HMAC-SHA256 over `<timestamp>.<nonce>.<body>`
 
 Gateway-side verification (reference implementation):
 
@@ -119,7 +123,7 @@ Gateway-side verification (reference implementation):
 import crypto from 'node:crypto';
 
 const expected = crypto
-  .createHmac('sha256', process.env.FRONTLANE_SIGNING_KEY!)
+  .createHmac('sha256', process.env.GATEWAY_SIGNING_KEY!)
   .update(`${ts}.${nonce}.${rawBody}`)
   .digest('hex');
 const valid = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
@@ -134,19 +138,19 @@ Recommended companion policies on the gateway:
   configured
 
 Header names can be overridden per group via
-`enterpriseGateway.signingHeaders.{timestamp,nonce,signature}` if the
+`backendGateway.signingHeaders.{timestamp,nonce,signature}` if the
 gateway you're fronting has mandatory naming conventions.
 
 Signing is opt-in — leaving `signingKey` unset skips the headers entirely
 (so existing deployments don't break on upgrade). Turn it on once your
 gateway is ready to verify.
 
-## Host-side audit trail (erp_audit)
+## Host-side audit trail (gateway_audit)
 
-Independently of what the gateway itself logs, FrontLane writes a
-per-call audit row into the central DB's `erp_audit` table. The container
-emits a `kind='system', action='erp_audit'` message after every gateway
-call (win or lose); the host's `src/modules/erp-audit/index.ts` handler
+Independently of what the gateway itself logs, AgentDesk writes a
+per-call audit row into the central DB's `gateway_audit` table. The container
+emits a `kind='system', action='gateway_audit'` message after every gateway
+call (win or lose); the host's `src/modules/gateway-audit/index.ts` handler
 persists it.
 
 Recorded fields:
@@ -167,7 +171,7 @@ Typical queries:
 ```bash
 pnpm exec tsx scripts/q.ts data/v2.db \
   "SELECT occurred_at, user_id, path, operation, status, http_status
-     FROM erp_audit
+     FROM gateway_audit
      WHERE occurred_at > datetime('now', '-1 hour')
      ORDER BY id DESC LIMIT 50"
 ```
@@ -215,8 +219,8 @@ Recommended request shape for the memory endpoints:
 {
   "agent": {
     "agentGroupId": "ag-...",
-    "groupName": "Xin Jiu Long Frontdesk",
-    "assistantName": "Xin Jiu Long Frontdesk"
+    "groupName": "AgentDesk Frontdesk",
+    "assistantName": "AgentDesk Frontdesk"
   },
   "requester": {
     "userId": "feishu:ou_xxx"
@@ -256,14 +260,14 @@ Use stable dot-separated names so agent prompts stay portable:
 
 ## Responsibility split
 
-FrontLane should do:
+AgentDesk should do:
 
 - chat ingress
 - per-user session isolation
 - worker orchestration
 - human-facing reasoning
 
-Your ERP gateway should do:
+Your backend gateway should do:
 
 - user identity mapping
 - permission checks

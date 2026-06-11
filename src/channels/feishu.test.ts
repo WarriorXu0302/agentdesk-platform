@@ -104,7 +104,7 @@ describe('parseFeishuQuestionActionPayload', () => {
   it('accepts valid ask-question callback payloads', () => {
     expect(
       parseFeishuQuestionActionPayload({
-        kind: 'frontlane.ask_question',
+        kind: 'card.ask_question',
         questionId: 'q-1',
         selectedOption: 'approve',
         selectedLabel: 'Approved',
@@ -112,7 +112,7 @@ describe('parseFeishuQuestionActionPayload', () => {
         expiresAt: Date.now() + 60_000,
       }),
     ).toEqual({
-      kind: 'frontlane.ask_question',
+      kind: 'card.ask_question',
       questionId: 'q-1',
       selectedOption: 'approve',
       selectedLabel: 'Approved',
@@ -124,7 +124,7 @@ describe('parseFeishuQuestionActionPayload', () => {
   it('rejects expired payloads', () => {
     expect(
       parseFeishuQuestionActionPayload({
-        kind: 'frontlane.ask_question',
+        kind: 'card.ask_question',
         questionId: 'q-1',
         selectedOption: 'approve',
         expiresAt: Date.now() - 1,

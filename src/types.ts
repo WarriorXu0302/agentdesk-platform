@@ -128,7 +128,7 @@ export interface Session {
    *   - `active`    — normal in-use session (default on create).
    *   - `closed`    — explicitly closed by admin / user command. No new
    *                   inbound is routed in; retained for scroll-back.
-   *   - `archived`  — idled out past FRONTLANE_SESSION_TTL_DAYS and moved
+   *   - `archived`  — idled out past AGENTDESK_SESSION_TTL_DAYS and moved
    *                   to on-disk archive. Filesystem under
    *                   data/v2-sessions-archive/. DB row kept so audit
    *                   queries still resolve the session id.
@@ -146,7 +146,7 @@ export interface Session {
    * a2a spawn-chain depth. 0 for channel-entry sessions (frontdesk and
    * anything wired directly to a messaging group); each agent-to-agent hop
    * bumps the target by one when the session is first created. agent-route.ts
-   * rejects new edges where `source.spawn_depth >= FRONTLANE_MAX_SPAWN_DEPTH`
+   * rejects new edges where `source.spawn_depth >= AGENTDESK_MAX_SPAWN_DEPTH`
    * (default 2) so a labops→feishu-base→…→X chain can't run away.
    *
    * Note: a session's stored depth is its **creation** depth. With root-session

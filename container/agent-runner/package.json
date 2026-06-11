@@ -1,8 +1,8 @@
 {
-  "name": "frontlane-agent-runner",
+  "name": "agentdesk-agent-runner",
   "version": "1.0.0",
   "type": "module",
-  "description": "Container-side agent runner for FrontLane Agent Platform",
+  "description": "Container-side agent runner for the agent platform",
   "scripts": {
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",

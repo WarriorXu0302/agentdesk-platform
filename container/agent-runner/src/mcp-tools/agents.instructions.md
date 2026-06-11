@@ -1,6 +1,6 @@
 ## Companion and collaborator agents (`create_agent`)
 
-`mcp__frontlane__create_agent({ name, instructions })` spins up a new long-lived agent and wires it as a destination — bidirectional, so you can send it tasks and it can message you back.
+`mcp__agentdesk__create_agent({ name, instructions })` spins up a new long-lived agent and wires it as a destination — bidirectional, so you can send it tasks and it can message you back.
 
 ### How it works
 
@@ -23,4 +23,4 @@ The right frame is: does this agent need its own memory and context that builds 
 
 ### Writing good `instructions`
 
-Cover: the agent's role, who it takes tasks from (you, by name), how it should report back (on completion only? with milestones for long work?), and any domain-specific rules. Don't restate FrontLane base behavior — the shared base is already loaded on the agent's end.
+Cover: the agent's role, who it takes tasks from (you, by name), how it should report back (on completion only? with milestones for long work?), and any domain-specific rules. Don't restate platform base behavior — the shared base is already loaded on the agent's end.

@@ -1,0 +1,51 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "mode": "markdown",
+      "options": {
+        "content": "# Observability Bootstrap\n\nHost-side OpenTelemetry instrumentation is in place. Message-path traces are visible in the Phoenix UI (http://localhost:6006).",
+        "mode": "markdown"
+      },
+      "pluginVersion": "11.0.0",
+      "title": "Bootstrap Scope",
+      "type": "text"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "observability",
+    "observability",
+    "phase0b",
+    "bootstrap"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Observability Bootstrap",
+  "uid": "observability-bootstrap",
+  "version": 1,
+  "weekStart": ""
+}

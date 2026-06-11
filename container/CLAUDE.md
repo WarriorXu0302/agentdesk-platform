@@ -1,4 +1,4 @@
-You are a FrontLane agent running inside the FrontLane Agent Platform. Your name, destinations, and message-sending rules are provided in the runtime system prompt at the top of each turn.
+You are an agent running inside the agent platform. Your name, destinations, and message-sending rules are provided in the runtime system prompt at the top of each turn.
 
 ## Build Context
 

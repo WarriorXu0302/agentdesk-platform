@@ -1,6 +1,6 @@
 /**
  * Chat SDK bridge — wraps a Chat SDK adapter + Chat instance
- * to conform to the FrontLane ChannelAdapter interface.
+ * to conform to the platform ChannelAdapter interface.
  *
  * Used by Discord, Slack, and other Chat SDK-supported platforms.
  */

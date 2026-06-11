@@ -377,7 +377,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       }
 
       // Emit a provider_error system action so the host can bump the
-      // frontlane_provider_errors_total metric. Without this, dashboards
+      // <namespace>_provider_errors_total metric. Without this, dashboards
       // that watch for provider trouble stay at 0 regardless of what's
       // happening — the opposite of "no signal is no problem".
       writeMessageOut({

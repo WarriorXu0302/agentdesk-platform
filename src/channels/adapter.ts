@@ -1,7 +1,7 @@
 /**
  * v2 Channel Adapter interface.
  *
- * Channel adapters bridge FrontLane with messaging platforms (Discord, Slack, etc.).
+ * Channel adapters bridge the platform with messaging platforms (Discord, Slack, etc.).
  * Two patterns: native adapters (implement directly) or Chat SDK bridge (wrap a Chat SDK adapter).
  */
 

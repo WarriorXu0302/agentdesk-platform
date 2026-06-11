@@ -11,7 +11,7 @@ function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
 }
 
-// Deferred SDK builtins that either sidestep FrontLane's own scheduling or
+// Deferred SDK builtins that either sidestep the platform's own scheduling or
 // don't fit our async message-passing model (they're designed for Claude
 // Code's interactive UI and would hang here).
 //
@@ -34,7 +34,7 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitWorktree',
 ];
 
-// Tool allowlist for FrontLane agent containers. MCP-tool entries are derived
+// Tool allowlist for agent containers. MCP-tool entries are derived
 // at the call site from the registered `mcpServers` map so that any server
 // added via `add_mcp_server` (or wired in container.json directly) is
 // reachable to the agent — without this, the SDK's allowedTools filter
@@ -163,7 +163,7 @@ const preToolUseHook: HookCallback = async (input) => {
   if (SDK_DISALLOWED_TOOLS.includes(toolName)) {
     return {
       decision: 'block',
-      stopReason: `Tool '${toolName}' is not available in this environment — use the FrontLane equivalent.`,
+      stopReason: `Tool '${toolName}' is not available in this environment — use the platform equivalent.`,
     } as unknown as ReturnType<HookCallback>;
   }
   // Bash exposes its timeout via the tool_input.timeout field (ms). Any other

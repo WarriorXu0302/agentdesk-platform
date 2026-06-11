@@ -1,5 +1,0 @@
-[18:28:38.491] INFO Observability SDK started
-[18:28:48.514] INFO CLI client connected traceId=862db7e901c0e5ee594d61bdcadb4b24 spanId=022fb76a70eb16eb
-[18:28:48.517] INFO Message routed sessionId="sess-1779868835294-d9ed3l" agentGroup="ag-1779868765808-x90uj6" engage_mode="pattern" kind="chat" userId="cli:local" wake=true created=false agentGroupName="Demo" traceId=862db7e901c0e5ee594d61bdcadb4b24 spanId=1d55429a40851cc3
-[18:28:48.520] INFO Spawning container sessionId="sess-1779868835294-d9ed3l" agentGroup="Demo" containerName="frontlane-v2-cli-with-demo-1780050528520" traceId=862db7e901c0e5ee594d61bdcadb4b24 spanId=d14a1ccc4fe33751
-[18:28:56.474] INFO Message delivered id="msg-1780050535621-yha1hl" channelType="cli" platformId="local" platformMsgId=undefined fileCount=undefined traceId=862db7e901c0e5ee594d61bdcadb4b24 spanId=69e439b9521fe525

@@ -10,7 +10,7 @@
  *     classifier's decision
  *   - correlate downstream worker failures back to the intent
  *
- * Best-effort writes (same pattern as erp_audit): a DB failure logs and
+ * Best-effort writes (same pattern as gateway_audit): a DB failure logs and
  * drops — don't block the container's message flow on metric bookkeeping.
  */
 import { registerDeliveryAction } from '../../delivery.js';

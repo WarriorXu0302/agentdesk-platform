@@ -8,7 +8,7 @@ services:
       PHOENIX_POSTGRES_GRAFANA_USER: ${PHOENIX_POSTGRES_GRAFANA_USER:-grafana_ro}
       PHOENIX_POSTGRES_GRAFANA_PASSWORD: ${PHOENIX_POSTGRES_GRAFANA_PASSWORD:-grafana_readonly_local_only}
     volumes:
-      - muap_phoenix_postgres_data:/var/lib/postgresql/data
+      - agentdesk_phoenix_postgres_data:/var/lib/postgresql/data
       - ./init/grafana_readonly.sql:/docker-entrypoint-initdb.d/10-grafana_readonly.sql:ro
 
   phoenix:
@@ -34,16 +34,16 @@ services:
     environment:
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-frontlane-local-observability}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-agentdesk-local-observability}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       PHOENIX_POSTGRES_GRAFANA_USER: ${PHOENIX_POSTGRES_GRAFANA_USER:-grafana_ro}
       PHOENIX_POSTGRES_GRAFANA_PASSWORD: ${PHOENIX_POSTGRES_GRAFANA_PASSWORD:-grafana_readonly_local_only}
       PHOENIX_POSTGRES_DB: ${PHOENIX_POSTGRES_DB:-phoenix}
     volumes:
-      - muap_grafana_data:/var/lib/grafana
+      - agentdesk_grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
-  muap_phoenix_postgres_data:
-  muap_grafana_data:
+  agentdesk_phoenix_postgres_data:
+  agentdesk_grafana_data:

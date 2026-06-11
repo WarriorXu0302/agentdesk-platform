@@ -185,7 +185,7 @@ describe('OpenAIProvider', () => {
         {
           type: 'function_call',
           call_id: 'call_stale_abc',
-          name: 'mcp__frontlane__web_fetch',
+          name: 'mcp__agentdesk__web_fetch',
           arguments: '{}',
         },
         {

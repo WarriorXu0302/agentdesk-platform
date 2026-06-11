@@ -6,7 +6,6 @@
  */
 import crypto from 'crypto';
 
-import { PLATFORM_PROTOCOL_NAMESPACE } from '../../branding.js';
 import type { OutboundMessage } from '../adapter.js';
 import type {
   FeishuApiResponse,
@@ -376,7 +375,7 @@ export function extractVerificationToken(payload: Record<string, unknown>): stri
 
 export function parseFeishuQuestionActionPayload(value: unknown, now = Date.now()): FeishuQuestionActionPayload | null {
   if (!isRecord(value)) return null;
-  if (value.kind !== `${PLATFORM_PROTOCOL_NAMESPACE}.ask_question`) return null;
+  if (value.kind !== 'card.ask_question') return null;
   const questionId = readString(value.questionId);
   const selectedOption = readString(value.selectedOption);
   const selectedLabel = readString(value.selectedLabel);
@@ -386,7 +385,7 @@ export function parseFeishuQuestionActionPayload(value: unknown, now = Date.now(
   if (!questionId || !selectedOption) return null;
   if (expiresAt !== undefined && expiresAt < now) return null;
   return {
-    kind: 'frontlane.ask_question',
+    kind: 'card.ask_question',
     questionId,
     selectedOption,
     selectedLabel,
@@ -455,7 +454,7 @@ export function buildFeishuAskQuestionCardWithPayloads(params: {
             text: { tag: 'plain_text', content: option.label },
             type: index === 0 ? 'primary' : 'default',
             value: {
-              kind: `${PLATFORM_PROTOCOL_NAMESPACE}.ask_question`,
+              kind: 'card.ask_question',
               questionId: params.questionId,
               selectedOption: option.value,
               selectedLabel: option.selectedLabel,

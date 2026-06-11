@@ -12,6 +12,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
+import { MCP_SERVER_NAME } from '../branding.js';
 import type { McpToolDefinition } from './types.js';
 
 function log(msg: string): void {
@@ -33,7 +34,7 @@ export function registerTools(tools: McpToolDefinition[]): void {
 }
 
 export async function startMcpServer(): Promise<void> {
-  const server = new Server({ name: 'frontlane', version: '2.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: MCP_SERVER_NAME, version: '2.0.0' }, { capabilities: { tools: {} } });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: allTools.map((t) => t.tool),

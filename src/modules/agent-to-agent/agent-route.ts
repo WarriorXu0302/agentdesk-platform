@@ -38,14 +38,14 @@ export { isSafeAttachmentName };
 const DEFAULT_MAX_SPAWN_DEPTH = 2;
 
 /**
- * Cap for spawn-chain depth, mirroring openclaw's `subagents.maxSpawnDepth`.
+ * Cap for spawn-chain depth, a configurable default (2).
  * Read at each call so operators can tune without a restart (the host process
  * doesn't cache `process.env`). Invalid / non-positive values fall back to the
  * default rather than disabling the cap — a typo shouldn't widen the blast
  * radius.
  */
 function resolveMaxSpawnDepth(): number {
-  const raw = process.env.FRONTLANE_MAX_SPAWN_DEPTH;
+  const raw = process.env.AGENTDESK_MAX_SPAWN_DEPTH;
   if (!raw) return DEFAULT_MAX_SPAWN_DEPTH;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_SPAWN_DEPTH;
@@ -230,8 +230,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   // Spawn-depth cap. Self-messages (system notifications looped back into the
   // same session) don't bump depth so they're never blocked. Cross-agent
   // edges: `target.depth = source.depth + 1`; reject if that would exceed
-  // FRONTLANE_MAX_SPAWN_DEPTH (default 2, matching openclaw's
-  // subagents.maxSpawnDepth). The agent_destinations ACL is still the primary
+  // AGENTDESK_MAX_SPAWN_DEPTH (default 2). The agent_destinations ACL is still the primary
   // protection — this is the runtime defense-in-depth that catches a
   // misconfigured destination table.
   if (targetAgentGroupId !== session.agent_group_id) {
@@ -239,7 +238,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     const sourceDepth = session.spawn_depth ?? 0;
     if (sourceDepth >= cap) {
       throw new Error(
-        `spawn-depth cap exceeded: source ${session.agent_group_id} session ${session.id} is at depth ${sourceDepth}, FRONTLANE_MAX_SPAWN_DEPTH=${cap}`,
+        `spawn-depth cap exceeded: source ${session.agent_group_id} session ${session.id} is at depth ${sourceDepth}, AGENTDESK_MAX_SPAWN_DEPTH=${cap}`,
       );
     }
   }

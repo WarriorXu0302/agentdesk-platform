@@ -1,9 +1,0 @@
- trace_rowid |          name          |                                                                                   attributes                                                                                   
--------------+------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-           1 | delivery.session.drain | {"agent": {"group": {"id": "ag-1779868765808-x90uj6"}}, "session": {"id": "sess-1779868835294-d9ed3l"}}
-           2 | delivery.session.drain | {"agent": {"group": {"id": "ag-1779902449091-8xu3bl"}}, "session": {"id": "sess-1779902863057-eykjju"}}
-           3 | delivery.session.drain | {"agent": {"group": {"id": "ag-1779868765808-x90uj6"}}, "session": {"id": "sess-1779868835294-d9ed3l"}}
-           4 | delivery.session.drain | {"agent": {"group": {"id": "ag-1779902449091-8xu3bl"}}, "session": {"id": "sess-1779902863057-eykjju"}}
-          12 | delivery.session.drain | {"agent": {"group": {"id": "ag-1779868765808-x90uj6"}}, "message": {"count": 2}, "session": {"id": "sess-1779868835294-d9ed3l"}, "openinference": {"span": {"kind": "CHAIN"}}}
-(5 rows)
-

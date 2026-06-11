@@ -1,6 +1,8 @@
 import { trace, type Tracer, type Span } from '@opentelemetry/api';
 
-const TRACER_NAME = 'frontlane-host';
+import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
+
+const TRACER_NAME = `${PLATFORM_PROTOCOL_NAMESPACE}-host`;
 
 export function getTracer(): Tracer {
   return trace.getTracer(TRACER_NAME);

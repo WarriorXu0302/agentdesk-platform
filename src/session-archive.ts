@@ -3,7 +3,7 @@
  * archive tarballs after a longer TTL.
  *
  * Runs from the host sweep. Sessions are archived when:
- *   - `FRONTLANE_SESSION_TTL_DAYS` is set (> 0)
+ *   - `AGENTDESK_SESSION_TTL_DAYS` is set (> 0)
  *   - session.status = 'active'
  *   - session.container_status = 'stopped'  (never archive under a running container)
  *   - session.last_active older than the TTL window
@@ -14,7 +14,7 @@
  * queries can still resolve the id to an agent group / user.
  *
  * Hard delete (optional) removes archived tarballs + DB rows once
- * `FRONTLANE_ARCHIVE_HARD_DELETE_DAYS` has also elapsed. Default 0 =
+ * `AGENTDESK_ARCHIVE_HARD_DELETE_DAYS` has also elapsed. Default 0 =
  * disabled; archives live forever unless an operator clears them.
  */
 import { spawn } from 'child_process';
@@ -59,11 +59,11 @@ function parsePositiveInt(raw: string | undefined): number {
 }
 
 export function sessionTtlDays(): number {
-  return parsePositiveInt(process.env.FRONTLANE_SESSION_TTL_DAYS);
+  return parsePositiveInt(process.env.AGENTDESK_SESSION_TTL_DAYS);
 }
 
 export function hardDeleteAfterDays(): number {
-  return parsePositiveInt(process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS);
+  return parsePositiveInt(process.env.AGENTDESK_ARCHIVE_HARD_DELETE_DAYS);
 }
 
 function cutoffIso(days: number, now: Date = new Date()): string {
@@ -133,7 +133,7 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
   try {
     const archivePath = await archiveSessionFiles(session);
     // `archived_at` is the hard-delete gate. Set it to now so the retention
-    // window (FRONTLANE_ARCHIVE_HARD_DELETE_DAYS) starts here, not at
+    // window (AGENTDESK_ARCHIVE_HARD_DELETE_DAYS) starts here, not at
     // last_active — otherwise an ancient idle session gets tarred and
     // unlinked inside the same sweep tick.
     updateSession(session.id, { status: 'archived', archived_at: now.toISOString() });
@@ -153,7 +153,7 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
 
 /**
  * Hard-delete an archived session: remove the tarball and the DB row.
- * Only fires when FRONTLANE_ARCHIVE_HARD_DELETE_DAYS is set.
+ * Only fires when AGENTDESK_ARCHIVE_HARD_DELETE_DAYS is set.
  */
 export function hardDeleteArchivedSession(session: Session): boolean {
   try {

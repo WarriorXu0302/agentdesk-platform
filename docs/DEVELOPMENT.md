@@ -1,4 +1,4 @@
-# FrontLane Development — 开发者上手指南
+# AgentDesk Development — 开发者上手指南
 
 面向新加入的开发者。读完应该知道：代码在哪、加新功能从哪下手、本地怎么调、写测试有什么坑。
 
@@ -33,7 +33,7 @@ src/                                        Host 侧（Node + pnpm）
 │   ├── agent-to-agent/                     a2a 派活、origin_user_id 跨 hop
 │   ├── approvals/                          OneCLI 凭证审批桥
 │   ├── classification-log/                 分类决策审计
-│   ├── erp-audit/                          ERP 调用审计
+│   ├── gateway-audit/                      后端网关调用审计
 │   ├── interactive/                        卡片回调、交互组件
 │   ├── mount-security/                     容器挂载安全检查
 │   ├── permissions/                        owner / admin / member 权限解析
@@ -47,7 +47,7 @@ src/                                        Host 侧（Node + pnpm）
 │   ├── index.ts                            DB 句柄、事务、test 工厂
 │   ├── migrations/                         001 ~ 024 顺序迁移
 │   ├── classification-log.ts               recordClassification / linkOutcome
-│   ├── erp-audit.ts                        record + query
+│   ├── gateway-audit.ts                    record + query
 │   ├── sessions.ts / agent_groups.ts / ...
 │
 └── metrics.ts                              Prometheus 指标暴露 + /metrics
@@ -64,7 +64,7 @@ container/agent-runner/                     容器侧（Bun，独立 package tre
 │   ├── mcp-tools/                          内置 MCP 工具
 │   │   ├── core.ts                         send_message / send_file / ask_user_question
 │   │   ├── classify-intent.ts              分类协议 entry point
-│   │   ├── erp-gateway.ts                  ERP 网关 5 个工具
+│   │   ├── gateway.ts                       后端网关 5 个工具
 │   │   ├── scheduling.ts                   schedule_task / list_tasks
 │   │   ├── interactive.ts                  卡片
 │   │   ├── self-mod.ts                     install_packages / add_mcp_server
@@ -75,7 +75,7 @@ container/agent-runner/                     容器侧（Bun，独立 package tre
 
 groups/<folder>/                            每个 agent_group 的根
 ├── CLAUDE.md                               该 group 的 system prompt
-├── container.json                          资源 + ERP gateway 配置
+├── container.json                          资源 + 后端网关配置
 ├── skills/                                 group 私有 skill
 └── agent-runner-src/                       per-group runtime overlay（罕用）
 ```
@@ -212,7 +212,7 @@ pnpm add @slack/web-api
 # 注意 minimumReleaseAge=4320，新版本要等 3 天
 ```
 
-不要硬编码到主仓库——FrontLane 的设计是 `channels` branch 装 skill 拉，但企业内部使用直接 commit 到 src 也可以。
+不要硬编码到主仓库——AgentDesk 的设计是 `channels` branch 装 skill 拉，但企业内部使用直接 commit 到 src 也可以。
 
 ---
 
@@ -223,7 +223,7 @@ pnpm add @slack/web-api
 # scripts/init-enterprise-topology.ts
 const workers = [
   ...,
-  { folder: 'frontlane-hr-worker', displayName: 'HR Worker' },
+  { folder: 'agentdesk-hr-worker', displayName: 'HR Worker' },
 ];
 
 # 2. 加 frontdesk 派活 destination
@@ -233,16 +233,16 @@ const workers = [
 pnpm init:enterprise
 
 # 4. 编辑 group 的 CLAUDE.md 写 system prompt
-vim groups/frontlane-hr-worker/CLAUDE.md
+vim groups/agentdesk-hr-worker/CLAUDE.md
 
 # 5. 配资源
-vim groups/frontlane-hr-worker/container.json
+vim groups/agentdesk-hr-worker/container.json
 ```
 
 **Worker 的 system prompt 要点**：
 - 明确这个 worker 负责什么、不负责什么
 - 不需要再讲 `classify_intent`（那是 frontdesk 的事）
-- 直接讲业务约束（哪些 ERP operation 可以调、什么时候要 dryRun）
+- 直接讲业务约束（哪些后端 operation 可以调、什么时候要 dryRun）
 
 ---
 
@@ -295,7 +295,7 @@ registerDeliveryAction('my_audit', async (msg, ctx) => {
 });
 ```
 
-参考已有的：`erp_audit` / `classify_intent` / `provider_error` / `schedule_task` 都是这个模式。
+参考已有的：`gateway_audit` / `classify_intent` / `provider_error` / `schedule_task` 都是这个模式。
 
 写测试：
 ```bash
@@ -386,7 +386,7 @@ afterEach(() => closeSessionDb());
 - [ ] DB schema 改动：写了 migration，编号顺延，idempotent
 - [ ] 容器 SQL：用 `$name` 占位（`bun:sqlite` 不剥前缀）
 - [ ] 测试覆盖：normal / empty / cross-session / mixed-batch
-- [ ] Metric 命名：`frontlane_<noun>_<unit>`，labels 不爆基数（< 50）
+- [ ] Metric 命名：`<namespace>_<noun>_<unit>`（默认 `agentdesk_`），labels 不爆基数（< 50）
 - [ ] 没引入 setTimeout / setInterval（用 host-sweep 的 60s tick）
 - [ ] 没绕开 MAX_CONCURRENT_CONTAINERS
 
@@ -417,7 +417,7 @@ db.prepare('INSERT INTO t (id) VALUES (?)').run('x');
 
 ```bash
 # 看 sweep tick 日志
-grep "sweep" logs/frontlane.log | tail
+grep "sweep" logs/agentdesk.log | tail
 ```
 
 如果完全没 tick：检查 `src/index.ts` 是不是注册了 `host-sweep`。
@@ -449,7 +449,7 @@ grep "sweep" logs/frontlane.log | tail
 | 容器内部 | `docs/agent-runner-details.md` |
 | 运维 | `docs/RUNBOOK.md` |
 | 开发上手 | `docs/DEVELOPMENT.md`（本文件） |
-| ERP 后端集成 | `docs/ERP-INTEGRATION-GUIDE.md` |
+| 后端集成 | `docs/ERP-INTEGRATION-GUIDE.md` |
 
 文档原则：
 - 单一信息源（不要在两个文档里讲同一件事，互相 link）
@@ -464,5 +464,5 @@ grep "sweep" logs/frontlane.log | tail
 - [architecture.md](architecture.md) — 详细 message flow
 - [agent-runner-details.md](agent-runner-details.md) — poll-loop 内部
 - [build-and-runtime.md](build-and-runtime.md) — 双 runtime / lockfile / 镜像
-- [enterprise-erp-gateway.md](enterprise-erp-gateway.md) — ERP 协议
+- [enterprise-erp-gateway.md](enterprise-erp-gateway.md) — 后端网关协议
 - [RUNBOOK.md](RUNBOOK.md) — 线上故障处置

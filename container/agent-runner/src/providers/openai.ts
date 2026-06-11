@@ -5,6 +5,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 
 import { touchHeartbeat } from '../db/connection.js';
+import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 import { setContinuation } from '../db/session-state.js';
 import { registerProvider } from './provider-registry.js';
 import type {
@@ -709,7 +710,7 @@ class OpenAIMcpBridge {
 
     const client = new Client(
       {
-        name: `frontlane-openai-${sanitizeToolSegment(serverName)}`,
+        name: `${PLATFORM_PROTOCOL_NAMESPACE}-openai-${sanitizeToolSegment(serverName)}`,
         version: '1.0.0',
       },
       {

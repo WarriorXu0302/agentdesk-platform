@@ -22,6 +22,6 @@ import './scheduling/index.js';
 import './permissions/index.js';
 import './agent-to-agent/index.js';
 import './self-mod/index.js';
-import './erp-audit/index.js';
+import './gateway-audit/index.js';
 import './provider-errors/index.js';
 import './classification-log/index.js';

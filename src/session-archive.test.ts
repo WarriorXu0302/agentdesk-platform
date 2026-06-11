@@ -59,7 +59,7 @@ function seedSession(args: {
 }
 
 beforeEach(() => {
-  tmpState.root = fs.mkdtempSync(path.join(os.tmpdir(), 'frontlane-session-archive-'));
+  tmpState.root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-session-archive-'));
   fs.mkdirSync(path.join(tmpState.root, 'data'), { recursive: true });
   const db = initTestDb();
   runMigrations(db);
@@ -68,8 +68,8 @@ beforeEach(() => {
 
 afterEach(() => {
   closeDb();
-  delete process.env.FRONTLANE_SESSION_TTL_DAYS;
-  delete process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS;
+  delete process.env.AGENTDESK_SESSION_TTL_DAYS;
+  delete process.env.AGENTDESK_ARCHIVE_HARD_DELETE_DAYS;
   if (fs.existsSync(tmpState.root)) fs.rmSync(tmpState.root, { recursive: true, force: true });
 });
 
@@ -126,7 +126,7 @@ describe('hardDeleteArchivedSession', () => {
 });
 
 describe('runSessionLifecycleSweep', () => {
-  it('is a no-op when FRONTLANE_SESSION_TTL_DAYS is unset', async () => {
+  it('is a no-op when AGENTDESK_SESSION_TTL_DAYS is unset', async () => {
     const old = new Date(Date.now() - 365 * 86_400_000).toISOString();
     seedSession({ id: 's1', agentGroupId: 'ag-1', lastActive: old });
 
@@ -136,7 +136,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('archives sessions past the TTL window', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '7';
     const old = new Date(Date.now() - 10 * 86_400_000).toISOString();
     seedSession({ id: 's-old', agentGroupId: 'ag-1', lastActive: old });
     seedSession({ id: 's-new', agentGroupId: 'ag-1', lastActive: now() });
@@ -148,7 +148,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('does not archive sessions whose container is still running', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '1';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
     const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
     seedSession({ id: 's-alive', agentGroupId: 'ag-1', lastActive: old, containerStatus: 'running' });
 
@@ -158,7 +158,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('does not archive sessions with null last_active', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '1';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
     seedSession({ id: 's-fresh', agentGroupId: 'ag-1', lastActive: null });
 
     const result = await runSessionLifecycleSweep();
@@ -167,12 +167,12 @@ describe('runSessionLifecycleSweep', () => {
 
   it('does NOT hard-delete a session the same tick it was archived', async () => {
     // An ancient-but-only-just-archived session must get the full
-    // FRONTLANE_ARCHIVE_HARD_DELETE_DAYS retention window starting from
+    // AGENTDESK_ARCHIVE_HARD_DELETE_DAYS retention window starting from
     // archive time — not immediately unlinked because its last_active is
     // already older than the hard-delete threshold. This is the bug the
     // `archived_at` column fixes.
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
-    process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '7';
+    process.env.AGENTDESK_ARCHIVE_HARD_DELETE_DAYS = '30';
     const ancient = new Date(Date.now() - 365 * 86_400_000).toISOString();
 
     seedSession({ id: 's-old', agentGroupId: 'ag-1', lastActive: ancient });
@@ -186,8 +186,8 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('hard-deletes archived sessions once their retention window elapses', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
-    process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '7';
+    process.env.AGENTDESK_ARCHIVE_HARD_DELETE_DAYS = '30';
 
     // Seed a row already in the archived state with an archived_at that's
     // older than the retention window. Simulates a session archived by a
@@ -207,8 +207,8 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('does NOT hard-delete an archived session whose retention window has not elapsed', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
-    process.env.FRONTLANE_ARCHIVE_HARD_DELETE_DAYS = '30';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '7';
+    process.env.AGENTDESK_ARCHIVE_HARD_DELETE_DAYS = '30';
 
     const archivedAt = new Date(Date.now() - 10 * 86_400_000).toISOString();
     seedSession({
@@ -225,7 +225,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('reports counts for the sweep result', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '1';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
     seedSession({ id: 's-archive-me', agentGroupId: 'ag-1', lastActive: new Date(Date.now() - 10 * 86_400_000).toISOString() });
     seedSession({ id: 's-keep', agentGroupId: 'ag-1', lastActive: now() });
 
@@ -235,7 +235,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('handles an empty session table', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '7';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '7';
     const result = await runSessionLifecycleSweep();
     expect(result.archived).toBe(0);
     expect(result.activeCount).toBe(0);
@@ -243,7 +243,7 @@ describe('runSessionLifecycleSweep', () => {
   });
 
   it('caps per-tick work to the batch limit', async () => {
-    process.env.FRONTLANE_SESSION_TTL_DAYS = '1';
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
     const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
     // Seed 150 — larger than ARCHIVE_BATCH_LIMIT (100).
     for (let i = 0; i < 150; i++) {

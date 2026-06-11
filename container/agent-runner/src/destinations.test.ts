@@ -68,7 +68,7 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
 
     expect(prompt).toContain('Memory policy');
     expect(prompt).toContain('Do not store durable user');
-    expect(prompt).toContain('erp_memory_get');
-    expect(prompt).toContain('erp_memory_upsert');
+    expect(prompt).toContain('gateway_memory_get');
+    expect(prompt).toContain('gateway_memory_upsert');
   });
 });

@@ -1,23 +1,24 @@
 /**
- * Bootstrap a shared-enterprise FrontLane topology.
+ * Bootstrap a shared-enterprise agent topology.
  *
- * Creates/reuses a primary frontdesk agent group, an optional secondary
- * lab-style frontdesk (Phase 0a `frontlane-lab-frontdesk`), plus a set of
- * specialist workers for the primary frontdesk. Seeds group files with
- * enterprise-oriented starter instructions, wires bidirectional agent
- * destinations, and optionally wires a shared entry channel to the
- * **primary** frontdesk.
+ * Creates/reuses a primary frontdesk agent group plus an optional set of
+ * specialist workers, seeds group files with starter instructions, wires
+ * bidirectional agent destinations, and optionally wires a shared entry
+ * channel to the primary frontdesk.
  *
- * Multi-frontdesk model (see ADR-0008):
- * - DEFAULT_FRONTDESKS lists every desk this script provisions by default.
+ * The default (no args) provisions ONE blank template frontdesk and no
+ * workers — a starting point, not a business topology. Grow it with
+ * `--frontdesks` / `--workers`, or copy a worked example from `examples/`.
+ *
+ * Multi-frontdesk model:
+ * - The active frontdesk list is `--frontdesks` (or the single default desk).
  * - The first entry is the "primary" frontdesk: shared-entry wiring + worker
  *   reverse destinations attach here.
- * - Subsequent desks (e.g. lab) own their own `groups/<folder>/` prompt
- *   contract and call the ERP gateway directly; they do not delegate to
- *   shared workers, so they get `workers: []` and contribute no reverse
- *   destinations on existing workers (avoids destination-name collisions).
+ * - Secondary desks own their own `groups/<folder>/` prompt contract and call
+ *   the backend gateway directly; they get `workers: []` and contribute no
+ *   reverse destinations (avoids destination-name collisions).
  * - Passing --frontdesk-folder or --frontdesk-name switches to single-desk
- *   mode for back-compat with older callers.
+ *   mode.
  *
  * Usage:
  *   pnpm exec tsx scripts/init-enterprise-topology.ts
@@ -25,14 +26,14 @@
  *   pnpm exec tsx scripts/init-enterprise-topology.ts \
  *     --channel feishu \
  *     --platform-id oc_xxx \
- *     --group-name "FrontLane Template Desk" \
+ *     --group-name "Front Desk" \
  *     --threaded
  *
  * Optional args:
  *   --frontdesks folder1:name1[,folder2:name2,...]    # multi-desk override
- *   --frontdesk-name "FrontLane Template Desk"        # single-desk back-compat
- *   --frontdesk-folder frontlane-template-frontdesk   # single-desk back-compat
- *   --workers access-worker,sales-worker,finance-worker,approval-worker,ops-worker
+ *   --frontdesk-name "Front Desk"                     # single-desk
+ *   --frontdesk-folder my-frontdesk                   # single-desk
+ *   --workers access-worker,finance-worker,...        # opt-in workers (default: none)
  *   --channel <channel>
  *   --platform-id <platform id emitted by the adapter>
  *   --group-name <messaging-group display name>
@@ -47,11 +48,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import {
-  buildLegacyWorkerFolder,
   buildWorkerFolder,
   DEFAULT_FRONTDESK_FOLDER,
   DEFAULT_FRONTDESK_NAME,
-  LEGACY_FRONTDESK_FOLDER,
+  PLATFORM_BRAND,
 } from '../src/branding.js';
 import { DATA_DIR } from '../src/config.js';
 import { updateContainerConfig } from '../src/container-config.js';
@@ -83,7 +83,7 @@ import type {
   UnknownSenderPolicy,
 } from '../src/types.js';
 
-const DEFAULT_WORKERS = ['access-worker', 'sales-worker', 'finance-worker', 'approval-worker', 'ops-worker'];
+const DEFAULT_WORKERS: string[] = [];
 const FRONTDESK_DESTINATION_NAME = 'frontdesk';
 const SESSION_MODES: MessagingGroupAgent['session_mode'][] = [
   'shared',
@@ -98,7 +98,7 @@ const UNKNOWN_SENDER_POLICIES: UnknownSenderPolicy[] = ['strict', 'request_appro
 
 /**
  * One frontdesk specification. `workers` may be empty — secondary desks
- * (like the Phase 0a lab frontdesk) call the ERP gateway directly and do
+ * call the backend gateway directly and do
  * not own a shared worker pool. Only the **primary** frontdesk (the first
  * entry in the active list) wires reverse `frontdesk` destinations onto
  * workers, to avoid name collisions on the worker side.
@@ -113,21 +113,16 @@ interface FrontdeskSpec {
  * Default desks provisioned by `pnpm init:enterprise` with no args.
  * Order is significant: index 0 is the primary frontdesk.
  *
- * `frontlane-lab-frontdesk` was added in Phase 0a (ADR-0008) as a
- * lab-flavored secondary desk that owns its own prompt contract
- * (`groups/frontlane-lab-frontdesk/CLAUDE.local.md`) and calls the ERP
- * gateway directly — hence `workers: []`.
+ * The baseline ships ONE blank template frontdesk and no workers — it's a
+ * starting point, not a business topology. Operators grow their own desks
+ * and workers with `--frontdesks` / `--workers`, or copy a worked example
+ * from `examples/` (e.g. the lab-frontdesk reference).
  */
 const DEFAULT_FRONTDESKS: FrontdeskSpec[] = [
   {
     folder: DEFAULT_FRONTDESK_FOLDER,
     name: DEFAULT_FRONTDESK_NAME,
     workers: DEFAULT_WORKERS,
-  },
-  {
-    folder: 'frontlane-lab-frontdesk',
-    name: 'FrontLane Lab Desk',
-    workers: [],
   },
 ];
 
@@ -361,14 +356,14 @@ function parseFrontdesksList(raw: string, primaryWorkers: string[]): FrontdeskSp
 }
 
 function parseWorkers(raw: string | undefined): string[] {
-  const source = raw?.trim() || DEFAULT_WORKERS.join(',');
+  // No default workers: the baseline frontdesk is blank. Workers are an
+  // opt-in (`--workers a,b,c`). An empty list is valid and yields a
+  // frontdesk with no delegated specialists.
+  const source = raw?.trim() ?? '';
   const workers = source
     .split(',')
     .map((part) => normalizeName(part.trim()))
     .filter(Boolean);
-  if (workers.length === 0) {
-    fatal('Worker list is empty. Pass --workers with at least one worker name.');
-  }
 
   const seen = new Set<string>();
   const unique: string[] = [];
@@ -402,28 +397,13 @@ function titleCase(slug: string): string {
 }
 
 function describeWorker(localName: string): string {
-  switch (localName) {
-    case 'access-worker':
-      return 'identity resolution, authentication state, and permission scope checks';
-    case 'sales-worker':
-      return 'sales CRM, quotes, customer follow-up, and order intake';
-    case 'finance-worker':
-      return 'billing, invoices, reconciliation, payment status, and account balances';
-    case 'approval-worker':
-      return 'approval policies, privileged-action gating, and human confirmation flows';
-    case 'ops-worker':
-      return 'ERP operations, ticket triage, backend exception handling, and runbook work';
-    case 'research-worker':
-      return 'read-only lookup, drafting, and summarization work';
-    default:
-      return 'specialist ERP and business process handling for its assigned domain';
-  }
+  return `specialist handling for the ${titleCase(localName)} domain`;
 }
 
 function buildWorkerSpecs(localNames: string[]): WorkerSpec[] {
   return localNames.map((localName) => ({
     localName,
-    displayName: `FrontLane ${titleCase(localName)}`,
+    displayName: `${PLATFORM_BRAND} ${titleCase(localName)}`,
     folder: normalizeName(buildWorkerFolder(localName)),
     description: describeWorker(localName),
   }));
@@ -434,12 +414,12 @@ function buildFrontdeskInstructions(frontdeskName: string, workers: WorkerSpec[]
 
   return `# ${frontdeskName}
 
-You are the shared frontdesk agent for an enterprise ERP assistant platform.
+You are the shared frontdesk agent for an enterprise assistant platform.
 
 Primary responsibilities:
-- greet the user and classify the business request
+- greet the user and classify the request
 - keep each user's workstream isolated to the current session only
-- verify the request has passed identity and permission checks before any ERP-side action
+- verify the request has passed identity and permission checks before any state-changing action
 - delegate specialist work to the correct worker destination
 - keep group-chat behavior low-risk: explain, summarize, and collect context there, but avoid sensitive irreversible writes
 
@@ -466,7 +446,7 @@ Never delegate silently. Every routing decision must have a preceding \`classify
 
 ## Working rules
 
-- if the request involves identity, entitlements, or permission ambiguity, route to \`access-worker\` first when available
+- if the request involves identity, entitlements, or permission ambiguity, resolve that first (route to an access/identity worker when one exists)
 - for money movement, approvals, status changes, or destructive operations, require explicit confirmation and use the approval path
 - use <message to="worker-name">...</message> for delegation and include only the minimum context needed
 - return concise user-facing summaries after worker results come back
@@ -477,12 +457,12 @@ function buildSoloFrontdeskInstructions(frontdeskName: string): string {
   return `# ${frontdeskName}
 
 You are a self-contained frontdesk agent. You receive user requests directly
-and call the ERP gateway (\`erp_*\` tools) yourself, without delegating to
-shared worker agents.
+and call the backend gateway (\`gateway_*\` tools) yourself, without delegating
+to shared worker agents.
 
 Operating rules:
 - preserve session isolation: never read or write another user's session
-- verify identity and permission scope before any ERP-side write
+- verify identity and permission scope before any state-changing write
 - for any operation that mutates physical or business state, require explicit
   user confirmation first
 - never fabricate completion — return only results backed by a real tool
@@ -501,7 +481,7 @@ Domain focus:
 
 Operating rules:
 - messages arrive from the frontdesk agent, not directly from end users
-- do not assume authorization for privileged ERP actions; require a verified permission result when needed
+- do not assume authorization for privileged actions; require a verified permission result when needed
 - ask for the smallest missing input set instead of broad open-ended follow-ups
 - return structured, concise results back to <message to="${FRONTDESK_DESTINATION_NAME}">...</message>
 - include clear blockers, approvals, and audit-relevant notes when the task changes business state
@@ -537,13 +517,6 @@ function ensureAgentGroup(
   role: AgentRole = 'worker',
 ): AgentGroup {
   let group = getAgentGroupByFolder(folder);
-  if (!group && folder === DEFAULT_FRONTDESK_FOLDER) {
-    group = getAgentGroupByFolder(LEGACY_FRONTDESK_FOLDER);
-  }
-  if (!group && folder.startsWith('frontlane-')) {
-    const localName = folder.slice('frontlane-'.length);
-    group = getAgentGroupByFolder(buildLegacyWorkerFolder(localName));
-  }
   if (!group) {
     createAgentGroup({
       id: generateId('ag'),
@@ -742,7 +715,7 @@ export async function run(argv: string[]): Promise<void> {
     }
   }
 
-  // 3. Shared-entry channel wiring (only the primary desk; ADR-0008 §3).
+  // 3. Shared-entry channel wiring (only the primary desk).
   const sharedEntry = ensureSharedEntryWiring(primaryFrontdeskGroup, args, now);
   if (sharedEntry) touchedGroups.add(primaryFrontdeskGroup.id);
 
@@ -764,7 +737,7 @@ export async function run(argv: string[]): Promise<void> {
   }
   console.log('');
   console.log(
-    'Next step: run `pnpm exec tsx scripts/configure-enterprise-gateway.ts --base-url <gateway>` and point these groups at your auth/ERP capability layer.',
+    'Next step: run `pnpm exec tsx scripts/configure-enterprise-gateway.ts --base-url <gateway>` and point these groups at your backend capability layer.',
   );
 }
 

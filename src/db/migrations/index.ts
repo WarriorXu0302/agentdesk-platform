@@ -15,7 +15,7 @@ import { migration015 } from './015-root-session-lane.js';
 import { migration016 } from './016-inbound-dedup.js';
 import { migration017 } from './017-progress-reactions.js';
 import { migration018 } from './018-enterprise-audit.js';
-import { migration019 } from './019-erp-audit.js';
+import { migration019 } from './019-gateway-audit.js';
 import { migration020 } from './020-inbound-origin-user.js';
 import { migration021 } from './021-session-archived-status.js';
 import { migration022 } from './022-session-archived-at.js';

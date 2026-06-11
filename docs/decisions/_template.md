@@ -46,11 +46,11 @@
 ## Implementation Notes
 
 - 落地相关文件路径：`src/...`, `docs/...`, `scripts/...`
-- 依赖的上游 ADR 或 v1.x 宪法条款
+- 依赖的上游 ADR
 - 后续验收点（例如 PR 编号、测试用例、metrics 名）
 
 ## References
 
-- 关联 issue / PR / Slack 讨论 / Notion / Phoenix trace
-- 上游设计文档（`../../../openclaw/CLOSEOUT/...`，从 docs/decisions/ 出发）
+- 关联 issue / PR / 讨论记录 / Phoenix trace
+- 相关设计文档
 - 相关 commit hash

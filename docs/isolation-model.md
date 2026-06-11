@@ -1,6 +1,6 @@
 # Channel Isolation Model
 
-FrontLane decouples messaging channels from agent groups. When you connect a channel (Discord, Telegram, Slack, GitHub, etc.), you decide how it relates to your existing agents. There are three isolation levels.
+AgentDesk decouples messaging channels from agent groups. When you connect a channel (Discord, Telegram, Slack, GitHub, etc.), you decide how it relates to your existing agents. There are three isolation levels.
 
 ## The Three Levels
 
@@ -77,7 +77,7 @@ If different people are involved → separate agent groups. Information will cro
 
 The three levels above assume the main boundary is **channel ↔ agent group**. In a shared enterprise bot, that is often not enough: one bot may sit in a single chat surface while still needing a separate context per sender.
 
-FrontLane supports two user-scoped `session_mode` values for that case:
+AgentDesk supports two user-scoped `session_mode` values for that case:
 
 - `per-user` — one session per `(agent_group, messaging_group, user)`
 - `per-user-per-thread` — one session per `(agent_group, messaging_group, user, thread)`

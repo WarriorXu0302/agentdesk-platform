@@ -16,13 +16,13 @@ function makeAdapter(deliver = vi.fn<ChannelDeliveryAdapter['deliver']>()) {
 }
 
 beforeEach(() => {
-  delete process.env.FRONTLANE_PROGRESS_STATUS_CHANNELS;
+  delete process.env.AGENTDESK_PROGRESS_STATUS_CHANNELS;
   const db = initTestDb();
   runMigrations(db);
 });
 
 afterEach(() => {
-  delete process.env.FRONTLANE_PROGRESS_STATUS_CHANNELS;
+  delete process.env.AGENTDESK_PROGRESS_STATUS_CHANNELS;
   try {
     clearProgressStatus('sess-1');
     clearProgressStatus('sess-2');

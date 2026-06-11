@@ -18,7 +18,7 @@
 ## 何时往这里写
 
 - 安全 / 合规第三方评估的结论摘要
-- 定期内部健康度盘点（例如 dev-harness 审查、迁移就绪度评估、文档系统盘点）
+- 定期内部健康度盘点（例如 dev-harness 审查、发布就绪度评估、文档系统盘点）
 - 对 ADR 已落地状态的事后审计（验证某 ADR 是否被实施且未漂移）
 
 ## 何时**不**写在这里
@@ -26,15 +26,14 @@
 - 设计选择与拍板：写 ADR
 - 实现细节文档：放 `docs/<area>.md`
 - TODO / Roadmap：放对应 plan / roadmap 文档（待建）
-- coding agent 的会话工作痕迹：留在 `.sisyphus/`（advisory）
 
 ## 命名约定（建议）
 
 - 时间点型审计：`audit-YYYY-MM-DD-<scope>.md`
   - 例：`audit-2026-05-18-dev-harness.md`
 - 领域型重复审计：`<area>-audit-vN.md`
-  - 例：`security-audit-v1.md`, `migration-readiness-audit-v2.md`
+  - 例：`security-audit-v1.md`, `release-readiness-audit-v2.md`
 
 ## 当前状态
 
-本目录目前为空。第一份正式 audit 产物预计在 Phase 0a/0b 启动后由用户指派写入。
+本目录目前为空。第一份正式 audit 产物由用户指派写入。

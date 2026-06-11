@@ -6,8 +6,8 @@ import type { Migration } from './index.js';
  *
  * Depth 0 = channel-entry sessions (frontdesk, anything wired directly to a
  * messaging group). Each subsequent a2a hop bumps the target's depth by one.
- * Combined with FRONTLANE_MAX_SPAWN_DEPTH (default 2) in agent-route.ts this
- * mirrors openclaw's `subagents.maxSpawnDepth=2` framework cap as a runtime
+ * Combined with AGENTDESK_MAX_SPAWN_DEPTH (default 2) in agent-route.ts this
+ * applies a default spawn-depth cap of 2 as a runtime
  * defense-in-depth on top of the existing `agent_destinations` ACL.
  *
  * Backfill heuristic: existing rows with a `messaging_group_id` are

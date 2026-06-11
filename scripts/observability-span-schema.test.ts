@@ -95,7 +95,7 @@ test('observability span schema contract', () => {
     'Tree 3',
     'mcp.erp.execute',
     'erp.call',
-    'module.erp_audit.emit',
+    'module.gateway_audit.emit',
     'db.audit.write',
     'Tree 4',
     'module.a2a.route',

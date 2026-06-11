@@ -1,6 +1,8 @@
 # Enterprise Multi-User Pattern
 
-FrontLane can act as shared agent infrastructure if you keep the trust boundary in your own backend and use FrontLane for chat ingress, session isolation, container runtime, and agent-to-agent delegation.
+AgentDesk can act as shared agent infrastructure if you keep the trust boundary in your own backend and use AgentDesk for chat ingress, session isolation, container runtime, and agent-to-agent delegation.
+
+> The brand namespace below (`agentdesk`) is the default; override via `BRAND_NAME` / `BRAND_NAMESPACE`.
 
 ## Recommended topology
 
@@ -15,7 +17,7 @@ Feishu / Slack / Discord bot
 
 ## Responsibilities
 
-FrontLane should own:
+AgentDesk should own:
 
 - inbound message routing
 - per-user or per-thread session isolation
@@ -62,22 +64,24 @@ That keeps the visible chat lightweight while the real action still happens in i
 
 ## Bootstrap the topology
 
-FrontLane now includes a bootstrap script for this shape:
+AgentDesk includes a bootstrap script for this shape:
 
 ```bash
 pnpm exec tsx scripts/init-enterprise-topology.ts
 ```
 
-That creates or reuses:
+By default that creates or reuses a single blank template frontdesk:
 
-- `frontlane-template-frontdesk`
-- `frontlane-access-worker`
-- `frontlane-sales-worker`
-- `frontlane-finance-worker`
-- `frontlane-approval-worker`
-- `frontlane-ops-worker`
+- `agentdesk-frontdesk`
 
-It also seeds starter `CLAUDE.local.md` instructions and wires frontdesk `<->` worker destinations.
+No business workers are created by default. To add workers, pass `--workers` with the names you want — for example `access-worker,sales-worker,finance-worker,approval-worker,ops-worker`:
+
+```bash
+pnpm exec tsx scripts/init-enterprise-topology.ts \
+  --workers access-worker,sales-worker,finance-worker
+```
+
+Worker folders are created as `<namespace>-<name>` (e.g. `agentdesk-finance-worker`). The script also seeds starter `CLAUDE.local.md` instructions and wires frontdesk `<->` worker destinations.
 
 To wire a shared entry channel at the same time:
 
@@ -85,7 +89,7 @@ To wire a shared entry channel at the same time:
 pnpm exec tsx scripts/init-enterprise-topology.ts \
   --channel feishu \
   --platform-id oc_xxx \
-  --group-name "FrontLane Template Desk" \
+  --group-name "AgentDesk Frontdesk" \
   --threaded
 ```
 
@@ -131,15 +135,15 @@ script reruns. Raise / lower them in `groups/<folder>/container.json`
 based on what the worker actually does (e.g. `agent-browser` workers
 typically need 2048 MB).
 
-The script is intentionally infra-only. It does not implement ERP auth, role resolution, or business permissions. Those still belong in your backend capability layer.
+The script is intentionally infra-only. It does not implement backend auth, role resolution, or business permissions. Those still belong in your backend capability layer.
 
 ## Runtime auto-ingress for Feishu
 
-If you want the first employee DM to land on `frontlane-template-frontdesk`
+If you want the first employee DM to land on `agentdesk-frontdesk`
 without an owner approval step, enable the enterprise autowire policy:
 
 ```bash
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=agentdesk-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false
@@ -149,22 +153,22 @@ ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE=per-user
 Behavior:
 
 - first Feishu p2p message auto-creates the messaging group
-- that DM is auto-wired to `frontlane-template-frontdesk`
+- that DM is auto-wired to `agentdesk-frontdesk`
 - the wiring is `pattern='.'`, `session_mode='shared'`
 - `unknown_sender_policy` is forced to `public`
 
-This is deliberate. The trust boundary moves out of FrontLane's owner/member
-ACL and into your ERP gateway, where `erp_authorize` / `erp_execute` can
+This is deliberate. The trust boundary moves out of AgentDesk's owner/member
+ACL and into your backend gateway, where `gateway_authorize` / `gateway_execute` can
 map the Feishu user, check permissions, and audit the business action.
 
 If you later enable `ENTERPRISE_AUTO_WIRE_GROUPS=true`, group mentions will
 wire with `mention-sticky` and `session_mode=per-user` so users keep
 isolated context inside the shared chat surface.
 
-## Generic ERP backend pattern
+## Generic backend pattern
 
-To keep this portable across different ERP vendors, use the built-in ERP
-gateway tools plus a backend HTTP gateway that implements one stable contract.
+To keep this portable across different backend vendors, use the built-in
+backend gateway tools plus a backend HTTP gateway that implements one stable contract.
 
 See [enterprise-erp-gateway.md](enterprise-erp-gateway.md).
 
@@ -172,5 +176,5 @@ To point the enterprise groups at that backend gateway:
 
 ```bash
 pnpm exec tsx scripts/configure-enterprise-gateway.ts \
-  --base-url https://erp-gateway.internal/api/agent
+  --base-url https://gateway.internal/api/agent
 ```

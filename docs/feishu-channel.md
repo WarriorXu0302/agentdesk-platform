@@ -1,6 +1,6 @@
 # Feishu Channel
 
-FrontLane now includes a built-in `feishu` channel adapter intended for the
+AgentDesk now includes a built-in `feishu` channel adapter intended for the
 enterprise frontdesk pattern:
 
 - one visible Feishu bot
@@ -50,7 +50,7 @@ the official long-connection event subscription mode.
 For the enterprise frontdesk pattern, these runtime flags are also useful:
 
 ```bash
-ENTERPRISE_FRONTDESK_FOLDER=frontlane-template-frontdesk
+ENTERPRISE_FRONTDESK_FOLDER=agentdesk-frontdesk
 ENTERPRISE_AUTO_WIRE_CHANNELS=feishu
 ENTERPRISE_AUTO_WIRE_P2P=true
 ENTERPRISE_AUTO_WIRE_GROUPS=false
@@ -59,7 +59,7 @@ ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE=per-user
 
 ## Webhook surface
 
-Configure Feishu event delivery to the FrontLane host:
+Configure Feishu event delivery to the AgentDesk host:
 
 - path: `FEISHU_WEBHOOK_PATH` or `/webhook/feishu`
 - port: `WEBHOOK_PORT` or `3000`
@@ -85,7 +85,7 @@ Current scope:
 - p2p inbound -> `platform_id = feishu:p2p:<open_id>`
 
 That synthetic p2p mapping is intentional. It keeps host-initiated DM delivery
-and user-initiated DM replies on the same FrontLane messaging-group/session key.
+and user-initiated DM replies on the same AgentDesk messaging-group/session key.
 
 With `ENTERPRISE_AUTO_WIRE_P2P=true`, the first DM from a Feishu user is
 auto-routed to the configured frontdesk agent group with an isolated DM
@@ -98,4 +98,4 @@ context. No channel-owner approval step is required.
 - long connection only covers event subscriptions; card-action callbacks still
   benefit from webhook or hybrid mode
 - no interactive setup wizard yet; use Feishu's own app tooling/CLI and wire
-  FrontLane with env vars
+  AgentDesk with env vars

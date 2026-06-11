@@ -1,5 +1,5 @@
 /**
- * Container runtime abstraction for FrontLane.
+ * Container runtime abstraction for the platform.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execSync } from 'child_process';
@@ -49,7 +49,7 @@ export function ensureContainerRuntimeRunning(): void {
     console.error('║  Agents cannot run without a container runtime. To fix:        ║');
     console.error('║  1. Ensure Docker is installed and running                     ║');
     console.error('║  2. Run: docker info                                           ║');
-    console.error('║  3. Restart FrontLane                                          ║');
+    console.error('║  3. Restart the host                                          ║');
     console.error('╚════════════════════════════════════════════════════════════════╝\n');
     throw new Error('Container runtime is required but failed to start', {
       cause: err,
@@ -58,9 +58,9 @@ export function ensureContainerRuntimeRunning(): void {
 }
 
 /**
- * Kill orphaned FrontLane containers from THIS install's previous runs.
+ * Kill orphaned agent containers from THIS install's previous runs.
  *
- * Scoped by label `nanoclaw-install=<slug>` so a crash-looping peer install
+ * Scoped by label `<namespace>-install=<slug>` so a crash-looping peer install
  * cannot reap our containers, and we cannot reap theirs. The label is
  * stamped onto every container at spawn time — see container-runner.ts.
  */

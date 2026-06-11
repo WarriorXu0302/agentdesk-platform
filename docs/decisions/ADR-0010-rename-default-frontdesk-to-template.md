@@ -3,17 +3,19 @@
 - **Status**: Accepted
 - **Date**: 2026-05-20
 - **Decider(s)**: 用户（项目负责人）
-- **Tags**: `naming`, `refactor`, `frontdesk`, `phase0a`
+- **Tags**: `naming`, `refactor`, `frontdesk`
 - **Supersedes**: —
 - **Superseded by**: —
+
+> **Addendum (later generalization)**: 本 ADR 记录的是历史命名决策，当时品牌仍是 `frontlane`。此后品牌已被泛化为可配置的 `agentdesk` 命名空间（display `AgentDesk` / machine `agentdesk`），默认 frontdesk 文件夹现为 `agentdesk-frontdesk`。下文保留原始决策措辞以记录真实历史；其中"模板而非默认业务 Agent"的判断在新命名下依然成立。
 
 ---
 
 ## Context
 
-Phase 0a 引入了双 Frontdesk 架构（ADR-0008）：
-- `frontlane-frontdesk`（Primary）— 通用企业客服代表，5 个 Worker，英文提示词
-- `frontlane-lab-frontdesk`（Secondary）— 从 V1 "小环"迁移的实验室助手
+平台引入了双 Frontdesk 架构：
+- 主 Frontdesk（Primary）— 通用企业客服代表，英文提示词
+- 实验室 Frontdesk（Secondary）— 实验室助手
 
 但实际使用中发现命名歧义：
 - `frontlane-frontdesk` 的名字暗示它是"默认/正统 frontdesk"
@@ -52,4 +54,4 @@ Phase 0a 引入了双 Frontdesk 架构（ADR-0008）：
 
 ## References
 
-- [ADR-0008](ADR-0008-phase0a-lab-frontdesk-onboarding.md)（双 Frontdesk 架构）
+- Frontdesk 拓扑与 onboarding 策略（双 Frontdesk 架构）

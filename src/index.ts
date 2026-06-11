@@ -1,7 +1,7 @@
 import { initObservability, shutdownObservability } from './observability/init.js';
 
 /**
- * FrontLane Agent Platform — main entry point.
+ * Agent platform host — main entry point.
  *
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.

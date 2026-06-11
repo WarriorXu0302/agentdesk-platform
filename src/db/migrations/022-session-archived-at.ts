@@ -4,7 +4,7 @@ import type { Migration } from './index.js';
 /**
  * Add `archived_at` to `sessions` so hard-delete can be gated on "time
  * since archive", not on the overloaded `last_active` column. Before this
- * migration, FRONTLANE_ARCHIVE_HARD_DELETE_DAYS was effectively
+ * migration, AGENTDESK_ARCHIVE_HARD_DELETE_DAYS was effectively
  * "max(ttl, hardDelete) days since last active" — which meant a very old
  * session would get archived AND hard-deleted in the same sweep tick,
  * giving the operator zero tarball retention.

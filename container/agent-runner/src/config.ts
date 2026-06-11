@@ -2,14 +2,14 @@
  * Runner config — reads /workspace/agent/container.json at startup.
  *
  * This file is mounted read-only inside the container. The host writes it;
- * the runner only reads. All FrontLane-specific configuration lives here
+ * the runner only reads. All platform-specific configuration lives here
  * instead of environment variables.
  */
 import fs from 'fs';
 
 const CONFIG_PATH = '/workspace/agent/container.json';
 
-export interface EnterpriseGatewayConfig {
+export interface BackendGatewayConfig {
   baseUrl: string;
   timeoutMs?: number;
   defaultHeaders?: Record<string, string>;
@@ -21,7 +21,7 @@ export interface EnterpriseGatewayConfig {
   };
 }
 
-export type MemoryMode = 'workspace' | 'erp';
+export type MemoryMode = 'workspace' | 'gateway';
 export type A2aSessionMode = 'agent-shared' | 'root-session';
 
 export interface RunnerConfig {
@@ -32,7 +32,7 @@ export interface RunnerConfig {
   memoryMode?: MemoryMode;
   a2aSessionMode?: A2aSessionMode;
   maxMessagesPerPrompt: number;
-  enterpriseGateway?: EnterpriseGatewayConfig;
+  backendGateway?: BackendGatewayConfig;
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   /**
    * Idle exit window in milliseconds. When > 0, the poll loop exits cleanly
@@ -47,7 +47,7 @@ export interface RunnerConfig {
 const DEFAULT_MAX_MESSAGES = 10;
 
 function resolveIdleExitMs(configValue: unknown): number {
-  const envRaw = process.env.FRONTLANE_IDLE_EXIT_MS?.trim();
+  const envRaw = process.env.AGENTDESK_IDLE_EXIT_MS?.trim();
   if (envRaw) {
     const env = Number(envRaw);
     if (Number.isFinite(env) && env >= 0) return Math.floor(env);
@@ -79,13 +79,13 @@ export function loadConfig(): RunnerConfig {
     assistantName: (raw.assistantName as string) || '',
     groupName: (raw.groupName as string) || '',
     agentGroupId: (raw.agentGroupId as string) || '',
-    memoryMode: raw.memoryMode === 'workspace' || raw.memoryMode === 'erp' ? raw.memoryMode : undefined,
+    memoryMode: raw.memoryMode === 'workspace' || raw.memoryMode === 'gateway' ? raw.memoryMode : undefined,
     a2aSessionMode:
       raw.a2aSessionMode === 'agent-shared' || raw.a2aSessionMode === 'root-session' ? raw.a2aSessionMode : undefined,
     maxMessagesPerPrompt: (raw.maxMessagesPerPrompt as number) || DEFAULT_MAX_MESSAGES,
-    enterpriseGateway: raw.enterpriseGateway as EnterpriseGatewayConfig | undefined,
+    backendGateway: raw.backendGateway as BackendGatewayConfig | undefined,
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
-    // idleExitMs: container.json may set it per group; FRONTLANE_IDLE_EXIT_MS
+    // idleExitMs: container.json may set it per group; AGENTDESK_IDLE_EXIT_MS
     // is the override hatch (takes precedence so operators can flip it on
     // without a config edit + rebuild). 0 keeps the legacy "run until
     // host-sweep kills me" behavior.

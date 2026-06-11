@@ -1,6 +1,0 @@
-curl: (52) Empty reply from server
-{
-  "commit": "83b9528bce85cf9371320f6d6e450916156da3f6",
-  "database": "ok",
-  "version": "11.0.0"
-}

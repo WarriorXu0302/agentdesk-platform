@@ -1,4 +1,4 @@
-# FrontLane Architecture (Draft)
+# AgentDesk Architecture (Draft)
 
 ## Core Idea
 
@@ -25,7 +25,7 @@ writing to the other side's DB.
 **Central DB (host process, `data/v2.db`):**
 - Agent groups, messaging groups, wirings, sessions
 - Users, user_roles, agent_group_members
-- Enterprise audit trail (`erp_audit`, `enterprise_audit`)
+- Enterprise audit trail (`gateway_audit`, `enterprise_audit`)
 - Inbound message dedup, progress reactions, schema_version
 - Channel adapters don't touch this directly — the host does the lookup
 
@@ -65,10 +65,10 @@ Platform event
 
 ## Identity Model (RequestIdentity + origin_user_id)
 
-Trust-sensitive tool handlers — the ERP gateway MCP tools are the current
+Trust-sensitive tool handlers — the backend gateway MCP tools are the current
 headline — must not take the requester identity from the agent's own tool
 arguments. An agent that's been prompt-injected can otherwise call
-`erp_execute` as any user it names.
+`gateway_execute` as any user it names.
 
 Two concrete mechanisms enforce this:
 
@@ -103,7 +103,7 @@ writes when the source is agent-asserted).
 
 Channel adapters are responsible for:
 1. Receiving platform events (webhooks, polling, websockets — platform-specific)
-2. **Filtering**: deciding which messages to forward to the host for processing. This can be stateless (regex trigger match) or stateful (e.g., "was the bot mentioned in this thread at some point? If so, forward all subsequent messages"). The adapter receives a stream of unfiltered platform messages and decides which ones to pass on. How it decides is an implementation detail — FrontLane doesn't know or care.
+2. **Filtering**: deciding which messages to forward to the host for processing. This can be stateless (regex trigger match) or stateful (e.g., "was the bot mentioned in this thread at some point? If so, forward all subsequent messages"). The adapter receives a stream of unfiltered platform messages and decides which ones to pass on. How it decides is an implementation detail — AgentDesk doesn't know or care.
 3. Extracting and standardizing two IDs:
    - **Platform channel ID** — identifies the conversation (WhatsApp group, Slack channel, email thread)
    - **Platform thread ID** — optional sub-context (Slack thread, GitHub PR comment thread)
@@ -160,18 +160,18 @@ No `channel_configs` table — channel-type-level behavior is baked into the ada
 Chat SDK adapters are wrapped per-channel:
 - Each Chat SDK adapter gets its own Chat instance
 - Concurrency mode is configured per-channel (concurrent for chat, queue for tasks, debounce for webhooks)
-- A bridge wraps the Chat instance + adapter to conform to FrontLane's standard channel interface
+- A bridge wraps the Chat instance + adapter to conform to AgentDesk's standard channel interface
 - Chat SDK handles: webhook parsing, dedup, message history, platform API calls, rich content delivery
-- FrontLane handles: routing, agent lifecycle, session management
+- AgentDesk handles: routing, agent lifecycle, session management
 
 **Chat SDK's subscription model:**
 
-Chat SDK has its own thread-level subscription concept (distinct from FrontLane's channel-level registration):
+Chat SDK has its own thread-level subscription concept (distinct from AgentDesk's channel-level registration):
 - `onNewMention` / `onNewMessage(regex)` — fires on first contact (e.g., @mention in a Slack thread)
 - `thread.subscribe()` — opts into all future messages in that thread
 - `onSubscribedMessage` — fires for all messages in subscribed threads
 
-This is sub-channel granularity. FrontLane registers at the channel level ("listen to this Discord channel"). Chat SDK subscribes at the thread level ("track this specific Slack thread"). The bridge lets Chat SDK manage its own subscriptions internally — FrontLane doesn't interfere with or replicate this.
+This is sub-channel granularity. AgentDesk registers at the channel level ("listen to this Discord channel"). Chat SDK subscribes at the thread level ("track this specific Slack thread"). The bridge lets Chat SDK manage its own subscriptions internally — AgentDesk doesn't interfere with or replicate this.
 
 **Platform capability differences:**
 
@@ -184,7 +184,7 @@ Capabilities vary significantly across adapters (see [Chat SDK adapter docs](htt
 
 The host/bridge handles graceful degradation — if an agent posts a card on a platform that doesn't support cards, it falls back to text.
 
-Non-Chat-SDK channels (WhatsApp via Baileys, Gmail, custom integrations) implement the FrontLane channel interface directly — no bridge, no Chat SDK types.
+Non-Chat-SDK channels (WhatsApp via Baileys, Gmail, custom integrations) implement the AgentDesk channel interface directly — no bridge, no Chat SDK types.
 
 ## Container Lifecycle
 
@@ -311,7 +311,7 @@ One-shot and recurring tasks use the same tables — no separate scheduler.
 
 ### messages_in content by kind
 
-**`chat`** — simple FrontLane format. Any channel can produce this.
+**`chat`** — simple AgentDesk format. Any channel can produce this.
 ```json
 {
   "sender": "John",
@@ -343,7 +343,7 @@ One-shot and recurring tasks use the same tables — no separate scheduler.
 
 Output `kind` determines the format and delivery adapter. Default: agent-runner copies `kind` and routing fields from the messages_in row it's responding to.
 
-**`chat`** — simple FrontLane format. FrontLane channel delivers via `sendMessage(text)`.
+**`chat`** — simple AgentDesk format. AgentDesk channel delivers via `sendMessage(text)`.
 ```json
 { "text": "LGTM, merging now" }
 ```
@@ -539,7 +539,7 @@ The central DB session row creation is the serialization point. No Claude SDK se
 
 ### Output Delivery
 
-FrontLane does not stream tokens to users. The Claude Agent SDK's `query()` yields complete results. The agent-runner writes one complete message to messages_out per result. The host delivers complete messages to channels.
+AgentDesk does not stream tokens to users. The Claude Agent SDK's `query()` yields complete results. The agent-runner writes one complete message to messages_out per result. The host delivers complete messages to channels.
 
 Message editing is supported as an explicit operation (agent calls an `edit_message` tool), not as a streaming mechanism.
 
@@ -590,7 +590,7 @@ The architecture is **flexible for code changes, not configurable for everything
 
 ### Code Structure for Skill Customization
 
-FrontLane is customized via skills — branches that get merged into the user's installation. Different skills add different capabilities (channels, integrations, behaviors). The code must be structured so that:
+AgentDesk is customized via skills — branches that get merged into the user's installation. Different skills add different capabilities (channels, integrations, behaviors). The code must be structured so that:
 
 1. **Different customizations don't conflict.** Adding Slack and adding Telegram should not produce merge conflicts. Adding a new MCP tool should not conflict with adding a channel. Each type of customization should touch its own file(s).
 
@@ -964,7 +964,7 @@ Messages starting with `/` are checked against three lists:
 - If sent by a non-admin user, the command is rejected with an error message. Not forwarded to the agent.
 
 **Filtered commands (dropped entirely):**
-- Commands that don't make sense in the FrontLane context or could cause issues
+- Commands that don't make sense in the AgentDesk context or could cause issues
 - Silently dropped — no error, no forwarding
 
 The command lists are hardcoded in the agent-runner. Admin verification happens host-side before the message ever reaches the container: `src/command-gate.ts` queries `user_roles` (owner / global admin / scoped-admin-of-this-agent-group) and either passes the message through, drops it, or routes it elsewhere. The container has no notion of admin identity — no env var, no DB query, no per-message check.
@@ -998,5 +998,5 @@ Pre-scripts: if a task message has a `script` field, run it first. If `wakeAgent
 
 ## Related Documents
 
-- **[api-details.md](api-details.md)** — Channel adapter interface (FrontLane + Chat SDK bridge), message content examples, host delivery logic
+- **[api-details.md](api-details.md)** — Channel adapter interface (AgentDesk + Chat SDK bridge), message content examples, host delivery logic
 - **[agent-runner-details.md](agent-runner-details.md)** — AgentProvider interface, MCP tools, message formatting, media handling, provider implementations

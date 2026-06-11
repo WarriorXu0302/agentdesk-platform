@@ -531,8 +531,12 @@ async function buildContainerArgs(
   }
 
   // Environment — only vars read by code we don't own.
-  // Everything FrontLane-specific is in container.json (read by runner at startup).
+  // Everything else platform-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
+  // Brand namespace — lets the runner derive the same MCP server name and
+  // signing-header prefix the host uses. Defaults to `agentdesk` in the
+  // runner if unset.
+  args.push('-e', `BRAND_NAMESPACE=${PLATFORM_PROTOCOL_NAMESPACE}`);
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

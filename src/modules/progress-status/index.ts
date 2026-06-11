@@ -100,13 +100,13 @@ function parseEnabledChannels(raw: string | undefined): Set<string> {
 }
 
 function enabledFor(channelType: string): boolean {
-  return parseEnabledChannels(process.env.FRONTLANE_PROGRESS_STATUS_CHANNELS).has(channelType.toLowerCase());
+  return parseEnabledChannels(process.env.AGENTDESK_PROGRESS_STATUS_CHANNELS).has(channelType.toLowerCase());
 }
 
 function resolveReactionEmoji(channelType: string): string | null {
   switch (channelType.toLowerCase()) {
     case 'feishu':
-      return process.env.FRONTLANE_PROGRESS_STATUS_FEISHU_EMOJI?.trim() || DEFAULT_FEISHU_PROGRESS_EMOJI;
+      return process.env.AGENTDESK_PROGRESS_STATUS_FEISHU_EMOJI?.trim() || DEFAULT_FEISHU_PROGRESS_EMOJI;
     default:
       return null;
   }

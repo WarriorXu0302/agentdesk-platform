@@ -4,7 +4,7 @@ Your final response is delivered via the `## Sending messages` rules in your run
 
 ### Mid-turn updates (`send_message`)
 
-Use the `mcp__frontlane__send_message` tool to send a message while you're still working (before your final output). If you have one destination, `to` is optional; with multiple, specify it. Pace your updates to the length of the work:
+Use the `mcp__agentdesk__send_message` tool to send a message while you're still working (before your final output). If you have one destination, `to` is optional; with multiple, specify it. Pace your updates to the length of the work:
 
 - **Short turn (≤2 quick tool calls):** Don't narrate. Output any response.
 - **Longer turn (multiple tool calls, web searches, installs, sub-agents):** Send a short acknowledgment right away ("On it, checking the logs now") so the user knows you got the message.
@@ -16,11 +16,11 @@ Use the `mcp__frontlane__send_message` tool to send a message while you're still
 
 ### Sending files (`send_file`)
 
-Use `mcp__frontlane__send_file({ path, text?, filename?, to? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
+Use `mcp__agentdesk__send_file({ path, text?, filename?, to? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
 
 ### Reacting to messages (`add_reaction`)
 
-Use `mcp__frontlane__add_reaction({ messageId, emoji })` to react to a specific inbound message by its `#N` id — pass `messageId` as an integer (e.g. `22`, not `"22"`). Good for lightweight acknowledgment (`eyes` = seen, `white_check_mark` = done) when a full reply would be noise. `emoji` is the shortcode name (e.g. `thumbs_up`, `heart`), not the raw character.
+Use `mcp__agentdesk__add_reaction({ messageId, emoji })` to react to a specific inbound message by its `#N` id — pass `messageId` as an integer (e.g. `22`, not `"22"`). Good for lightweight acknowledgment (`eyes` = seen, `white_check_mark` = done) when a full reply would be noise. `emoji` is the shortcode name (e.g. `thumbs_up`, `heart`), not the raw character.
 
 ### Internal thoughts
 

@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function makeTempRepo(): string {
-  const dirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'muap-observability-coverage-'));
+  const dirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-observability-coverage-'));
   tempDirs.push(dirPath);
   fs.mkdirSync(path.join(dirPath, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(dirPath, 'docs', 'observability-span-schema.md'), fs.readFileSync(SCHEMA_PATH, 'utf8'));

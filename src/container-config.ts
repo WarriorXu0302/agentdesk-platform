@@ -24,7 +24,7 @@ export interface McpServerConfig {
   instructions?: string;
 }
 
-export interface EnterpriseGatewayConfig {
+export interface BackendGatewayConfig {
   /** Base URL for the ERP gateway, without a trailing slash. */
   baseUrl: string;
   /** Request timeout for built-in ERP gateway MCP tools. Default: 15000 ms. */
@@ -33,8 +33,8 @@ export interface EnterpriseGatewayConfig {
   defaultHeaders?: Record<string, string>;
   /**
    * Optional HMAC signing key. When set, every gateway request is signed:
-   * `x-frontlane-timestamp`, `x-frontlane-nonce`, and
-   * `x-frontlane-signature = HMAC-SHA256(key, timestamp + "." + nonce + "." + body)`.
+   * `x-<namespace>-timestamp`, `x-<namespace>-nonce`, and
+   * `x-<namespace>-signature = HMAC-SHA256(key, timestamp + "." + nonce + "." + body)`.
    * Gateways that validate signatures can then reject requests that didn't
    * come from a host-provisioned container. Pair with a short clock-skew
    * window (e.g. ±5 minutes) and a replay cache on the gateway side.
@@ -52,7 +52,7 @@ export interface EnterpriseGatewayConfig {
   };
 }
 
-export type MemoryMode = 'workspace' | 'erp';
+export type MemoryMode = 'workspace' | 'gateway';
 export type A2aSessionMode = 'agent-shared' | 'root-session';
 
 export interface AdditionalMountConfig {
@@ -79,7 +79,7 @@ export interface ContainerResourceLimits {
 
 export interface ContainerConfig {
   mcpServers: Record<string, McpServerConfig>;
-  enterpriseGateway?: EnterpriseGatewayConfig;
+  backendGateway?: BackendGatewayConfig;
   packages: { apt: string[]; npm: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
@@ -138,7 +138,7 @@ export interface ContainerConfig {
    *   "lean"           — omit the skill index entirely. For dispatcher
    *                      agents that route to worker agents and never
    *                      need to execute skills themselves
-   *                      (`frontlane-frontdesk` pattern). The
+   *                      (`<namespace>-frontdesk` dispatcher pattern). The
    *                      `load_skill` tool stays registered but the
    *                      agent has no list to choose from.
    *
@@ -158,7 +158,7 @@ function emptyConfig(): ContainerConfig {
 }
 
 function normalizeMemoryMode(value: unknown): MemoryMode | undefined {
-  return value === 'workspace' || value === 'erp' ? value : undefined;
+  return value === 'workspace' || value === 'gateway' ? value : undefined;
 }
 
 function normalizeA2aSessionMode(value: unknown): A2aSessionMode | undefined {
@@ -198,7 +198,7 @@ export function readContainerConfig(folder: string): ContainerConfig {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<ContainerConfig>;
     return {
       mcpServers: raw.mcpServers ?? {},
-      enterpriseGateway: raw.enterpriseGateway,
+      backendGateway: raw.backendGateway,
       packages: {
         apt: raw.packages?.apt ?? [],
         npm: raw.packages?.npm ?? [],

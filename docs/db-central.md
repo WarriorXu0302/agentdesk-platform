@@ -1,4 +1,4 @@
-# FrontLane — Central DB Schema
+# AgentDesk — Central DB Schema
 
 Complete reference for `data/v2.db`, the host-owned admin-plane database. Start with [db.md](db.md) for the three-DB overview, the map, and the cross-mount rules.
 
@@ -255,7 +255,7 @@ Writer: `recordDroppedMessage()` in `src/db/dropped-messages.ts`. On conflict, b
 
 ### 1.13 Chat SDK bridge tables
 
-State backing the `SqliteStateAdapter` used by the Chat SDK bridge (see [api-details.md](api-details.md)). FrontLane code rarely touches these directly — they're owned by `src/state-sqlite.ts`.
+State backing the `SqliteStateAdapter` used by the Chat SDK bridge (see [api-details.md](api-details.md)). AgentDesk code rarely touches these directly — they're owned by `src/state-sqlite.ts`.
 
 ```sql
 CREATE TABLE chat_sdk_kv (

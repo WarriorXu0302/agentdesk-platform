@@ -1,4 +1,4 @@
-# FrontLane Database Architecture — Overview
+# AgentDesk Database Architecture — Overview
 
 Orientation for the data model: the three databases, how they fit together, and the invariants that hold across them. For table-level schemas, follow the links below.
 
@@ -11,7 +11,7 @@ Related: [architecture.md](architecture.md) for the high-level design; [api-deta
 
 ## 1. The three databases
 
-FrontLane uses **three kinds of SQLite database**, all on the host filesystem:
+AgentDesk uses **three kinds of SQLite database**, all on the host filesystem:
 
 | DB | Location | Writer | Readers | Purpose |
 |----|----------|--------|---------|---------|

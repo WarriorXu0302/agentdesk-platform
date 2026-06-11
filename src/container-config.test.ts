@@ -22,7 +22,7 @@ vi.mock('./config.js', async () => {
 const { readContainerConfig, writeContainerConfig } = await import('./container-config.js');
 
 beforeEach(() => {
-  tmpState.root = fs.mkdtempSync(path.join(os.tmpdir(), 'frontlane-container-cfg-'));
+  tmpState.root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentdesk-container-cfg-'));
   fs.mkdirSync(path.join(tmpState.root, 'groups'), { recursive: true });
 });
 

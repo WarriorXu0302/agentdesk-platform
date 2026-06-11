@@ -27,6 +27,13 @@ import {
 } from '../src/modules/agent-to-agent/db/agent-destinations.js';
 import { run } from './init-enterprise-topology.js';
 
+// Derived from the default branding namespace (agentdesk). The bootstrap
+// script builds folder names off `DEFAULT_FRONTDESK_FOLDER` /
+// `buildWorkerFolder`, so the tests reference the same derived slugs.
+const FRONTDESK_FOLDER = 'agentdesk-frontdesk';
+const FRONTDESK_NAME = 'AgentDesk Frontdesk';
+const ACCESS_WORKER_FOLDER = 'agentdesk-access-worker';
+
 beforeEach(() => {
   closeDb();
   if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
@@ -57,7 +64,7 @@ describe('init-enterprise-topology', () => {
 
     await run(['--channel', 'feishu', '--platform-id', 'oc_123', '--threaded', '--unknown-sender-policy', 'strict']);
 
-    const frontdesk = getAgentGroupByFolder('frontlane-template-frontdesk');
+    const frontdesk = getAgentGroupByFolder(FRONTDESK_FOLDER);
     const messagingGroup = getMessagingGroupByPlatform('feishu', 'feishu:oc_123');
     expect(frontdesk).toBeDefined();
     expect(messagingGroup).toBeDefined();
@@ -74,10 +81,10 @@ describe('init-enterprise-topology', () => {
   });
 
   it('ensures workers have a stable frontdesk return alias', async () => {
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
-    const frontdesk = getAgentGroupByFolder('frontlane-template-frontdesk');
-    const worker = getAgentGroupByFolder('frontlane-access-worker');
+    const frontdesk = getAgentGroupByFolder(FRONTDESK_FOLDER);
+    const worker = getAgentGroupByFolder(ACCESS_WORKER_FOLDER);
     expect(frontdesk).toBeDefined();
     expect(worker).toBeDefined();
 
@@ -90,96 +97,108 @@ describe('init-enterprise-topology', () => {
       created_at: new Date().toISOString(),
     });
 
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
     expect(getDestinationByName(worker!.id, 'parent')?.target_id).toBe(frontdesk!.id);
     expect(getDestinationByName(worker!.id, 'frontdesk')?.target_id).toBe(frontdesk!.id);
   });
 
   it('writes root-session a2a policy into enterprise group configs', async () => {
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
-    expect(readContainerConfig('frontlane-template-frontdesk').a2aSessionMode).toBe('root-session');
-    expect(readContainerConfig('frontlane-access-worker').a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig(FRONTDESK_FOLDER).a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig(ACCESS_WORKER_FOLDER).a2aSessionMode).toBe('root-session');
   });
 
   it('writes conservative default resources for frontdesk and workers', async () => {
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
-    const frontdeskResources = readContainerConfig('frontlane-template-frontdesk').resources;
+    const frontdeskResources = readContainerConfig(FRONTDESK_FOLDER).resources;
     expect(frontdeskResources).toEqual({ memoryMb: 768, cpus: 1, pidsLimit: 384 });
 
-    const workerResources = readContainerConfig('frontlane-access-worker').resources;
+    const workerResources = readContainerConfig(ACCESS_WORKER_FOLDER).resources;
     expect(workerResources).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
   });
 
   it('does not clobber hand-tuned resource caps on rerun', async () => {
     // First init sets the defaults.
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
     // Operator hand-edits container.json — raises worker memory, lowers cpus.
     const { writeContainerConfig } = await import('../src/container-config.js');
-    const cfg = readContainerConfig('frontlane-access-worker');
+    const cfg = readContainerConfig(ACCESS_WORKER_FOLDER);
     cfg.resources = { memoryMb: 4096, cpus: 0.5, pidsLimit: 1024 };
-    writeContainerConfig('frontlane-access-worker', cfg);
+    writeContainerConfig(ACCESS_WORKER_FOLDER, cfg);
 
     // Rerun the init — must leave the operator's choices alone.
-    await run([]);
+    await run(['--workers', 'access-worker']);
 
-    const after = readContainerConfig('frontlane-access-worker').resources;
+    const after = readContainerConfig(ACCESS_WORKER_FOLDER).resources;
     expect(after).toEqual({ memoryMb: 4096, cpus: 0.5, pidsLimit: 1024 });
   });
 
-  it('provisions both primary and lab frontdesks by default (ADR-0008)', async () => {
+  it('provisions a single blank template frontdesk by default (no workers, no extra desks)', async () => {
     await run([]);
 
-    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
-    const lab = getAgentGroupByFolder('frontlane-lab-frontdesk');
+    const primary = getAgentGroupByFolder(FRONTDESK_FOLDER);
     expect(primary).toBeDefined();
-    expect(primary?.name).toBe('FrontLane Template Desk');
-    expect(lab).toBeDefined();
-    expect(lab?.name).toBe('FrontLane Lab Desk');
+    expect(primary?.name).toBe(FRONTDESK_NAME);
 
-    const FRONTDESK_RESOURCES = { memoryMb: 768, cpus: 1, pidsLimit: 384 };
-    expect(readContainerConfig('frontlane-template-frontdesk').a2aSessionMode).toBe('root-session');
-    expect(readContainerConfig('frontlane-lab-frontdesk').a2aSessionMode).toBe('root-session');
-    expect(readContainerConfig('frontlane-template-frontdesk').resources).toEqual(FRONTDESK_RESOURCES);
-    expect(readContainerConfig('frontlane-lab-frontdesk').resources).toEqual(FRONTDESK_RESOURCES);
+    // No business workers and no secondary desk are provisioned by default.
+    expect(getAgentGroupByFolder(ACCESS_WORKER_FOLDER)).toBeUndefined();
+    expect(getAgentGroupByFolder('agentdesk-lab-frontdesk')).toBeUndefined();
+
+    expect(readContainerConfig(FRONTDESK_FOLDER).a2aSessionMode).toBe('root-session');
+    expect(readContainerConfig(FRONTDESK_FOLDER).resources).toEqual({ memoryMb: 768, cpus: 1, pidsLimit: 384 });
   });
 
   it('only the primary frontdesk owns reverse worker destinations (no double-bind)', async () => {
-    await run([]);
+    await run([
+      '--frontdesks',
+      `${FRONTDESK_FOLDER}:${FRONTDESK_NAME},agentdesk-secondary-desk:Secondary Desk`,
+      '--workers',
+      'access-worker',
+    ]);
 
-    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
-    const lab = getAgentGroupByFolder('frontlane-lab-frontdesk');
-    const accessWorker = getAgentGroupByFolder('frontlane-access-worker');
+    const primary = getAgentGroupByFolder(FRONTDESK_FOLDER);
+    const secondary = getAgentGroupByFolder('agentdesk-secondary-desk');
+    const accessWorker = getAgentGroupByFolder(ACCESS_WORKER_FOLDER);
     expect(primary).toBeDefined();
-    expect(lab).toBeDefined();
+    expect(secondary).toBeDefined();
     expect(accessWorker).toBeDefined();
 
     const reverse = getDestinationByName(accessWorker!.id, 'frontdesk');
     expect(reverse).toBeDefined();
     expect(reverse?.target_id).toBe(primary!.id);
-    expect(reverse?.target_id).not.toBe(lab!.id);
+    expect(reverse?.target_id).not.toBe(secondary!.id);
 
-    expect(getDestinationByName(lab!.id, 'access-worker')).toBeUndefined();
+    expect(getDestinationByName(secondary!.id, 'access-worker')).toBeUndefined();
   });
 
   it('single-frontdesk back-compat: --frontdesk-folder skips secondary desks', async () => {
-    await run(['--frontdesk-folder', 'frontlane-template-frontdesk']);
+    await run([
+      '--frontdesks',
+      `${FRONTDESK_FOLDER}:${FRONTDESK_NAME},agentdesk-secondary-desk:Secondary Desk`,
+      '--workers',
+      'access-worker',
+    ]);
+    closeDb();
+    if (fs.existsSync(TEST_ROOT)) fs.rmSync(TEST_ROOT, { recursive: true });
+    fs.mkdirSync(TEST_ROOT, { recursive: true });
 
-    expect(getAgentGroupByFolder('frontlane-template-frontdesk')).toBeDefined();
-    expect(getAgentGroupByFolder('frontlane-lab-frontdesk')).toBeUndefined();
+    await run(['--frontdesk-folder', FRONTDESK_FOLDER]);
+
+    expect(getAgentGroupByFolder(FRONTDESK_FOLDER)).toBeDefined();
+    expect(getAgentGroupByFolder('agentdesk-secondary-desk')).toBeUndefined();
   });
 
   it('--frontdesks accepts a custom comma-separated list', async () => {
-    await run(['--frontdesks', 'frontlane-template-frontdesk:FrontLane Template Desk,frontlane-research-desk:FrontLane Research Desk']);
+    await run(['--frontdesks', `${FRONTDESK_FOLDER}:${FRONTDESK_NAME},agentdesk-research-desk:Research Desk`]);
 
-    const primary = getAgentGroupByFolder('frontlane-template-frontdesk');
-    const research = getAgentGroupByFolder('frontlane-research-desk');
-    expect(primary?.name).toBe('FrontLane Template Desk');
-    expect(research?.name).toBe('FrontLane Research Desk');
-    expect(getAgentGroupByFolder('frontlane-lab-frontdesk')).toBeUndefined();
+    const primary = getAgentGroupByFolder(FRONTDESK_FOLDER);
+    const research = getAgentGroupByFolder('agentdesk-research-desk');
+    expect(primary?.name).toBe(FRONTDESK_NAME);
+    expect(research?.name).toBe('Research Desk');
   });
 
   it('rejects mixing --frontdesks with --frontdesk-folder', async () => {
@@ -190,7 +209,7 @@ describe('init-enterprise-topology', () => {
 
     try {
       await expect(
-        run(['--frontdesks', 'frontlane-template-frontdesk:FrontLane Template Desk', '--frontdesk-folder', 'frontlane-other']),
+        run(['--frontdesks', `${FRONTDESK_FOLDER}:${FRONTDESK_NAME}`, '--frontdesk-folder', 'agentdesk-other']),
       ).rejects.toThrow('process.exit called');
     } finally {
       exitSpy.mockRestore();

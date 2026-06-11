@@ -98,7 +98,7 @@ export interface FeishuReceiveTarget {
 }
 
 export interface FeishuQuestionActionPayload {
-  kind: 'frontlane.ask_question';
+  kind: 'card.ask_question';
   questionId: string;
   selectedOption: string;
   selectedLabel?: string;
