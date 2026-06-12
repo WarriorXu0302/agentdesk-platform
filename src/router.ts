@@ -26,6 +26,7 @@ import { gateCommand } from './command-gate.js';
 import { getTracer } from './observability/tracer.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { recordDroppedMessage } from './db/dropped-messages.js';
+import { insertIngress, deleteIngress, markIngressFailed } from './db/inbound-ingress.js';
 import {
   createMessagingGroup,
   getMessagingGroupAgents,
@@ -33,7 +34,8 @@ import {
 } from './db/messaging-groups.js';
 import { findSessionByAgentGroup, findSessionForAgent, findSessionForAgentOwner, getSession } from './db/sessions.js';
 import { maybeAutowireEnterpriseFrontdesk } from './enterprise-autowire.js';
-import { engagePatternInvalidTotal, inboundTotal, startTimer } from './metrics.js';
+import { readEnvFile } from './env.js';
+import { engagePatternInvalidTotal, inboundIngressFailedTotal, inboundTotal, startTimer } from './metrics.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { maybeStartProgressStatus, markProgressStatusFailed } from './modules/progress-status/index.js';
 import { log } from './log.js';
@@ -166,18 +168,94 @@ function isUserScopedSessionMode(
 }
 
 /**
+ * Inbound durability switch (ADR-0022). On by default; set INGRESS_DURABILITY
+ * to 'off' (or '0' / 'false') to skip the persist-before-route ledger write in
+ * high-throughput setups that accept the gap. Resolved process env → `.env` →
+ * default-on, matching the host's other config reads. Read once per route call
+ * (cheap; the work below dwarfs it) so an operator can flip it without a
+ * restart.
+ */
+function ingressDurabilityEnabled(): boolean {
+  const raw = (process.env.INGRESS_DURABILITY ?? readEnvFile(['INGRESS_DURABILITY']).INGRESS_DURABILITY ?? '')
+    .trim()
+    .toLowerCase();
+  return !(raw === 'off' || raw === '0' || raw === 'false');
+}
+
+/**
  * Route an inbound message from a channel adapter to the correct session.
  * Creates messaging group + session if they don't exist yet.
+ *
+ * Persist-before-route (ADR-0022): when INGRESS_DURABILITY is on, the raw
+ * envelope is written to the inbound_ingress ledger BEFORE routeInboundInner
+ * runs. A normal completion (including the deliberate "ignore" returns) deletes
+ * the row; a throw flips it to status='failed' (kept for operator inspection /
+ * explicit replay) before the exception is re-thrown so the existing
+ * inbound_total{rejected} accounting is unchanged. This is the one inbound gap
+ * that the delivery-retry machinery cannot self-heal: a failure here happens
+ * before messages_in exists, the channel already 200'd the webhook, and nothing
+ * would otherwise know the message was lost.
+ *
+ * NOTE: this is a recovery/observability layer, NOT a dedup layer. Dedup lives
+ * in the adapter (markInboundSeen) and runs before routeInbound — so replay is
+ * deliberately operator-triggered, never automatic.
  */
-export async function routeInbound(event: InboundEvent): Promise<void> {
+export async function routeInbound(event: InboundEvent, opts?: { persistIngress?: boolean }): Promise<void> {
   await runInDetachedRoot(() =>
     withSpan('router.route', chainAttrs({ 'channel.type': event.channelType || 'unknown' }), async () => {
       const endTimer = startTimer('route');
+      // Persist the raw envelope before any routing work so a downstream throw
+      // (or host crash) leaves a recoverable row. Never let a ledger-write
+      // failure block routing — degrade to non-durable for this message.
+      //
+      // `persistIngress: false` is used by the replay CLI: it already owns the
+      // ingress row it's replaying and manages that row's lifecycle. Without
+      // this opt-out, routeInbound would persist a SECOND row (new uuid) per
+      // replay — leaking an orphan on replay failure and creating a duplicate
+      // envelope that a later --replay-all would re-route. See ADR-0022.
+      let ingressId: string | null = null;
+      if (opts?.persistIngress !== false && ingressDurabilityEnabled()) {
+        try {
+          ingressId = insertIngress({
+            channelType: event.channelType,
+            platformId: event.platformId,
+            threadId: event.threadId,
+            messageJson: JSON.stringify(event),
+          });
+        } catch (err) {
+          log.warn('Inbound ingress persist failed — routing without durability for this message', {
+            channelType: event.channelType,
+            platformId: event.platformId,
+            err,
+          });
+        }
+      }
       try {
         await routeInboundInner(event);
         inboundTotal.labels(event.channelType, 'accepted').inc();
+        // Success (incl. deliberate "ignore" returns) — drop the row so the
+        // steady-state table holds only in-flight + failed rows.
+        if (ingressId) {
+          try {
+            deleteIngress(ingressId);
+          } catch (err) {
+            log.warn('Inbound ingress cleanup failed — row will surface as orphaned at next startup', {
+              ingressId,
+              err,
+            });
+          }
+        }
       } catch (err) {
         inboundTotal.labels(event.channelType, 'rejected').inc();
+        // Keep the row (status='failed') so an operator can inspect/replay it.
+        if (ingressId) {
+          try {
+            markIngressFailed(ingressId, err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+            inboundIngressFailedTotal.labels(event.channelType).inc();
+          } catch (markErr) {
+            log.error('Inbound ingress markFailed failed — message may be unrecoverable', { ingressId, markErr });
+          }
+        }
         throw err;
       } finally {
         endTimer();

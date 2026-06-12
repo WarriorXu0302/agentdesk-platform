@@ -53,6 +53,13 @@
  *   - <namespace>_delivery_permanent_failures_total
  *       messages whose automatic retries are exhausted — DLQ candidates.
  *
+ *   - <namespace>_inbound_ingress_failed_total{channel}
+ *       inbound envelopes that threw in routeInbound AFTER being persisted to
+ *       the ingress recovery ledger (ADR-0022). The row is kept at
+ *       status='failed' for operator inspection/replay via
+ *       scripts/replay-inbound.ts. Alert on any non-zero rate — these are
+ *       messages that would otherwise have vanished silently.
+ *
  * The /metrics endpoint is attached to the shared webhook server so it
  * lives at the same port as adapters' callbacks.
  */
@@ -207,6 +214,17 @@ export const engagePatternInvalidTotal = new client.Counter({
   // Non-zero means an agent wiring has a broken regex and is now silent
   // (fail-closed) — fix the pattern to restore the agent.
   labelNames: ['agent_group'] as const,
+  registers: [registry],
+});
+
+export const inboundIngressFailedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_inbound_ingress_failed_total`,
+  help: 'Inbound envelopes that threw in routeInbound after being persisted to the ingress recovery ledger (ADR-0022)',
+  // Non-zero means a message was persisted but failed to route (session
+  // inbound.db busy, attachment IO, transient central-DB error, etc.). The
+  // row is parked at status='failed' for inspection/replay via
+  // scripts/replay-inbound.ts — alert on any non-zero rate.
+  labelNames: ['channel'] as const,
   registers: [registry],
 });
 

@@ -16,6 +16,7 @@ import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
 import { checkBaseImage } from './container-runner.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
+import { surfaceOrphanedIngress } from './ingress-recovery-check.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import {
   startActiveDeliveryPoll,
@@ -91,6 +92,10 @@ async function main(): Promise<void> {
   cleanupOrphans();
   checkBaseImage();
   checkGatewaySigningCoverage();
+  // Report inbound envelopes left unrecovered by a prior crash/route failure
+  // (ADR-0022). Read-only — never auto-replays (that would bypass adapter-layer
+  // dedup); remediation is the explicit replay CLI.
+  surfaceOrphanedIngress();
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {

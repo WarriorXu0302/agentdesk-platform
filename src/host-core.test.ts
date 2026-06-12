@@ -922,6 +922,138 @@ describe('router', () => {
     expect(findSession('mg-1', null)).toBeUndefined();
     expect(wakeContainer).not.toHaveBeenCalled();
   });
+
+  // --- Inbound ingress persist-before-route (ADR-0022) ---
+
+  it('deletes the ingress row after a successful route', async () => {
+    delete process.env.INGRESS_DURABILITY;
+    const { routeInbound } = await import('./router.js');
+    const { listIngress } = await import('./db/inbound-ingress.js');
+
+    await routeInbound({
+      channelType: 'discord',
+      platformId: 'chan-123',
+      threadId: null,
+      message: { id: 'msg-ok-ingress', kind: 'chat', content: JSON.stringify({ text: 'hi' }), timestamp: now() },
+    });
+
+    // Routed end-to-end → no in-flight/failed row should remain.
+    expect(listIngress()).toHaveLength(0);
+  });
+
+  it('deletes the ingress row on a deliberate ignore return (plain chatter, unwired channel)', async () => {
+    delete process.env.INGRESS_DURABILITY;
+    const { routeInbound } = await import('./router.js');
+    const { listIngress } = await import('./db/inbound-ingress.js');
+
+    // Non-mention on an unknown channel → routeInboundInner returns early
+    // (intentional ignore, not a failure). The row must still be deleted.
+    await routeInbound({
+      channelType: 'slack',
+      platformId: 'C-UNWIRED',
+      threadId: null,
+      message: { id: 'msg-ignored', kind: 'chat', content: JSON.stringify({ text: 'just chatter' }), timestamp: now() },
+    });
+
+    expect(listIngress()).toHaveLength(0);
+  });
+
+  it('keeps the ingress row as failed, increments the metric, and re-throws when routing throws', async () => {
+    delete process.env.INGRESS_DURABILITY;
+    const { routeInbound, setSenderResolver } = await import('./router.js');
+    const { listIngress } = await import('./db/inbound-ingress.js');
+    const { inboundIngressFailedTotal, inboundTotal } = await import('./metrics.js');
+    inboundIngressFailedTotal.reset();
+    inboundTotal.reset();
+
+    // Sender resolver runs inside routeInboundInner, after the persist — a
+    // throw here simulates a downstream failure (e.g. session inbound.db busy).
+    setSenderResolver(() => {
+      throw new Error('SQLITE_BUSY');
+    });
+
+    await expect(
+      routeInbound({
+        channelType: 'discord',
+        platformId: 'chan-123',
+        threadId: null,
+        message: { id: 'msg-throws', kind: 'chat', content: JSON.stringify({ text: 'boom' }), timestamp: now() },
+      }),
+    ).rejects.toThrow('SQLITE_BUSY');
+
+    // Reset the resolver so later tests in this file aren't poisoned.
+    setSenderResolver(() => null);
+
+    const failed = listIngress({ status: 'failed' });
+    expect(failed).toHaveLength(1);
+    expect(failed[0].channel_type).toBe('discord');
+    expect(failed[0].last_error).toContain('SQLITE_BUSY');
+    expect(failed[0].attempts).toBe(1);
+
+    const metric = (await inboundIngressFailedTotal.get()).values.find((v) => v.labels.channel === 'discord');
+    expect(metric?.value).toBe(1);
+
+    // inbound_total{rejected} semantics preserved.
+    const rejected = (await inboundTotal.get()).values.find(
+      (v) => v.labels.channel === 'discord' && v.labels.outcome === 'rejected',
+    );
+    expect(rejected?.value).toBe(1);
+  });
+
+  it('does not write an ingress row when INGRESS_DURABILITY=off', async () => {
+    process.env.INGRESS_DURABILITY = 'off';
+    const { routeInbound, setSenderResolver } = await import('./router.js');
+    const { listIngress } = await import('./db/inbound-ingress.js');
+
+    // Even on a throwing route, nothing is persisted in off mode.
+    setSenderResolver(() => {
+      throw new Error('still no row');
+    });
+
+    await expect(
+      routeInbound({
+        channelType: 'discord',
+        platformId: 'chan-123',
+        threadId: null,
+        message: { id: 'msg-off', kind: 'chat', content: JSON.stringify({ text: 'x' }), timestamp: now() },
+      }),
+    ).rejects.toThrow('still no row');
+
+    setSenderResolver(() => null);
+    delete process.env.INGRESS_DURABILITY;
+
+    expect(listIngress()).toHaveLength(0);
+  });
+
+  it('persistIngress:false (replay path) writes no ingress row, even on a throw', async () => {
+    // The replay CLI owns the row it replays and passes persistIngress:false.
+    // routeInbound must not persist a second row — otherwise a failed replay
+    // leaks an orphan and duplicates the envelope (re-routable by --replay-all).
+    delete process.env.INGRESS_DURABILITY;
+    const { routeInbound, setSenderResolver } = await import('./router.js');
+    const { listIngress } = await import('./db/inbound-ingress.js');
+
+    setSenderResolver(() => {
+      throw new Error('replay downstream boom');
+    });
+
+    await expect(
+      routeInbound(
+        {
+          channelType: 'discord',
+          platformId: 'chan-123',
+          threadId: null,
+          message: { id: 'msg-replay', kind: 'chat', content: JSON.stringify({ text: 'x' }), timestamp: now() },
+        },
+        { persistIngress: false },
+      ),
+    ).rejects.toThrow('replay downstream boom');
+
+    setSenderResolver(() => null);
+
+    // No new row from routeInbound — the CLI alone manages the replayed row.
+    expect(listIngress()).toHaveLength(0);
+  });
 });
 
 describe('routing metadata preservation', () => {
