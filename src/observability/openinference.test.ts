@@ -42,16 +42,12 @@ beforeEach(() => {
 
 describe('openinference helper', () => {
   test('createSessionContext adds session.id and optional user.id to context attributes', () => {
-    const withUser = getAttributesFromContext(
-      createSessionContext({ sessionId: 'sess-42', userId: 'user-7' }),
-    );
+    const withUser = getAttributesFromContext(createSessionContext({ sessionId: 'sess-42', userId: 'user-7' }));
 
     expect(withUser[SemanticConventions.SESSION_ID]).toBe('sess-42');
     expect(withUser[SemanticConventions.USER_ID]).toBe('user-7');
 
-    const withoutUser = getAttributesFromContext(
-      createSessionContext({ sessionId: 'sess-43', userId: null }),
-    );
+    const withoutUser = getAttributesFromContext(createSessionContext({ sessionId: 'sess-43', userId: null }));
 
     expect(withoutUser[SemanticConventions.SESSION_ID]).toBe('sess-43');
     expect(withoutUser[SemanticConventions.USER_ID]).toBeUndefined();
@@ -80,9 +76,7 @@ describe('openinference helper', () => {
       inputValue: 'hello PR-O2 phase 2 verify',
     });
 
-    expect(shortAttrs[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(
-      OpenInferenceSpanKind.AGENT,
-    );
+    expect(shortAttrs[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(OpenInferenceSpanKind.AGENT);
     expect(shortAttrs[SemanticConventions.SESSION_ID]).toBe('sess-42');
     expect(shortAttrs[SemanticConventions.USER_ID]).toBe('user-7');
     expect(shortAttrs[SemanticConventions.INPUT_VALUE]).toBe('hello PR-O2 phase 2 verify');
@@ -96,17 +90,13 @@ describe('openinference helper', () => {
     });
 
     expect(longAttrs['attribute.redacted']).toBe(true);
-    expect(String(longAttrs[SemanticConventions.INPUT_VALUE])).toHaveLength(
-      MAX_OPENINFERENCE_TEXT_CHARS + 1,
-    );
+    expect(String(longAttrs[SemanticConventions.INPUT_VALUE])).toHaveLength(MAX_OPENINFERENCE_TEXT_CHARS + 1);
   });
 
   test('outputAttrs returns CHAIN kind plus output text attrs', () => {
     const textAttrs = outputAttrs('assistant reply');
 
-    expect(textAttrs[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(
-      OpenInferenceSpanKind.CHAIN,
-    );
+    expect(textAttrs[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(OpenInferenceSpanKind.CHAIN);
     expect(textAttrs[SemanticConventions.OUTPUT_VALUE]).toBe('assistant reply');
     expect(textAttrs[SemanticConventions.OUTPUT_MIME_TYPE]).toBe(MimeType.TEXT);
     expect(textAttrs['attribute.redacted']).toBeUndefined();
@@ -117,35 +107,28 @@ describe('openinference helper', () => {
   });
 
   test('span attribute helpers apply context, root input, output, and kind attrs', async () => {
-    await context.with(
-      createSessionContext({ sessionId: 'sess-ctx', userId: 'user-ctx' }),
-      async () => {
-        await withSpan('test.openinference.helpers', undefined, async () => {
-          const span = getActiveSpan();
+    await context.with(createSessionContext({ sessionId: 'sess-ctx', userId: 'user-ctx' }), async () => {
+      await withSpan('test.openinference.helpers', undefined, async () => {
+        const span = getActiveSpan();
 
-          expect(span).toBeDefined();
-          if (!span) return;
+        expect(span).toBeDefined();
+        if (!span) return;
 
-          setSpanKind(span, OpenInferenceSpanKind.CHAIN);
-          applyContextAttrsToSpan(span);
-          setRootAttrs(span, {
-            sessionId: 'sess-ctx',
-            userId: 'user-ctx',
-            inputValue: 'input payload',
-          });
-          setOutputAttrs(span, 'output payload');
+        setSpanKind(span, OpenInferenceSpanKind.CHAIN);
+        applyContextAttrsToSpan(span);
+        setRootAttrs(span, {
+          sessionId: 'sess-ctx',
+          userId: 'user-ctx',
+          inputValue: 'input payload',
         });
-      },
-    );
+        setOutputAttrs(span, 'output payload');
+      });
+    });
 
-    const helperSpan = exporter
-      .getFinishedSpans()
-      .find((span) => span.name === 'test.openinference.helpers');
+    const helperSpan = exporter.getFinishedSpans().find((span) => span.name === 'test.openinference.helpers');
 
     expect(helperSpan).toBeDefined();
-    expect(helperSpan?.attributes[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(
-      OpenInferenceSpanKind.CHAIN,
-    );
+    expect(helperSpan?.attributes[SemanticConventions.OPENINFERENCE_SPAN_KIND]).toBe(OpenInferenceSpanKind.CHAIN);
     expect(helperSpan?.attributes[SemanticConventions.SESSION_ID]).toBe('sess-ctx');
     expect(helperSpan?.attributes[SemanticConventions.USER_ID]).toBe('user-ctx');
     expect(helperSpan?.attributes[SemanticConventions.INPUT_VALUE]).toBe('input payload');

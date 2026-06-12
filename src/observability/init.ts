@@ -55,7 +55,7 @@ export function initObservability(): boolean {
 
 export async function shutdownObservability(): Promise<void> {
   const timeout = new Promise<void>((_, reject) =>
-    setTimeout(() => reject(new Error('shutdown timed out')), SHUTDOWN_TIMEOUT_MS)
+    setTimeout(() => reject(new Error('shutdown timed out')), SHUTDOWN_TIMEOUT_MS),
   );
 
   try {

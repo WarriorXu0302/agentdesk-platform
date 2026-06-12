@@ -153,9 +153,10 @@ export function findArchivedSessionsOlderThan(beforeIso: string, limit: number):
 
 /** Counts grouped by status — used by the session-count metric gauge. */
 export function countSessionsByStatus(): Array<{ status: string; count: number }> {
-  return getDb()
-    .prepare('SELECT status, COUNT(*) AS count FROM sessions GROUP BY status')
-    .all() as Array<{ status: string; count: number }>;
+  return getDb().prepare('SELECT status, COUNT(*) AS count FROM sessions GROUP BY status').all() as Array<{
+    status: string;
+    count: number;
+  }>;
 }
 
 export function getRunningSessions(): Session[] {

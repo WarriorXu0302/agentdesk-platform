@@ -7,11 +7,7 @@ import {
   setSession,
   setUser,
 } from '@arizeai/openinference-core';
-import {
-  MimeType,
-  OpenInferenceSpanKind,
-  SemanticConventions,
-} from '@arizeai/openinference-semantic-conventions';
+import { MimeType, OpenInferenceSpanKind, SemanticConventions } from '@arizeai/openinference-semantic-conventions';
 
 export { MimeType, OpenInferenceSpanKind, SemanticConventions };
 
@@ -25,9 +21,7 @@ function isAttributeValue(value: unknown): value is AttributeValue {
     typeof value === 'number' ||
     typeof value === 'boolean' ||
     (Array.isArray(value) &&
-      value.every(
-        (item) => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean',
-      ))
+      value.every((item) => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'))
   );
 }
 

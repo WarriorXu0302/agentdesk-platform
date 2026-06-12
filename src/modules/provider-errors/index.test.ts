@@ -34,9 +34,7 @@ function session(): Session {
 
 async function valueFor(provider: string, code: string): Promise<number> {
   const all = await providerErrorsTotal.get();
-  const match = all.values.find(
-    (v) => v.labels.provider === provider && v.labels.code === code,
-  );
+  const match = all.values.find((v) => v.labels.provider === provider && v.labels.code === code);
   return match?.value ?? 0;
 }
 

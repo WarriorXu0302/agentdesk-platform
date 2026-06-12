@@ -171,22 +171,18 @@ function isUserScopedSessionMode(
  */
 export async function routeInbound(event: InboundEvent): Promise<void> {
   await runInDetachedRoot(() =>
-    withSpan(
-      'router.route',
-      chainAttrs({ 'channel.type': event.channelType || 'unknown' }),
-      async () => {
-        const endTimer = startTimer('route');
-        try {
-          await routeInboundInner(event);
-          inboundTotal.labels(event.channelType, 'accepted').inc();
-        } catch (err) {
-          inboundTotal.labels(event.channelType, 'rejected').inc();
-          throw err;
-        } finally {
-          endTimer();
-        }
-      },
-    ),
+    withSpan('router.route', chainAttrs({ 'channel.type': event.channelType || 'unknown' }), async () => {
+      const endTimer = startTimer('route');
+      try {
+        await routeInboundInner(event);
+        inboundTotal.labels(event.channelType, 'accepted').inc();
+      } catch (err) {
+        inboundTotal.labels(event.channelType, 'rejected').inc();
+        throw err;
+      } finally {
+        endTimer();
+      }
+    }),
   );
 }
 
@@ -504,11 +500,13 @@ async function deliverToAgent(
 
     return tracer.startActiveSpan(
       'router.deliver_to_agent',
-      { attributes: rootInputAttrs({
-        sessionId: '',
-        userId: userId ?? undefined,
-        inputValue: inputText,
-      }) as import('@opentelemetry/api').Attributes },
+      {
+        attributes: rootInputAttrs({
+          sessionId: '',
+          userId: userId ?? undefined,
+          inputValue: inputText,
+        }) as import('@opentelemetry/api').Attributes,
+      },
       async (rootSpan) => {
         try {
           if (isUserScopedSessionMode(effectiveSessionMode) && !userId) {
@@ -557,7 +555,11 @@ async function deliverToAgent(
                   agentGroupId: agent.agent_group_id,
                 });
               } else {
-                log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
+                log.info('Admin command denied by gate', {
+                  command: gate.command,
+                  userId,
+                  agentGroupId: agent.agent_group_id,
+                });
               }
               rootSpan.end();
               return;

@@ -215,10 +215,7 @@ export function readContainerConfig(folder: string): ContainerConfig {
       maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
       resources: normalizeResources(raw.resources),
       env: raw.env,
-      progressiveDisclosure:
-        raw.progressiveDisclosure === 'lean'
-          ? 'lean'
-          : raw.progressiveDisclosure === true,
+      progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
     };
   } catch (err) {
     console.error(`[container-config] failed to parse ${p}: ${String(err)}`);

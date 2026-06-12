@@ -226,7 +226,11 @@ describe('runSessionLifecycleSweep', () => {
 
   it('reports counts for the sweep result', async () => {
     process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
-    seedSession({ id: 's-archive-me', agentGroupId: 'ag-1', lastActive: new Date(Date.now() - 10 * 86_400_000).toISOString() });
+    seedSession({
+      id: 's-archive-me',
+      agentGroupId: 'ag-1',
+      lastActive: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+    });
     seedSession({ id: 's-keep', agentGroupId: 'ag-1', lastActive: now() });
 
     const result = await runSessionLifecycleSweep();

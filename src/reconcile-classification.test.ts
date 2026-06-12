@@ -165,8 +165,6 @@ describe('reconcileClassification', () => {
   });
 
   it('does not throw when the log table query fails inside try', () => {
-    expect(() =>
-      reconcileClassification({ _classificationId: 42 }, 'out-1', 'agent_send', SESS),
-    ).not.toThrow();
+    expect(() => reconcileClassification({ _classificationId: 42 }, 'out-1', 'agent_send', SESS)).not.toThrow();
   });
 });

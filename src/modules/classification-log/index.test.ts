@@ -75,11 +75,7 @@ describe('classify_intent delivery action', () => {
 
   it('defaults to action=delegate when the payload omits a recognized action_taken', async () => {
     const handler = captured.get('classify_intent')!;
-    await handler(
-      { action: 'classify_intent', userMessage: 'hi', confidence: 0.5 },
-      session(),
-      {} as never,
-    );
+    await handler({ action: 'classify_intent', userMessage: 'hi', confidence: 0.5 }, session(), {} as never);
     expect(queryClassificationLog()[0]!.action).toBe('delegate');
   });
 
