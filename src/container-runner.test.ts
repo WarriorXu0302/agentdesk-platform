@@ -113,4 +113,14 @@ describe('buildRunnerTracingEnvArgs (ADR-0026 endpoint injection)', () => {
     const env = envArgsToMap(buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT, tracestate: 'foo=bar' }, {}));
     expect(env.OTEL_TRACESTATE).toBe('foo=bar');
   });
+
+  it('forwards OTEL_CAPTURE_CONTENT into the container when the host opted in (ADR-0027)', () => {
+    const env = envArgsToMap(buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT }, { OTEL_CAPTURE_CONTENT: 'true' }));
+    expect(env.OTEL_CAPTURE_CONTENT).toBe('true');
+  });
+
+  it('does NOT inject OTEL_CAPTURE_CONTENT when the host left it unset (default-off)', () => {
+    const env = envArgsToMap(buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT }, {}));
+    expect(env.OTEL_CAPTURE_CONTENT).toBeUndefined();
+  });
 });

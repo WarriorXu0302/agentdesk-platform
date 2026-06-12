@@ -90,6 +90,11 @@ const wakePromises = new Map<string, Promise<boolean>>();
  *     alias (`host.docker.internal`, made resolvable by hostGatewayArgs()).
  *   - OTEL_SDK_DISABLED is forwarded verbatim whenever set, so an operator can
  *     hard-off runner tracing independently of the host.
+ *   - OTEL_CAPTURE_CONTENT (ADR-0027) is forwarded verbatim whenever set, so an
+ *     operator who opted into FULL-PLAINTEXT span content on the host (chat
+ *     bodies, LLM messages, tool args/results) gets the same opt-in inside the
+ *     container and the MCP server. Default-off: unset on the host => the
+ *     runner stays metadata-only, exactly as before this ADR.
  */
 export function buildRunnerTracingEnvArgs(carrier: Record<string, string>, env: NodeJS.ProcessEnv): string[] {
   const args: string[] = [];
@@ -104,6 +109,9 @@ export function buildRunnerTracingEnvArgs(carrier: Record<string, string>, env: 
   }
   if (env.OTEL_SDK_DISABLED) {
     args.push('-e', `OTEL_SDK_DISABLED=${env.OTEL_SDK_DISABLED}`);
+  }
+  if (env.OTEL_CAPTURE_CONTENT) {
+    args.push('-e', `OTEL_CAPTURE_CONTENT=${env.OTEL_CAPTURE_CONTENT}`);
   }
   return args;
 }

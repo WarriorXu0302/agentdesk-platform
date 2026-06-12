@@ -92,6 +92,10 @@ async function main(): Promise<void> {
     'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
     'OTEL_SDK_DISABLED',
     'OTEL_SERVICE_NAME',
+    // Content-capture opt-in (ADR-0027). The MCP server runs in this separate
+    // process, so the flag must ride through env too — otherwise tool spans
+    // would stay metadata-only while turn/LLM spans captured plaintext.
+    'OTEL_CAPTURE_CONTENT',
     'NODE_ENV',
     'BRAND_NAMESPACE',
   ]) {

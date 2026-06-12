@@ -22,7 +22,14 @@ import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks';
 import { context, propagation, trace } from '@opentelemetry/api';
 
 import { initRunnerObservability, shouldInitObservability } from './init.js';
-import { getTracer, parentContextFromEnv, recordError } from './tracer.js';
+import {
+  MAX_CONTENT_ATTRIBUTE_CHARS,
+  capContent,
+  captureContentEnabled,
+  getTracer,
+  parentContextFromEnv,
+  recordError,
+} from './tracer.js';
 import { mcpSpanName } from './mcp-span-name.js';
 
 // A deterministic W3C traceparent: version-traceid(32hex)-spanid(16hex)-flags.
@@ -90,24 +97,61 @@ describe('parentContextFromEnv bridge', () => {
 });
 
 // Mirrors the production agent.turn + provider.request shape from poll-loop.ts
-// without spinning up the whole loop.
-async function fakeTurn(env: NodeJS.ProcessEnv): Promise<void> {
+// without spinning up the whole loop. When `content` is provided AND the env
+// opts content capture on, it stamps the same content attributes the real
+// poll-loop / mcp server would, so the gating + cap behavior can be asserted
+// here without a live container.
+interface FakeContent {
+  prompt: string;
+  result: string;
+  inputMessages: Array<{ role: string; content: string }>;
+  outputText: string;
+}
+
+async function fakeTurn(env: NodeJS.ProcessEnv, content?: FakeContent): Promise<void> {
   const tracer = getTracer();
+  const capture = captureContentEnabled(env);
   await context.with(parentContextFromEnv(env), () =>
     tracer.startActiveSpan('agent.turn', async (turnSpan) => {
       turnSpan.setAttribute('openinference.span.kind', 'AGENT');
+      if (capture && content) {
+        turnSpan.setAttribute('input.value', capContent(content.prompt));
+        turnSpan.setAttribute('input.mime_type', 'text/plain');
+      }
       try {
         tracer.startActiveSpan('provider.request', (llmSpan) => {
           llmSpan.setAttribute('openinference.span.kind', 'LLM');
           llmSpan.setAttribute('llm.model_name', 'test-model');
+          if (capture && content) {
+            content.inputMessages.forEach((m, i) => {
+              llmSpan.setAttribute(`llm.input_messages.${i}.message.role`, m.role);
+              llmSpan.setAttribute(`llm.input_messages.${i}.message.content`, capContent(m.content));
+            });
+            llmSpan.setAttribute('output.value', capContent(content.outputText));
+            llmSpan.setAttribute('output.mime_type', 'text/plain');
+          }
           llmSpan.end();
         });
+        if (capture && content) {
+          turnSpan.setAttribute('output.value', capContent(content.result));
+          turnSpan.setAttribute('output.mime_type', 'text/plain');
+        }
       } finally {
         turnSpan.end();
       }
     }),
   );
 }
+
+const SAMPLE_CONTENT: FakeContent = {
+  prompt: 'what is the order status for PO-42?',
+  result: 'Your order PO-42 shipped today.',
+  inputMessages: [
+    { role: 'system', content: 'you are a helpful assistant' },
+    { role: 'user', content: 'what is the order status for PO-42?' },
+  ],
+  outputText: 'Your order PO-42 shipped today.',
+};
 
 describe('span tree on the host trace', () => {
   it('agent.turn carries the host trace id and parents provider.request', async () => {
@@ -129,6 +173,85 @@ describe('span tree on the host trace', () => {
     expect(llm?.parentSpanId).toBe(turn?.spanContext().spanId);
     expect(turn?.attributes['openinference.span.kind']).toBe('AGENT');
     expect(llm?.attributes['openinference.span.kind']).toBe('LLM');
+  });
+});
+
+describe('captureContentEnabled gate (ADR-0027)', () => {
+  it('is on only for the literal string "true"', () => {
+    expect(captureContentEnabled({ OTEL_CAPTURE_CONTENT: 'true' })).toBe(true);
+    expect(captureContentEnabled({ OTEL_CAPTURE_CONTENT: 'TRUE' })).toBe(false);
+    expect(captureContentEnabled({ OTEL_CAPTURE_CONTENT: '1' })).toBe(false);
+    expect(captureContentEnabled({ OTEL_CAPTURE_CONTENT: 'yes' })).toBe(false);
+    expect(captureContentEnabled({})).toBe(false);
+  });
+});
+
+describe('content capture on agent.turn + provider.request (ADR-0027)', () => {
+  it('stamps full-plaintext input/output content when OTEL_CAPTURE_CONTENT=true', async () => {
+    await fakeTurn({ OTEL_TRACEPARENT: HOST_TRACEPARENT, OTEL_CAPTURE_CONTENT: 'true' }, SAMPLE_CONTENT);
+
+    const spans = exporter.getFinishedSpans();
+    const turn = spans.find((s) => s.name === 'agent.turn');
+    const llm = spans.find((s) => s.name === 'provider.request');
+
+    // agent.turn carries the full prompt + result verbatim.
+    expect(turn?.attributes['input.value']).toBe(SAMPLE_CONTENT.prompt);
+    expect(turn?.attributes['input.mime_type']).toBe('text/plain');
+    expect(turn?.attributes['output.value']).toBe(SAMPLE_CONTENT.result);
+    expect(turn?.attributes['output.mime_type']).toBe('text/plain');
+
+    // provider.request carries the LLM input messages + output verbatim.
+    expect(llm?.attributes['llm.input_messages.0.message.role']).toBe('system');
+    expect(llm?.attributes['llm.input_messages.0.message.content']).toBe('you are a helpful assistant');
+    expect(llm?.attributes['llm.input_messages.1.message.role']).toBe('user');
+    expect(llm?.attributes['llm.input_messages.1.message.content']).toBe(SAMPLE_CONTENT.inputMessages[1].content);
+    expect(llm?.attributes['output.value']).toBe(SAMPLE_CONTENT.outputText);
+  });
+
+  it('emits ZERO content attributes when capture is off (metadata-only, pre-ADR-0027 behavior)', async () => {
+    await fakeTurn({ OTEL_TRACEPARENT: HOST_TRACEPARENT }, SAMPLE_CONTENT);
+
+    const spans = exporter.getFinishedSpans();
+    const turn = spans.find((s) => s.name === 'agent.turn');
+    const llm = spans.find((s) => s.name === 'provider.request');
+
+    // Not a single content key on either span.
+    expect(turn?.attributes['input.value']).toBeUndefined();
+    expect(turn?.attributes['output.value']).toBeUndefined();
+    expect(llm?.attributes['llm.input_messages.0.message.content']).toBeUndefined();
+    expect(llm?.attributes['output.value']).toBeUndefined();
+
+    // Metadata is still present — this is exactly the pre-ADR-0027 surface.
+    expect(turn?.attributes['openinference.span.kind']).toBe('AGENT');
+    expect(llm?.attributes['llm.model_name']).toBe('test-model');
+  });
+});
+
+describe('capContent export-safety hard cap (ADR-0027, not redaction)', () => {
+  it('passes through values within the cap unchanged', () => {
+    expect(capContent('hello')).toBe('hello');
+    const exact = 'x'.repeat(MAX_CONTENT_ATTRIBUTE_CHARS);
+    expect(capContent(exact)).toBe(exact);
+  });
+
+  it('truncates oversized values and appends a <truncated> marker', () => {
+    const huge = 'x'.repeat(MAX_CONTENT_ATTRIBUTE_CHARS + 5000);
+    const capped = capContent(huge);
+    expect(capped.length).toBe(MAX_CONTENT_ATTRIBUTE_CHARS + '…<truncated>'.length);
+    expect(capped.startsWith('x'.repeat(MAX_CONTENT_ATTRIBUTE_CHARS))).toBe(true);
+    expect(capped.endsWith('<truncated>')).toBe(true);
+  });
+
+  it('the cap reaches the span when content is oversized', async () => {
+    const huge = 'y'.repeat(MAX_CONTENT_ATTRIBUTE_CHARS + 100);
+    await fakeTurn(
+      { OTEL_TRACEPARENT: HOST_TRACEPARENT, OTEL_CAPTURE_CONTENT: 'true' },
+      { ...SAMPLE_CONTENT, prompt: huge },
+    );
+    const turn = exporter.getFinishedSpans().find((s) => s.name === 'agent.turn');
+    const value = turn?.attributes['input.value'] as string;
+    expect(value.endsWith('<truncated>')).toBe(true);
+    expect(value.length).toBe(MAX_CONTENT_ATTRIBUTE_CHARS + '…<truncated>'.length);
   });
 });
 

@@ -13,9 +13,11 @@ import { setContinuation } from '../db/session-state.js';
 import { buildCompactionInstructions } from '../compact-instructions.js';
 import { getAllDestinations } from '../destinations.js';
 import { registerProvider } from './provider-registry.js';
+import { captureContentEnabled } from '../observability/tracer.js';
 import type {
   AgentProvider,
   AgentQuery,
+  LlmMessage,
   McpServerConfig,
   ProviderEvent,
   ProviderOptions,
@@ -138,6 +140,22 @@ interface ConnectedMcpServer {
 
 type ContinuationMode = 'responses' | 'stateless';
 type OpenAITransport = 'responses' | 'chat-completions';
+
+/**
+ * One recorded LLM call. `inputMessages` / `outputText` are populated only
+ * when content capture is enabled (ADR-0027); otherwise the record is
+ * metadata-only as before.
+ */
+interface UsageRecord {
+  model: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  durationMs?: number;
+  transport: OpenAITransport;
+  inputMessages?: LlmMessage[];
+  outputText?: string;
+}
 
 interface OpenAIContinuationState {
   v: 1 | 2;
@@ -573,6 +591,23 @@ function transcriptToChatMessages(transcript: JsonObject[], instructions?: strin
   return messages;
 }
 
+/**
+ * Render the transcript that was sent to the model into role+content
+ * LlmMessage[] for content capture (ADR-0027). Reuses transcriptToChatMessages
+ * (which already normalizes message / function_call / function_call_output
+ * items into chat turns), then flattens any non-string content to a string so
+ * it can ride on a span attribute as verbatim plaintext. Only called when
+ * captureContentEnabled() is true.
+ */
+function transcriptToLlmMessages(transcript: JsonObject[], instructions?: string): LlmMessage[] {
+  return transcriptToChatMessages(transcript, instructions).map((m) => {
+    const role = readString((m as { role?: unknown }).role) || 'unknown';
+    const rawContent = (m as { content?: unknown }).content;
+    const content = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent ?? '');
+    return { role, content };
+  });
+}
+
 function responseToolsToChatTools(tools: OpenAIFunctionTool[]): JsonObject[] {
   return tools.map((tool) => ({
     type: 'function',
@@ -930,6 +965,11 @@ export class OpenAIProvider implements AgentProvider {
                 totalTokens: u.totalTokens,
                 durationMs: u.durationMs,
                 transport: u.transport,
+                // Plaintext content rides through only when capture is on
+                // (ADR-0027); undefined otherwise => provider.request stays
+                // metadata-only in the poll-loop.
+                inputMessages: u.inputMessages,
+                outputText: u.outputText,
               };
             }
             yield { type: 'result', text: turn.text };
@@ -986,29 +1026,16 @@ export class OpenAIProvider implements AgentProvider {
     text: string | null;
     progressMessages: string[];
     compacted?: { text: string };
-    usages: Array<{
-      model: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-      durationMs?: number;
-      transport: OpenAITransport;
-    }>;
+    usages: UsageRecord[];
   }> {
     if (!this.apiKey) {
       throw new Error('OPENAI_API_KEY is missing for provider=openai');
     }
 
+    const captureContent = captureContentEnabled();
     const tools = await this.bridge.listTools();
     const progressMessages: string[] = [];
-    const usages: Array<{
-      model: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-      durationMs?: number;
-      transport: OpenAITransport;
-    }> = [];
+    const usages: UsageRecord[] = [];
     const restored = parseContinuationState(params.continuation);
     let mode: ContinuationMode = this.forceTransport === 'chat-completions' ? 'stateless' : restored.mode;
     let transport: OpenAITransport = this.forceTransport ?? restored.transport;
@@ -1111,6 +1138,15 @@ export class OpenAIProvider implements AgentProvider {
           totalTokens: u.total_tokens,
           durationMs: Date.now() - callStartedAt,
           transport,
+          // Full-plaintext content only when the operator opted in (ADR-0027).
+          // The transcript is what we sent the model this call; output text is
+          // the model's reply. Capping for export safety happens in poll-loop.
+          ...(captureContent
+            ? {
+                inputMessages: transcriptToLlmMessages(transcript, params.instructions),
+                outputText: extractOutputText(response) ?? undefined,
+              }
+            : {}),
         });
       }
 
@@ -1190,14 +1226,7 @@ export class OpenAIProvider implements AgentProvider {
   private async runCompaction(
     transcript: JsonObject[],
     instructions: string | undefined,
-    usages: Array<{
-      model: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-      durationMs?: number;
-      transport: OpenAITransport;
-    }>,
+    usages: UsageRecord[],
     signal: AbortSignal,
   ): Promise<{ transcript: JsonObject[]; postChars: number } | undefined> {
     const boundary = computeCompactionBoundary(transcript, KEEP_RECENT_ITEMS, KEEP_RECENT_CHARS);
@@ -1246,14 +1275,7 @@ export class OpenAIProvider implements AgentProvider {
   private async summarizeOldWindow(
     oldWindow: JsonObject[],
     instructions: string | undefined,
-    usages: Array<{
-      model: string;
-      inputTokens?: number;
-      outputTokens?: number;
-      totalTokens?: number;
-      durationMs?: number;
-      transport: OpenAITransport;
-    }>,
+    usages: UsageRecord[],
     signal: AbortSignal,
   ): Promise<string | null> {
     const customInstructions = buildCompactionInstructions(getAllDestinations());

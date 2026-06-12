@@ -291,6 +291,12 @@ methodology §3 解释了 Phoenix / OpenInference 为什么需要语义 attribut
 - OTel `SpanKind`（`INTERNAL`, `SERVER`, `CLIENT`, ...）描述 transport role；
 - OpenInference `openinference.span.kind`（`CHAIN`, `AGENT`, `LLM`, ...）描述 AI semantic role。
 本平台 review gate 首先检查 `openinference.span.kind` 是否正确；OTel `SpanKind` 作为 secondary transport detail，可按实现边界补充。
+
+> **内容捕获门控（ADR-0027）**：runner 三类 span 的 **content** attributes —— `input.value`、`output.value`、`llm.input_messages.*`、`llm.output_messages.*`、`tool.parameters`（全文形态）、`tool.output` —— 受 `OTEL_CAPTURE_CONTENT` 门控，**默认关**。
+> - **关闭（默认）**：runner spans **不带任何 content attribute**，只带元数据（`openinference.span.kind` / `llm.model_name` / token counts / `tool.name` / 脱敏的 `tool.parameters` 摘要）。这是开源基线的保守默认，与 ADR-0026 落地后逐字一致。
+> - **开启（运营者 opt-in，自担合规）**：上**完整明文**，不做脱敏；仅过一个 50000 字符**导出安全硬上限**（`capContent`，超出截断 + `<truncated>`，**非** redaction）。
+> 详见 ADR-0027。host 侧 spans（`router.deliver_to_agent` 等）的 `input.value`/`output.value` 仍按既有 `safeAttributeText`（4KB 截断 + `attribute.redacted`）处理，不受本门控影响。
+
 ### 5.2 Attribute Matrix
 | Span class | Required `openinference.span.kind` | Required attributes | Conditionally required attributes | Recommended examples / notes |
 |---|---|---|---|---|
@@ -379,6 +385,17 @@ await withSpan('router.deliver_to_agent', {
 - methodology doc explains the rationale;
 - this schema decides the review contract;
 - future code reviews should quote §5, not re-debate Phoenix semantics each time。
+### 5.6 Runner content attributes are flag-gated（ADR-0027）
+runner（`agent.turn` / `provider.request` / `mcp.<group>.<tool>`）的 **content** attributes 不是无条件 required，而是受 `OTEL_CAPTURE_CONTENT` 门控的 **conditionally required**：
+| Span class | Content attributes（仅 `OTEL_CAPTURE_CONTENT=true` 时写） | 关闭态（默认） |
+|---|---|---|
+| `agent.turn`（AGENT） | `input.value`（本轮 prompt 全文）+ `input.mime_type`；`output.value`（最终 result 全文）+ `output.mime_type` | 无 content；只 `provider` / `channel.type` |
+| `provider.request`（LLM） | `llm.input_messages.<i>.message.role`/`.content`、`llm.output_messages.0.message.role`/`.content`、`output.value` + `output.mime_type` | 无 content；只 `llm.system` / `llm.model_name` / token counts / `llm.duration_ms` / `llm.transport` |
+| `mcp.<group>.<tool>`（TOOL） | `tool.parameters`（arguments JSON 全文）、`tool.output`（结果文本全文） | `tool.parameters` = **脱敏摘要**（key 形状，`redact.ts`）；**无** `tool.output` |
+门控纪律：
+- flag 单点读取 `captureContentEnabled()`（`container/agent-runner/src/observability/tracer.ts`），host 经 `buildRunnerTracingEnvArgs` 把 `OTEL_CAPTURE_CONTENT` 透传进容器与 MCP server。
+- 开启态的内容是**完整明文、不脱敏**；唯一处理是 `capContent` 50000 字符导出安全硬上限（截断 + `<truncated>`），这是防 OTLP 崩溃的运维手段，**不是** redaction，不设 `attribute.redacted`。
+- 该门控**有意偏离**本文件 §6.4 / §9.6 对 runner content 的 redaction 期望，正当性 = 运营者显式 opt-in + 默认关 + 仅元数据为默认（见 ADR-0027）。host 侧 spans 不在此偏离范围内，继续遵循 §6.4 / §9.6。
 ---
 ## §5b. Trace Topology Rules
 ### 5b.1 Root distinction

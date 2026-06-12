@@ -94,6 +94,15 @@ export type ProviderEvent =
    * downstream observability (Langfuse sidecar) can attribute LLM cost back
    * to the originating turn. Optional — providers that don't expose usage
    * metadata simply skip the event.
+   *
+   * `inputMessages` / `outputText` are the FULL-PLAINTEXT message content of
+   * this LLM call (ADR-0027). They are populated by the provider ONLY when
+   * content capture is enabled (`captureContentEnabled()`); otherwise they are
+   * left undefined and the provider.request span stays metadata-only. The
+   * poll-loop writes them onto the span as OpenInference `llm.input_messages.*`
+   * / `output.value`, never to outbound.db. Keeping them on the optional usage
+   * event (instead of building a second span deep in the provider) preserves
+   * the one-span-per-usage-event invariant from ADR-0026.
    */
   | {
       type: 'usage';
@@ -103,4 +112,16 @@ export type ProviderEvent =
       totalTokens?: number;
       durationMs?: number;
       transport?: string;
+      inputMessages?: LlmMessage[];
+      outputText?: string;
     };
+
+/**
+ * A single role+content message for LLM input/output content capture
+ * (ADR-0027). Content is verbatim plaintext; the poll-loop caps each value for
+ * export safety only.
+ */
+export interface LlmMessage {
+  role: string;
+  content: string;
+}

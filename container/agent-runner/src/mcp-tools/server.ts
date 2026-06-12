@@ -13,13 +13,43 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { MCP_SERVER_NAME } from '../branding.js';
-import { context, getTracer, parentContextFromEnv, recordError } from '../observability/tracer.js';
+import {
+  capContent,
+  captureContentEnabled,
+  context,
+  getTracer,
+  parentContextFromEnv,
+  recordError,
+} from '../observability/tracer.js';
 import { mcpSpanName } from '../observability/mcp-span-name.js';
 import { redactedParamSummary } from '../observability/redact.js';
 import type { McpToolDefinition } from './types.js';
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
+}
+
+/**
+ * Flatten an MCP tool result into plaintext for the `tool.output` content
+ * attribute (ADR-0027). Concatenates text blocks; JSON-serializes the rest.
+ * Only called when content capture is enabled.
+ */
+function toolResultToText(result: unknown): string {
+  if (result === null || result === undefined) return '';
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) return JSON.stringify(result);
+  const parts: string[] = [];
+  for (const item of content) {
+    if (item && typeof item === 'object' && (item as { type?: unknown }).type === 'text') {
+      const text = (item as { text?: unknown }).text;
+      if (typeof text === 'string') {
+        parts.push(text);
+        continue;
+      }
+    }
+    parts.push(JSON.stringify(item));
+  }
+  return parts.join('\n');
 }
 
 const allTools: McpToolDefinition[] = [];
@@ -54,14 +84,20 @@ export async function startMcpServer(): Promise<void> {
     const spanName = mcpSpanName(name);
     const tracer = getTracer();
     const startedAt = Date.now();
+    const captureContent = captureContentEnabled();
     return context.with(parentContextFromEnv(), () =>
       tracer.startActiveSpan('mcp.tool.execute', async (span) => {
         span.updateName(spanName);
         // Inline literal kind so the static coverage scanner detects it.
         span.setAttribute('openinference.span.kind', 'TOOL');
         span.setAttribute('tool.name', name);
-        // Desensitized only — never raw argument values (see redact.ts).
-        span.setAttribute('tool.parameters', redactedParamSummary(args));
+        // tool.parameters: FULL-PLAINTEXT JSON of the arguments when the
+        // operator opted in (ADR-0027), else the desensitized key-shape
+        // summary (redact.ts) as before. capContent only guards export size.
+        span.setAttribute(
+          'tool.parameters',
+          captureContent ? capContent(JSON.stringify(args ?? {})) : redactedParamSummary(args),
+        );
         // Gateway tools front the ERP boundary; surface the coarse operation.
         if (name.startsWith('gateway_') && args && typeof args === 'object') {
           const op = (args as Record<string, unknown>).operation;
@@ -74,6 +110,11 @@ export async function startMcpServer(): Promise<void> {
           }
           const result = await tool.handler(args ?? {});
           span.setAttribute('tool.duration_ms', Date.now() - startedAt);
+          // tool.output: full plaintext result only when capture is on
+          // (ADR-0027). Off => no output attribute at all (metadata-only).
+          if (captureContent) {
+            span.setAttribute('tool.output', capContent(toolResultToText(result)));
+          }
           return result;
         } catch (err) {
           recordError(span, err, 'mcp_tool_error');

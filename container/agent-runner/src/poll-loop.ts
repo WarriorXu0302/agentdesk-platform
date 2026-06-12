@@ -28,7 +28,14 @@ import {
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
 import { resolveBatchIdentity, splitBatchByTurn } from './request-identity.js';
-import { context, getTracer, parentContextFromEnv, recordError } from './observability/tracer.js';
+import {
+  capContent,
+  captureContentEnabled,
+  context,
+  getTracer,
+  parentContextFromEnv,
+  recordError,
+} from './observability/tracer.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -358,7 +365,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // cross-user misattribution in group/shared sessions.
     setRequestIdentity(resolveBatchIdentity(keep));
     try {
-      const result = await processQuery(query, turnRouting, processingIds, config.providerName);
+      const result = await processQuery(query, turnRouting, processingIds, config.providerName, prompt);
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
@@ -453,6 +460,12 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
 
 interface QueryResult {
   continuation?: string;
+  /**
+   * The turn's final user-visible result text, captured so the agent.turn span
+   * can carry `output.value` (ADR-0027). Only meaningful when content capture
+   * is enabled; otherwise left undefined.
+   */
+  resultText?: string;
 }
 
 /**
@@ -461,16 +474,23 @@ interface QueryResult {
  * the whole turn — and any provider.request / mcp.* children — lands in the
  * same Phoenix trace as the host. No-op when host tracing is off.
  *
- * Span only READS routing.* / provider name as attributes; it never mutates
- * the message flow, identity chain, or session DBs.
+ * Span only READS routing.* / provider name / prompt / result as attributes;
+ * it never mutates the message flow, identity chain, or session DBs.
+ *
+ * Content (ADR-0027): when OTEL_CAPTURE_CONTENT=true the span also carries the
+ * FULL-PLAINTEXT turn prompt as `input.value` and the final result text as
+ * `output.value`. Both are capped (export-safety only) via capContent. When
+ * the flag is off, neither is set — the span stays metadata-only as before.
  */
 async function processQuery(
   query: AgentQuery,
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  prompt: string,
 ): Promise<QueryResult> {
   const tracer = getTracer();
+  const captureContent = captureContentEnabled();
   return context.with(parentContextFromEnv(), () =>
     tracer.startActiveSpan('agent.turn', async (turnSpan) => {
       // Inline literal kind so the static coverage scanner sees it; setKind()
@@ -478,8 +498,17 @@ async function processQuery(
       turnSpan.setAttribute('openinference.span.kind', 'AGENT');
       if (routing.channelType) turnSpan.setAttribute('channel.type', routing.channelType);
       turnSpan.setAttribute('provider', providerName);
+      if (captureContent) {
+        turnSpan.setAttribute('input.value', capContent(prompt));
+        turnSpan.setAttribute('input.mime_type', 'text/plain');
+      }
       try {
-        return await runQuery(query, routing, initialBatchIds, providerName);
+        const result = await runQuery(query, routing, initialBatchIds, providerName);
+        if (captureContent && result.resultText) {
+          turnSpan.setAttribute('output.value', capContent(result.resultText));
+          turnSpan.setAttribute('output.mime_type', 'text/plain');
+        }
+        return result;
       } catch (err) {
         recordError(turnSpan, err, 'agent_turn_error');
         throw err;
@@ -497,6 +526,11 @@ async function runQuery(
   providerName: string,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
+  // Last non-empty result text seen this turn — surfaced to processQuery for
+  // the agent.turn `output.value` content attribute (ADR-0027). Only populated
+  // when content capture is on, but cheap to track regardless.
+  let lastResultText: string | undefined;
+  const captureContent = captureContentEnabled();
   let done = false;
 
   // Concurrent polling: push follow-ups into the active query as they arrive.
@@ -644,6 +678,9 @@ async function runQuery(
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
         if (event.text) {
+          // Remember the final text so processQuery can stamp it as the
+          // agent.turn output.value when content capture is on (ADR-0027).
+          if (captureContent) lastResultText = event.text;
           dispatchResultText(event.text, routing);
         }
       } else if (event.type === 'compacted') {
@@ -669,8 +706,13 @@ async function runQuery(
         // auto-nests as its child. Synchronous start+end: usage arrives after
         // the call already finished, so the span is a zero-duration marker
         // carrying model + token attributes (the canonical LLM boundary for
-        // Phoenix). This wave does NOT attach prompt/completion text — that is
-        // a follow-up wave gated on full redaction.
+        // Phoenix).
+        //
+        // Content (ADR-0027): when OTEL_CAPTURE_CONTENT=true the provider fills
+        // event.inputMessages / event.outputText with FULL-PLAINTEXT message
+        // content, which we render as OpenInference llm.input_messages.* /
+        // output.value. When the flag is off these are undefined and the span
+        // stays metadata-only — identical to pre-ADR-0027 behavior.
         const llmTracer = getTracer();
         llmTracer.startActiveSpan('provider.request', (llmSpan) => {
           llmSpan.setAttribute('openinference.span.kind', 'LLM');
@@ -689,6 +731,20 @@ async function runQuery(
             llmSpan.setAttribute('llm.duration_ms', event.durationMs);
           }
           if (event.transport) llmSpan.setAttribute('llm.transport', event.transport);
+          if (captureContent) {
+            if (event.inputMessages) {
+              event.inputMessages.forEach((m, i) => {
+                llmSpan.setAttribute(`llm.input_messages.${i}.message.role`, m.role);
+                llmSpan.setAttribute(`llm.input_messages.${i}.message.content`, capContent(m.content));
+              });
+            }
+            if (event.outputText !== undefined) {
+              llmSpan.setAttribute('llm.output_messages.0.message.role', 'assistant');
+              llmSpan.setAttribute('llm.output_messages.0.message.content', capContent(event.outputText));
+              llmSpan.setAttribute('output.value', capContent(event.outputText));
+              llmSpan.setAttribute('output.mime_type', 'text/plain');
+            }
+          }
           llmSpan.end();
         });
         // Per-LLM-call cost/latency record. Persisted as a sentinel row in
@@ -718,7 +774,7 @@ async function runQuery(
     clearInterval(pollHandle);
   }
 
-  return { continuation: queryContinuation };
+  return { continuation: queryContinuation, resultText: lastResultText };
 }
 
 function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
