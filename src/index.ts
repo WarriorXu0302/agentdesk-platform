@@ -15,6 +15,7 @@ import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
 import { checkBaseImage } from './container-runner.js';
+import { validateStartupConfig } from './config-validate.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
 import { surfaceOrphanedIngress } from './ingress-recovery-check.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
@@ -90,6 +91,12 @@ async function main(): Promise<void> {
   // 2. Container runtime
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  // 2b. Config safety gate (ADR-0025) — fail fast on an internally inconsistent
+  //     deployment (feature enabled but its required secrets missing) and on
+  //     known-weak placeholder secrets in the trust chain. Conservative: only
+  //     fires for features that are actually enabled, so a minimal CLI-only /
+  //     claude-only deploy is unaffected. Runs before any connections open.
+  validateStartupConfig();
   checkBaseImage();
   checkGatewaySigningCoverage();
   // Report inbound envelopes left unrecovered by a prior crash/route failure

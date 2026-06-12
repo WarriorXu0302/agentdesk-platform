@@ -325,6 +325,8 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 
 ## 6. 部署
 
+> 全部环境变量的权威清单见仓库根 [`.env.example`](../.env.example)（按功能分组，每项标注必填性、默认值、安全后果）。`cp .env.example .env` 后填值即可。启动期会做保守的配置校验并拒绝占位密钥（ADR-0025）：只在功能被启用时才要求其必填项，未启用的功能与未设置的可选项不受影响。
+
 ### 6.1 最小可用配置
 
 ```bash
