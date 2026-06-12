@@ -29,7 +29,9 @@ import {
   findArchivedSessionsOlderThan,
   updateSession,
 } from './db/sessions.js';
+import { getDb, hasTable } from './db/connection.js';
 import { log } from './log.js';
+import { revokeScope } from './roster-dm.js';
 import { sessionDir } from './session-manager.js';
 import type { Session } from './types.js';
 
@@ -137,6 +139,17 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
     // last_active — otherwise an ancient idle session gets tarred and
     // unlinked inside the same sweep tick.
     updateSession(session.id, { status: 'archived', archived_at: now.toISOString() });
+    // Scope finish (ADR-0023): a root/scope-owner session ending tears down any
+    // roster-DM grants minted under its scope. Revoking flips revoked_at, which
+    // the delivery gate's live re-check fails — so any not-yet-delivered roster
+    // row for this scope is rejected on its next drain tick (R5). Guarded by
+    // table presence so installs without the migration are unaffected.
+    if ((session.root_session_id ?? session.id) === session.id && hasTable(getDb(), 'dm_grants')) {
+      const revoked = revokeScope(session.id);
+      if (revoked > 0) {
+        log.info('roster-dm: revoked scope grants on session archive', { scopeId: session.id, revoked });
+      }
+    }
     log.info('Session archived', {
       sessionId: session.id,
       agentGroupId: session.agent_group_id,

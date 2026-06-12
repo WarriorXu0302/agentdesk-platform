@@ -244,6 +244,17 @@ export const webhookRejectedTotal = new client.Counter({
   registers: [registry],
 });
 
+export const rosterDmRejectedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_roster_dm_rejected_total`,
+  help: 'Roster directed-message sends rejected by the host outbound authorization gate (ADR-0023)',
+  // `reason`: no_grant | bad_consent_source | scope_mismatch | revoked |
+  //   expired | max_sends | rate_limited | raw_platform_id | not_p2p_open_id |
+  //   target_mismatch | flag_disabled. Any sustained non-zero rate means an
+  //   agent is attempting roster DMs it isn't entitled to — investigate.
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export function renderMetrics(): Promise<string> {
   return registry.metrics();
 }

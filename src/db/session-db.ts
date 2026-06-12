@@ -279,6 +279,13 @@ export interface OutboundMessage {
   content: string;
   in_reply_to: string | null;
   /**
+   * Scheduling fields (container-written). The host's roster-DM gate (ADR-0023)
+   * rejects any kind='roster' row that carries either — a directed private
+   * message must be sent now, not scheduled or made recurring (R6).
+   */
+  deliver_after?: string | null;
+  recurrence?: string | null;
+  /**
    * Set by the container on a2a outbound rows: the namespaced user id of
    * the human whose turn produced this delegation. Null on
    * channel-delivered rows (the user id is already on the source inbound

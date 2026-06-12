@@ -91,6 +91,57 @@ With `ENTERPRISE_AUTO_WIRE_P2P=true`, the first DM from a Feishu user is
 auto-routed to the configured frontdesk agent group with an isolated DM
 context. No channel-owner approval step is required.
 
+## Roster directed messages (opt-in, ADR-0023)
+
+A platform-generic capability that lets an agent privately message a participant
+who has **explicitly consented** to be reached, scoped to a conversation lane
+(a "scope" — the session's root lane). Default **OFF**; enable per agent group
+with `ALLOW_ROSTER_DM=true` (read from the group's `container.json` `env`, then
+process env, then `.env`).
+
+Enabling requires the group to run `a2aSessionMode: "root-session"` — a
+roster-DM-enabled group on `agent-shared` mode is rejected at enable time, so a
+single unguessable per-scope key can't be shared across conversations.
+
+### Two consent sources — and only two
+
+1. **p2p-ingress** — the participant sends the bot a **direct (p2p) message**
+   carrying a roster opt-in payload (`{"kind":"roster.optin","scopeId":...,
+   "slotLabel":...,"agentGroupId":...}`). The participant's `open_id` is taken
+   from `sender.sender_id.open_id` of *that* inbound event.
+
+2. **directed-card** — the participant clicks a card whose action value is a
+   roster opt-in AND whose `expectedUserId` is set to their **own member
+   `open_id`**. The click is validated fail-closed (`cardActionOperatorAllowed`):
+   an empty `expectedUserId` (anyone-can-click) mints **no** consent.
+
+In both cases `participant_open_id` and `dm_platform_id` are derived **atomically
+from the same `open_id`** and asserted to round-trip to `feishu:p2p:<open_id>`.
+`union_id` / `user_id` / `chat_id` (`oc_*`) are rejected — the target must be a
+p2p `open_id` (`ou_*`).
+
+### Group chats record intent only
+
+A roster opt-in arriving in a **group** chat records an intent log line and
+mints **nothing** — it never creates a p2p messaging group from `chat_id`
+(no group-context → p2p channel minting).
+
+### Delivery
+
+The agent emits a `kind='roster'` outbound row addressing a **slot label** (in
+the content JSON `slot` field), never a concrete destination. The host gate
+(`src/delivery.ts` `deliverRosterMessage`) reverse-looks-up the grant by
+`(scope_id, slot_label)`, re-checks revoke/expiry/consent-source/`max_sends` and
+a multi-key rate limit **inside the same critical section as the send (every
+retry too)**, then **overwrites** the routing fields from the grant. A container
+that writes a raw `feishu:p2p:ou_*` (on a roster row or, while the flag is on, a
+plain channel row) is rejected. Roster rows may not carry `deliver_after` /
+`recurrence`. Every decision (delivered and rejected) is written to `dm_audit`.
+
+Scope teardown: when the scope's root session is archived, all of its grants are
+revoked (`revokeScope`), so any not-yet-delivered roster row fails on its next
+drain tick.
+
 ## Current limitations
 
 - outbound reactions are not implemented yet

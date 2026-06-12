@@ -36,6 +36,15 @@ import {
   deliveryRetriesTotal,
 } from './metrics.js';
 import { normalizeOptions } from './channels/ask-question.js';
+import { checkGrantLive, checkRateKeys, incrementSends, recordRateConsumption } from './db/dm-grants.js';
+import { recordDmAudit } from './db/dm-audit.js';
+import {
+  hostScopeForSession,
+  isRootSessionModeForRosterDm,
+  looksLikeRawPlatformId,
+  rosterDmEnabledForGroup,
+} from './roster-dm.js';
+import { rosterDmRejectedTotal } from './metrics.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { markProgressStatusCompleted, markProgressStatusFailed } from './modules/progress-status/index.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
@@ -380,6 +389,8 @@ async function deliverMessage(
     thread_id: string | null;
     content: string;
     in_reply_to: string | null;
+    deliver_after?: string | null;
+    recurrence?: string | null;
   },
   session: Session,
   inDb: Database.Database,
@@ -419,6 +430,18 @@ async function deliverMessage(
       return;
     }
 
+    // Roster directed-message — opt-in private-message-to-a-consented-participant
+    // surface (ADR-0023). Parallel to and MUTUALLY EXCLUSIVE with the channel
+    // branch below: a roster row addresses a SLOT, and the host reverse-looks-up
+    // the grant by (scope_id, slot_label), then OVERWRITES whatever
+    // channel_type/platform_id the container wrote. All consent/revoke/expiry/
+    // rate/target re-checks happen here, in the same critical section, before
+    // the adapter call. Returning early means a roster row NEVER falls through
+    // to the channel-destination ACL path.
+    if (msg.kind === 'roster') {
+      return await deliverRosterMessage(msg, session, content);
+    }
+
     // Permission check: the source agent must be allowed to deliver to this
     // channel destination. Two ways it passes:
     //
@@ -436,6 +459,31 @@ async function deliverMessage(
     // (instead of marking it delivered when nothing was actually delivered,
     // which was the pre-refactor bug).
     if (msg.channel_type && msg.platform_id) {
+      // Anti-bypass (ADR-0023, R3): when roster DM is enabled for this agent
+      // group, a container must NOT reach a participant by writing a raw
+      // `feishu:p2p:ou_*` destination on a plain channel row — that would route
+      // around the slot indirection, consent gate, rate limit, and revoke
+      // re-check. Force such traffic through the roster surface (kind='roster').
+      // Flag OFF preserves the legacy behavior exactly.
+      if (
+        msg.channel_type === 'feishu' &&
+        /^feishu:p2p:/i.test(msg.platform_id) &&
+        rosterDmEnabledForGroup(session.agent_group_id)
+      ) {
+        rosterDmRejectedTotal.labels('raw_platform_id').inc();
+        recordDmAudit({
+          scopeId: hostScopeForSession(session),
+          agentGroupId: session.agent_group_id,
+          sessionId: session.id,
+          dmPlatformId: msg.platform_id,
+          messageOutId: msg.id,
+          decision: 'rejected',
+          reason: 'channel_branch_p2p_bypass',
+        });
+        throw new Error(
+          `roster-dm: agent group ${session.agent_group_id} attempted a direct p2p channel send to ${msg.platform_id} while roster DM is enabled — use kind='roster' with a slot (ADR-0023)`,
+        );
+      }
       const mg = getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
       if (!mg) {
         throw new Error(`unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`);
@@ -567,6 +615,219 @@ async function deliverMessage(
 
     return platformMsgId;
   });
+}
+
+/**
+ * Deliver a roster directed message (ADR-0023). Runs entirely on the host
+ * (trusted side of the container mount). Every gate is re-evaluated here, in
+ * the same critical section, immediately before the adapter call — there is no
+ * window between the check and the send where a revoke / expiry / rate change
+ * could be missed (R5).
+ *
+ * Order of enforcement (all fail-closed; each rejection writes a dm_audit row
+ * and bumps roster_dm_rejected_total):
+ *   1. opt-in flag ON for this agent group (R-flag).
+ *   2. no deliver_after / recurrence on the row (R6 — DMs send now, never
+ *      scheduled/recurring).
+ *   3. slot_label present in content.
+ *   4. host-derived scope_id (never a container field) (R4).
+ *   5. the container did NOT smuggle a raw platform id (R3).
+ *   6. live grant check: present, allow-listed consent_source, scope-bound,
+ *      not revoked, not expired (host clock), under max_sends (R5).
+ *   7. multi-key sliding-window rate limit (R5).
+ *   8. target shape: messaging group is feishu p2p, is_group===0, receive id is
+ *      an open_id, and feishu:p2p:<participant_open_id> === dm_platform_id (R2).
+ * Only after ALL pass do we count the send, persist rate consumption, OVERWRITE
+ * the routing fields from the grant, and call the adapter.
+ */
+async function deliverRosterMessage(
+  msg: {
+    id: string;
+    kind: string;
+    platform_id: string | null;
+    channel_type: string | null;
+    thread_id: string | null;
+    content: string;
+    deliver_after?: string | null;
+    recurrence?: string | null;
+  },
+  session: Session,
+  content: Record<string, unknown>,
+): Promise<string | undefined> {
+  const scopeId = hostScopeForSession(session);
+  const auditBase = {
+    scopeId,
+    agentGroupId: session.agent_group_id,
+    sessionId: session.id,
+    messageOutId: msg.id,
+  };
+  const reject = (reason: string, extra: Record<string, unknown> = {}): never => {
+    rosterDmRejectedTotal.labels(reason).inc();
+    recordDmAudit({ ...auditBase, decision: 'rejected', reason, ...extra });
+    throw new Error(`roster-dm rejected (${reason}) for message ${msg.id}`);
+  };
+
+  // 1. opt-in flag.
+  if (!rosterDmEnabledForGroup(session.agent_group_id)) {
+    return reject('flag_disabled');
+  }
+
+  // 1b. root-session enforcement at the binding path (R4 review finding):
+  // a config-time assert nothing calls at runtime is no enforcement. If a
+  // group enabled roster DM but runs agent-shared, the per-scope release key
+  // collapses across conversations — reject fail-closed here.
+  if (!isRootSessionModeForRosterDm(session.agent_group_id)) {
+    return reject('agent_shared_mode');
+  }
+
+  // 2. no scheduling / recurrence on a roster row.
+  if (msg.deliver_after || msg.recurrence) {
+    return reject('scheduled_or_recurring');
+  }
+
+  // 3. slot_label.
+  const slotLabel = typeof content.slot === 'string' && content.slot.trim() ? content.slot.trim() : null;
+  if (!slotLabel) {
+    return reject('missing_slot');
+  }
+
+  // 5. raw-platform-id smuggle attempt (container wrote a concrete destination).
+  if (looksLikeRawPlatformId(msg.platform_id)) {
+    return reject('raw_platform_id', { dmPlatformId: msg.platform_id ?? null });
+  }
+
+  // 6. live grant re-check (revoked / expired / scope / consent_source / max_sends).
+  const live = checkGrantLive(scopeId, slotLabel);
+  if (!live.ok) {
+    return reject(live.reason, { slotLabel });
+  }
+  const grant = live.grant;
+
+  // 8. target shape: resolve the messaging group from the grant's authoritative
+  // destination and assert it is a feishu p2p open_id (not a group).
+  const mg = getMessagingGroupByPlatform(grant.channel_type, grant.dm_platform_id);
+  if (!mg) {
+    return reject('no_grant', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+  if (mg.is_group !== 0) {
+    return reject('not_p2p_open_id', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+  const expectedTarget = `feishu:p2p:${grant.participant_open_id}`;
+  if (
+    grant.channel_type !== 'feishu' ||
+    !grant.participant_open_id.startsWith('ou_') ||
+    expectedTarget !== grant.dm_platform_id
+  ) {
+    return reject('target_mismatch', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+
+  // 7. multi-key rate limit (read-only — does not burn quota on rejection).
+  const rateKeys = {
+    grant: grant.id,
+    scope: scopeId,
+    participant: grant.participant_open_id,
+    deploy: 'global',
+  };
+  const rate = checkRateKeys(rateKeys);
+  if (!rate.allowed) {
+    return reject('rate_limited', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+
+  // All gates passed. Deliver with grant-authoritative routing (OVERWRITES the
+  // container-written channel_type/platform_id entirely — R3). Accounting
+  // (incrementSends / recordRateConsumption) happens AFTER a successful send,
+  // below — see the note there (R5 review finding).
+  if (!deliveryAdapter) {
+    return reject('no_adapter', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+
+  // Scrub model reasoning tags from user-facing text, same as the channel path.
+  let outboundContent = msg.content;
+  if (typeof content.text === 'string') {
+    const cleaned = stripThinkTags(content.text);
+    if (cleaned !== content.text) {
+      outboundContent = JSON.stringify({ ...content, text: cleaned });
+    }
+  }
+
+  const platformMsgId = await withSpan(
+    'delivery.roster.send',
+    chainAttrs({
+      'channel.type': grant.channel_type,
+      'platform.id': grant.dm_platform_id,
+      'roster.scope_id': scopeId,
+      'roster.slot_label': slotLabel as string,
+      ...outputAttrs(typeof content.text === 'string' ? content.text : outboundContent),
+    }),
+    async () => {
+      return await withDeliveryTimeout(
+        deliveryAdapter!.deliver(
+          grant.channel_type,
+          grant.dm_platform_id,
+          null, // directed DMs are never threaded into a group
+          msg.kind,
+          outboundContent,
+          undefined,
+        ),
+        DELIVERY_TIMEOUT_MS,
+      );
+    },
+  );
+
+  // Count the send only AFTER it succeeded (R5 review finding). A failed/
+  // timed-out deliver throws above and is retried by the delivery loop;
+  // counting before would let each retry burn the grant's max_sends and rate
+  // budget, prematurely revoking a grant on a flaky channel and mis-counting
+  // attempts as sends. Trade-off: a crash between deliver-success and these
+  // writes under-counts by one — acceptable and consistent with ADR-0016's
+  // at-least-once stance. incrementSends auto-revokes the grant at max_sends.
+  incrementSends(grant.id);
+  recordRateConsumption(rateKeys);
+
+  recordDmAudit({
+    ...auditBase,
+    slotLabel,
+    grantId: grant.id,
+    participantOpenId: grant.participant_open_id,
+    dmPlatformId: grant.dm_platform_id,
+    decision: 'delivered',
+  });
+  log.info('Roster DM delivered', {
+    id: msg.id,
+    scopeId,
+    slotLabel,
+    grantId: grant.id,
+    dmPlatformId: grant.dm_platform_id,
+    platformMsgId,
+  });
+
+  clearOutbox(session.agent_group_id, session.id, msg.id);
+  return platformMsgId;
 }
 
 /**

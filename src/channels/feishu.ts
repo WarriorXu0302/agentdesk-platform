@@ -68,6 +68,7 @@ import {
   timestampToIso,
   verifyFeishuSignature,
 } from './feishu/primitives.js';
+import { captureDirectedCardConsent, captureP2pIngressConsent, parseRosterOptIn } from './feishu/roster-consent.js';
 
 // Re-export the subset of primitives that existing callers (including
 // tests) reach for via `./feishu`. Keeping the public surface stable means
@@ -460,6 +461,22 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         const isGroup = event.message.chat_type === 'group';
         const text = parseTextContent(event.message.content, event.message.message_type);
         const isMention = isGroup ? mentionsBot(event, config) : true;
+
+        // Roster-DM p2p-ingress consent (ADR-0023). When a DIRECT (p2p) message
+        // carries a roster opt-in command, capture consent from the open_id of
+        // THIS event. A group-chat message records intent only (no grant, no
+        // p2p channel minting) — enforced inside captureP2pIngressConsent.
+        const rosterOptIn = parseRosterOptIn(parseJsonObject(text));
+        if (rosterOptIn) {
+          captureP2pIngressConsent({
+            optIn: rosterOptIn,
+            senderOpenId: readString(event.sender.sender_id.open_id),
+            inboundMsgId: `msg:${event.message.message_id}`,
+            isGroup,
+          });
+          return;
+        }
+
         log.info('Feishu inbound message accepted', {
           messageId: event.message.message_id,
           chatId: event.message.chat_id,
@@ -537,6 +554,21 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
     if (!token) return;
     if (!markInboundSeen('feishu', `action:${token}`)) {
       inboundTotal.labels('feishu', 'deduped').inc();
+      return;
+    }
+    // Roster-DM directed-card consent (ADR-0023). A card whose action value is a
+    // roster opt-in is captured here, fail-closed: the operator's open_id must
+    // match the card's member-scoped expectedUserId (handled inside
+    // captureDirectedCardConsent). This is a terminal branch — a roster card is
+    // never also an ask_question card.
+    const rosterOptIn = parseRosterOptIn(event.action.value);
+    if (rosterOptIn) {
+      const operatorOpenId = readString(event.operator.open_id);
+      captureDirectedCardConsent({
+        optIn: rosterOptIn,
+        operatorOpenId,
+        inboundMsgId: `action:${token}`,
+      });
       return;
     }
     const action = parseFeishuQuestionActionPayload(event.action.value);

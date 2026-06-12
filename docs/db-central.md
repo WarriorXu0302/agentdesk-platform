@@ -284,7 +284,68 @@ CREATE TABLE chat_sdk_lists (
 );
 ```
 
-### 1.14 `schema_version`
+### 1.14 Roster directed-message tables (ADR-0023)
+
+Opt-in "agent privately messages a consented participant by slot" surface. All three are central-v2.db, **host-single-writer** — v2.db is never mounted into a container, so the agent runner has no handle to grant/rate/audit state. Default OFF (per-agent-group `ALLOW_ROSTER_DM`).
+
+`dm_grants` — one row per `(scope, slot)` the participant explicitly consented to. Consent originates ONLY from a channel-ingress action (a p2p DM, or a member-scoped directed card), never from an a2a origin. The delivery gate reverse-looks-up by `(scope_id, slot_label)` and **overwrites** whatever `channel_type/platform_id` the container wrote.
+
+```sql
+CREATE TABLE dm_grants (
+  id                     TEXT PRIMARY KEY,
+  scope_id               TEXT NOT NULL,      -- per-scope unguessable key = root_session_id ?? session.id
+  agent_group_id         TEXT NOT NULL,
+  slot_label             TEXT NOT NULL,
+  participant_open_id    TEXT NOT NULL,      -- ou_* only; union_id/user_id/chat_id rejected at consent time
+  dm_platform_id         TEXT NOT NULL,      -- feishu:p2p:ou_* (authoritative target)
+  channel_type           TEXT NOT NULL DEFAULT 'feishu',
+  consent_source         TEXT NOT NULL,      -- 'p2p-ingress' | 'directed-card'
+  consent_inbound_msg_id TEXT NOT NULL,      -- anchors consent to the exact inbound event
+  consent_origin_user_id TEXT,
+  created_at             TEXT NOT NULL,
+  expires_at             TEXT,
+  revoked_at             TEXT,
+  max_sends              INTEGER NOT NULL DEFAULT 0,   -- 0 = no cap; auto-revokes when sends_used reaches this
+  sends_used             INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(scope_id, slot_label),               -- one participant per slot per scope
+  UNIQUE(scope_id, participant_open_id)       -- a participant occupies at most one slot per scope
+);
+```
+
+`dm_rate_ledger` — persisted multi-key tumbling-window counters (grant / scope / participant / deploy). Survives host restarts so the rate limit can't be reset by bouncing the process.
+
+```sql
+CREATE TABLE dm_rate_ledger (
+  key          TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  count        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);
+```
+
+`dm_audit` — one row per roster-DM delivery decision (delivered AND rejected), the compliance paper trail for this surface (analogue of `gateway_audit`).
+
+```sql
+CREATE TABLE dm_audit (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at         TEXT NOT NULL,
+  scope_id            TEXT NOT NULL,
+  agent_group_id      TEXT,
+  session_id          TEXT,
+  slot_label          TEXT,
+  grant_id            TEXT,
+  participant_open_id TEXT,
+  dm_platform_id      TEXT,
+  message_out_id      TEXT,
+  decision            TEXT NOT NULL,          -- 'delivered' | 'rejected'
+  reason              TEXT
+);
+```
+
+- **Readers/Writers:** `src/db/dm-grants.ts`, `src/db/dm-audit.ts`; delivery gate in `src/delivery.ts` (`deliverRosterMessage`); consent capture in `src/channels/feishu/roster-consent.ts`.
+- **Note:** the local tables are a PoC transitional state. Authorization is slated to descend into the backend gateway (`gateway.authorizeDm`) on the path to production — see ADR-0023 Trade-offs / Open Issues.
+
+### 1.15 `schema_version`
 
 Migration ledger, written by the migration runner (§2).
 
