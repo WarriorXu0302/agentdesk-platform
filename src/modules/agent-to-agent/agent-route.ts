@@ -28,10 +28,11 @@ import { getInboundSourceSessionId, getMostRecentPeerSourceSessionId } from '../
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
+import { a2aOriginRejectedTotal } from '../../metrics.js';
 import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { hasDestination } from './db/agent-destinations.js';
-import { resolveOriginUserId } from './origin-user.js';
+import { collectLegitimateOrigins, resolveOriginUserId } from './origin-user.js';
 
 export { isSafeAttachmentName };
 
@@ -136,6 +137,12 @@ export interface RoutableAgentMessage {
    * chat" may already belong to a different user by the time delivery
    * processes this row. Null on older containers that predate the column,
    * in which case we fall back to the source-side lookup.
+   *
+   * ⚠ Container-written and therefore UNTRUSTED. This value lives in the
+   * source session's outbound.db, which a compromised/prompt-injected agent
+   * can write arbitrarily. It is honored only after host-side
+   * cross-validation against the source session's legitimate identity set
+   * (see resolveOriginUserId block in routeAgentMessage + ADR-0017).
    */
   origin_user_id?: string | null;
 }
@@ -254,24 +261,50 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   const forwardedContent = forwardFileAttachments(msg, a2aMsgId, session, targetAgentGroupId, targetSession.id);
 
   // Propagate the origin user so the worker can attribute ERP calls to the
-  // real employee. Priority:
+  // real employee. The container's self-reported value (msg.origin_user_id)
+  // lives in the source session's outbound.db — container-written and NOT
+  // trusted (ADR-0017). A prompt-injected agent can stamp an arbitrary
+  // victim id there. We therefore cross-validate against the source
+  // session's inbound.db (host-written, trusted) before honoring it. Both
+  // the validation set and the fallback lookup read the same DB, so it is
+  // opened once.
+  //
+  // Priority:
   //   1. msg.origin_user_id — stamped by the container at emit time
-  //      (container/agent-runner/src/mcp-tools/core.ts). This is the only
-  //      source that captures "whose turn was running when this delegation
-  //      was produced" — the source session's most-recent-chat can already
-  //      belong to a different user by the time delivery processes this row.
-  //   2. resolveOriginUserId(sourceInboundDb) — legacy fallback for older
-  //      containers that predate the column. Degrades to the "most recent
-  //      chat" heuristic described in origin-user.ts.
+  //      (container/agent-runner/src/mcp-tools/core.ts), accepted ONLY if it
+  //      is a member of the source session's legitimate identity set (i.e.
+  //      that user actually appeared in this session). This captures "whose
+  //      turn was running when this delegation was produced" — the source
+  //      session's most-recent-chat can already belong to a different user
+  //      by the time delivery processes this row. A claim that fails
+  //      validation is treated as forged: dropped, counted, and we fall
+  //      through to (2).
+  //   2. resolveOriginUserId(sourceInboundDb) — host-side lookup of the
+  //      session's most recent real chat (trusted). Also the path for older
+  //      containers that predate the column.
   //   3. session.owner_user_id — last resort for per-user-pinned sessions.
-  let originUserId: string | null = msg.origin_user_id ?? null;
-  if (!originUserId) {
-    const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
-    try {
-      originUserId = resolveOriginUserId(srcDbForOrigin);
-    } finally {
-      srcDbForOrigin.close();
+  let originUserId: string | null = null;
+  const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
+  try {
+    const claimed = msg.origin_user_id ?? null;
+    if (claimed) {
+      const legitimate = collectLegitimateOrigins(srcDbForOrigin);
+      if (legitimate.has(claimed)) {
+        originUserId = claimed;
+      } else {
+        a2aOriginRejectedTotal.inc({ source_agent_group: session.agent_group_id });
+        log.warn('agent-route: rejecting container-claimed origin_user_id not in source session identity set', {
+          from: session.agent_group_id,
+          sourceSession: session.id,
+          claimedOriginUserId: claimed,
+        });
+      }
     }
+    if (!originUserId) {
+      originUserId = resolveOriginUserId(srcDbForOrigin);
+    }
+  } finally {
+    srcDbForOrigin.close();
   }
   if (!originUserId) originUserId = session.owner_user_id ?? null;
 

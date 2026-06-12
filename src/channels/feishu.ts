@@ -83,6 +83,20 @@ export {
   signFeishuBody,
 } from './feishu/primitives.js';
 
+/**
+ * Decide whether a card-action operator may act on a card.
+ *
+ * Fail-closed: when a card is scoped to a specific user (`expectedUserId`
+ * set), the operator must be present and exactly equal. An empty/missing
+ * `operatorUserId` means the callback carried no verifiable identity, so we
+ * deny — never short-circuit the wrong-user check on a missing operator.
+ * Unscoped cards (`expectedUserId` empty) remain open.
+ */
+export function cardActionOperatorAllowed(expectedUserId: string | undefined, operatorUserId: string): boolean {
+  if (!expectedUserId) return true;
+  return operatorUserId !== '' && operatorUserId === expectedUserId;
+}
+
 function readEnvConfig(): FeishuConfig | null {
   const dotenv = readEnvFile([
     'FEISHU_APP_ID',
@@ -538,11 +552,15 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
       readString(event.operator.user_id) ||
       readString(event.operator.union_id) ||
       '';
-    if (action.expectedUserId && operatorUserId && action.expectedUserId !== operatorUserId) {
-      log.warn('Feishu card action rejected: wrong user', {
+    if (!cardActionOperatorAllowed(action.expectedUserId, operatorUserId)) {
+      // Fail closed: a card scoped to a specific user requires a confirmed,
+      // matching operator. A missing/empty operatorUserId means we cannot
+      // verify who acted, so we reject rather than let an unknown caller
+      // answer another user's approval card.
+      log.warn('Feishu card action rejected: operator identity unconfirmed or mismatched', {
         token,
         expectedUserId: action.expectedUserId,
-        operatorUserId,
+        operatorUserId: operatorUserId || null,
       });
       return;
     }

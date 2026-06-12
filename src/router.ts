@@ -33,7 +33,7 @@ import {
 } from './db/messaging-groups.js';
 import { findSessionByAgentGroup, findSessionForAgent, findSessionForAgentOwner, getSession } from './db/sessions.js';
 import { maybeAutowireEnterpriseFrontdesk } from './enterprise-autowire.js';
-import { inboundTotal, startTimer } from './metrics.js';
+import { engagePatternInvalidTotal, inboundTotal, startTimer } from './metrics.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { maybeStartProgressStatus, markProgressStatusFailed } from './modules/progress-status/index.js';
 import { log } from './log.js';
@@ -447,9 +447,17 @@ function evaluateEngage(
       if (pat === '.') return true;
       try {
         return new RegExp(pat).test(text);
-      } catch {
-        // Bad regex: fail open so admin sees the agent responding + can fix.
-        return true;
+      } catch (err) {
+        // Bad regex: fail closed so a broken pattern can't make this agent
+        // hijack every message in the channel. The agent goes silent and the
+        // metric/log surfaces the misconfiguration for an operator to fix.
+        engagePatternInvalidTotal.inc({ agent_group: agent.agent_group_id });
+        log.warn('engage_pattern failed to compile; agent is silent until fixed', {
+          agentGroupId: agent.agent_group_id,
+          pattern: pat,
+          err,
+        });
+        return false;
       }
     }
     case 'mention':

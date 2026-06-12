@@ -741,6 +741,33 @@ describe('router', () => {
     expect(findSession('mg-1', null)).toBeUndefined();
   });
 
+  it('fails closed (no engage) and counts the metric when engage_pattern is an invalid regex', async () => {
+    const { routeInbound } = await import('./router.js');
+    const { wakeContainer } = await import('./container-runner.js');
+    const { engagePatternInvalidTotal } = await import('./metrics.js');
+    (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
+    engagePatternInvalidTotal.reset();
+
+    const { updateMessagingGroupAgent } = await import('./db/messaging-groups.js');
+    // Unbalanced group → RegExp ctor throws. Previously this failed open and
+    // let the agent hijack every message; now it must go silent.
+    updateMessagingGroupAgent('mga-1', { engage_pattern: '(' });
+
+    await routeInbound({
+      channelType: 'discord',
+      platformId: 'chan-123',
+      threadId: null,
+      message: { id: 'msg-badre', kind: 'chat', content: JSON.stringify({ text: 'anything' }), timestamp: now() },
+    });
+
+    expect(wakeContainer).not.toHaveBeenCalled();
+    expect(findSession('mg-1', null)).toBeUndefined();
+
+    const samples = await engagePatternInvalidTotal.get();
+    const sample = samples.values.find((v) => v.labels.agent_group === 'ag-1');
+    expect(sample?.value).toBe(1);
+  });
+
   it('creates isolated sessions per sender when session_mode=per-user', async () => {
     const { routeInbound } = await import('./router.js');
     const { getSessionsByAgentGroup } = await import('./db/sessions.js');

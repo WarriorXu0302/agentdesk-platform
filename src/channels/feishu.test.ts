@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  cardActionOperatorAllowed,
   decryptFeishuPayload,
   normalizeFeishuEventMode,
   normalizeFeishuPlatformId,
@@ -140,5 +141,26 @@ describe('parseFeishuQuestionActionPayload', () => {
         selectedOption: 'approve',
       }),
     ).toBeNull();
+  });
+});
+
+describe('cardActionOperatorAllowed (fail-closed wrong-user gate, ADR-0019)', () => {
+  it('allows the exact expected user', () => {
+    expect(cardActionOperatorAllowed('ou_user', 'ou_user')).toBe(true);
+  });
+
+  it('rejects a different operator on a user-scoped card', () => {
+    expect(cardActionOperatorAllowed('ou_user', 'ou_other')).toBe(false);
+  });
+
+  it('rejects when the operator identity is missing on a user-scoped card', () => {
+    // The old short-circuit let an empty operatorUserId skip the check; this
+    // is now treated as "identity unconfirmed" and denied.
+    expect(cardActionOperatorAllowed('ou_user', '')).toBe(false);
+  });
+
+  it('allows unscoped cards regardless of operator', () => {
+    expect(cardActionOperatorAllowed(undefined, '')).toBe(true);
+    expect(cardActionOperatorAllowed(undefined, 'ou_anyone')).toBe(true);
   });
 });

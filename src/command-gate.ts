@@ -8,8 +8,27 @@
  * - Normal messages: pass through unchanged
  */
 import { getDb, hasTable } from './db/connection.js';
+import { readEnvFile } from './env.js';
+import { log } from './log.js';
 
 export type GateResult = { action: 'pass' } | { action: 'filter' } | { action: 'deny'; command: string };
+
+// Escape hatch for single-machine / dev setups that run without the
+// permissions module (no user_roles table). When unset, a missing table
+// fails closed — admin commands are denied. Cached so the .env read and the
+// one-time warning happen at most once per process.
+let allowAdminWithoutRoles: boolean | undefined;
+function adminWithoutRolesAllowed(): boolean {
+  if (allowAdminWithoutRoles === undefined) {
+    allowAdminWithoutRoles = readEnvFile(['ALLOW_ADMIN_WITHOUT_ROLES']).ALLOW_ADMIN_WITHOUT_ROLES === 'true';
+    if (allowAdminWithoutRoles) {
+      log.warn(
+        'ALLOW_ADMIN_WITHOUT_ROLES=true: admin commands (/clear, /compact, ...) are open to every sender because no permissions module is installed. Do not use this in a shared deployment.',
+      );
+    }
+  }
+  return allowAdminWithoutRoles;
+}
 
 const FILTERED_COMMANDS = new Set(['/help', '/login', '/logout', '/doctor', '/config', '/remote-control']);
 const ADMIN_COMMANDS = new Set(['/clear', '/compact', '/context', '/cost', '/files']);
@@ -48,7 +67,10 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
 
 function isAdmin(userId: string | null, agentGroupId: string): boolean {
   if (!userId) return false;
-  if (!hasTable(getDb(), 'user_roles')) return true; // no permissions module = allow all
+  // Fail closed when the permissions module isn't installed: with no roles
+  // table we cannot prove the sender is an admin, so deny by default. The
+  // ALLOW_ADMIN_WITHOUT_ROLES escape hatch restores allow-all for dev.
+  if (!hasTable(getDb(), 'user_roles')) return adminWithoutRolesAllowed();
   const db = getDb();
   const row = db
     .prepare(

@@ -189,6 +189,31 @@ export const providerErrorsTotal = new client.Counter({
   registers: [registry],
 });
 
+export const a2aOriginRejectedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_a2a_origin_rejected_total`,
+  help: 'A2a messages whose container-claimed origin_user_id failed host-side cross-validation',
+  // Alert on non-zero rate: either a prompt-injected agent attempted
+  // impersonation, or a legitimate emit path is stamping identities the
+  // host cannot verify (both need investigation). See ADR-0017.
+  labelNames: ['source_agent_group'] as const,
+  registers: [registry],
+});
+
+export const engagePatternInvalidTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_engage_pattern_invalid_total`,
+  help: 'Inbound messages skipped because an agent engage_pattern failed to compile',
+  // Non-zero means an agent wiring has a broken regex and is now silent
+  // (fail-closed) — fix the pattern to restore the agent.
+  labelNames: ['agent_group'] as const,
+  registers: [registry],
+});
+
+export const gatewayUnsignedGroups = new client.Gauge({
+  name: `${METRIC_PREFIX}_gateway_unsigned_groups`,
+  help: 'Agent groups with a backend gateway configured but no HMAC signing key',
+  registers: [registry],
+});
+
 export function renderMetrics(): Promise<string> {
   return registry.metrics();
 }

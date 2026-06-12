@@ -16,10 +16,14 @@
  *     --timeout-ms 20000 \
  *     --memory-mode gateway \
  *     --header x-tenant=a \
- *     --header x-env=prod
+ *     --header x-env=prod \
+ *     --signing-key "$GATEWAY_SIGNING_KEY"
  *
  * The base URL falls back to `process.env.GATEWAY_BASE_URL` (or the legacy
- * `ERP_GATEWAY_BASE_URL`) when --base-url is omitted.
+ * `ERP_GATEWAY_BASE_URL`) when --base-url is omitted. The signing key falls
+ * back to `process.env.GATEWAY_SIGNING_KEY` so it need not appear in shell
+ * history; pass `--signing-headers a,b,c` only if the gateway mandates
+ * non-default header names (timestamp,nonce,signature in that order).
  *
  * By default this targets only the template frontdesk. Pass `--folders` to
  * target your own desks/workers.
@@ -34,12 +38,17 @@ import { updateContainerConfig } from '../src/container-config.js';
 
 const DEFAULT_FOLDERS = [DEFAULT_FRONTDESK_FOLDER];
 
+/** Order in which --signing-headers CSV slots map onto the three names. */
+const SIGNING_HEADER_SLOTS = ['timestamp', 'nonce', 'signature'] as const;
+
 interface Args {
   baseUrl: string;
   folders: string[];
   timeoutMs: number | null;
   headers: Record<string, string>;
   memoryMode: 'workspace' | 'gateway';
+  signingKey: string | null;
+  signingHeaders: { timestamp: string; nonce: string; signature: string } | null;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -48,6 +57,8 @@ function parseArgs(argv: string[]): Args {
   let timeoutMs: number | null = null;
   const headers: Record<string, string> = {};
   let memoryMode: Args['memoryMode'] = 'gateway';
+  let signingKey: string | null = null;
+  let signingHeaders: Args['signingHeaders'] = null;
 
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
@@ -88,6 +99,28 @@ function parseArgs(argv: string[]): Args {
         memoryMode = val;
         i++;
         break;
+      case '--signing-key': {
+        const raw = val?.trim() || '';
+        if (!raw) fatal('Invalid --signing-key: empty value');
+        signingKey = raw;
+        i++;
+        break;
+      }
+      case '--signing-headers': {
+        // Three comma-separated header names in timestamp,nonce,signature
+        // order. Only needed when the gateway mandates non-default names —
+        // omit to keep the brand-namespaced defaults (x-<ns>-timestamp …).
+        const parts = (val ?? '')
+          .split(',')
+          .map((part) => part.trim())
+          .filter(Boolean);
+        if (parts.length !== SIGNING_HEADER_SLOTS.length) {
+          fatal(`Invalid --signing-headers: ${val} (expected 3 names: timestamp,nonce,signature)`);
+        }
+        signingHeaders = { timestamp: parts[0], nonce: parts[1], signature: parts[2] };
+        i++;
+        break;
+      }
       default:
         if (key.startsWith('--')) fatal(`Unknown arg: ${key}`);
         break;
@@ -103,10 +136,24 @@ function parseArgs(argv: string[]): Args {
     }
   }
 
+  if (!signingKey) {
+    const fromEnv = process.env.GATEWAY_SIGNING_KEY?.trim();
+    if (fromEnv) signingKey = fromEnv;
+  }
+  if (signingHeaders && !signingKey) {
+    fatal('--signing-headers requires --signing-key (or GATEWAY_SIGNING_KEY).');
+  }
+
   const folders = (foldersRaw ? foldersRaw.split(',') : DEFAULT_FOLDERS).map((value) => value.trim()).filter(Boolean);
   if (folders.length === 0) fatal('No target folders resolved.');
 
-  return { baseUrl, folders, timeoutMs, headers, memoryMode };
+  return { baseUrl, folders, timeoutMs, headers, memoryMode, signingKey, signingHeaders };
+}
+
+/** Mask a signing key for console output — never print it in the clear. */
+function maskSigningKey(key: string | null): string {
+  if (!key) return 'not set';
+  return `set (${key.slice(0, 4)}…, ${key.length} chars)`;
 }
 
 function fatal(message: string): never {
@@ -134,6 +181,11 @@ export async function run(argv: string[]): Promise<void> {
         baseUrl: args.baseUrl,
         timeoutMs: args.timeoutMs ?? config.backendGateway?.timeoutMs,
         defaultHeaders: hasHeaders ? mergedHeaders : undefined,
+        // Leave any previously-set signingKey/signingHeaders intact when the
+        // run doesn't pass new ones — clearing them silently would be a
+        // surprise downgrade from signed to unsigned.
+        signingKey: args.signingKey ?? config.backendGateway?.signingKey,
+        signingHeaders: args.signingHeaders ?? config.backendGateway?.signingHeaders,
       };
       config.memoryMode = args.memoryMode;
       config.a2aSessionMode = 'root-session';
@@ -148,6 +200,15 @@ export async function run(argv: string[]): Promise<void> {
   console.log(`  folders: ${args.folders.join(', ')}`);
   console.log(`  memoryMode: ${args.memoryMode}`);
   console.log('  a2aSessionMode: root-session');
+  console.log(`  signingKey: ${maskSigningKey(args.signingKey)}`);
+  if (args.signingHeaders) {
+    console.log(
+      `  signingHeaders: ${args.signingHeaders.timestamp}, ${args.signingHeaders.nonce}, ${args.signingHeaders.signature}`,
+    );
+  }
+  if (!args.signingKey) {
+    console.log('  (gateway requests will be UNSIGNED — pass --signing-key once your gateway can verify HMAC.)');
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

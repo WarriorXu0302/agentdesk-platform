@@ -51,16 +51,24 @@ export function rowIdentity(row: MessageInRow): RequestIdentity {
     };
   }
 
+  // An a2a row (channel_type='agent') carries identity ONLY in the
+  // host-written origin_user_id column checked above. Its content is
+  // forwarded agent output and may carry a forged senderId; deriving identity
+  // from it here would let an honest worker re-assert a fabricated origin on
+  // its own outbound hop (source='session'), which the host then accepts.
+  // Treat agent rows with no origin column as identity-less. See ADR-0017.
   let userId: string | null = null;
-  try {
-    const parsed = JSON.parse(row.content ?? '{}') as Record<string, unknown>;
-    const rawSenderId = typeof parsed.senderId === 'string' ? parsed.senderId.trim() : '';
-    if (rawSenderId) {
-      userId =
-        rawSenderId.includes(':') || !row.channel_type ? rawSenderId : `${row.channel_type}:${rawSenderId}`;
+  if (row.channel_type !== 'agent') {
+    try {
+      const parsed = JSON.parse(row.content ?? '{}') as Record<string, unknown>;
+      const rawSenderId = typeof parsed.senderId === 'string' ? parsed.senderId.trim() : '';
+      if (rawSenderId) {
+        userId =
+          rawSenderId.includes(':') || !row.channel_type ? rawSenderId : `${row.channel_type}:${rawSenderId}`;
+      }
+    } catch {
+      // content not JSON — leave userId null
     }
-  } catch {
-    // content not JSON — leave userId null
   }
 
   return {

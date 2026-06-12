@@ -141,8 +141,40 @@ Header names can be overridden per group via
 `backendGateway.signingHeaders.{timestamp,nonce,signature}` if the
 gateway you're fronting has mandatory naming conventions.
 
-Signing is opt-in — leaving `signingKey` unset skips the headers entirely
-(so existing deployments don't break on upgrade). Turn it on once your
+### Enabling signing
+
+Don't hand-edit `container.json`. Use the configure script, which writes the
+key into each target group and masks it in its output:
+
+```bash
+pnpm exec tsx scripts/configure-enterprise-gateway.ts \
+  --base-url https://gateway.internal/api/agent \
+  --folders my-frontdesk,my-finance-worker \
+  --signing-key "$GATEWAY_SIGNING_KEY"
+```
+
+- `--signing-key` falls back to the `GATEWAY_SIGNING_KEY` environment variable
+  so the key need not appear in shell history.
+- `--signing-headers timestamp,nonce,signature` (optional) overrides the three
+  header names in that order; omit it to keep the brand-namespaced defaults.
+- Re-running the script **without** `--signing-key` preserves an existing key —
+  it never silently downgrades a signed group back to unsigned.
+
+### Signing is opt-in (but observed)
+
+Leaving `signingKey` unset skips the headers entirely, so existing deployments
+don't break on upgrade. The trade-off is that unsigned gateway requests can be
+forged by anything that can reach the gateway baseUrl. To keep that gap from
+staying silent, the host runs a startup scan
+(`src/gateway-signing-check.ts`): it reports the
+`<namespace>_gateway_unsigned_groups` gauge and logs a warning listing any
+group that has a `baseUrl` but no `signingKey`. Alert on that gauge being
+`> 0` and remediate with the script above.
+
+The platform deliberately does **not** enforce signing or store nonces — see
+ADR-0018 for why (backward compatibility + gateways often sit on a trusted
+network). Replay protection (nonce cache + clock-skew window) stays on the
+gateway side, per the companion policies above. Turn signing on once your
 gateway is ready to verify.
 
 ## Host-side audit trail (gateway_audit)

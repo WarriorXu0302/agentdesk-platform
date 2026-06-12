@@ -135,4 +135,75 @@ describe('configure-enterprise-gateway', () => {
     const after = readContainerConfig(FRONTDESK_FOLDER);
     expect(after.backendGateway?.defaultHeaders).toEqual({ 'x-tenant': 'new' });
   });
+
+  it('writes --signing-key into the gateway config and never prints it in the clear', async () => {
+    const secret = 'super-secret-signing-key-1234567890';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let printed = '';
+    try {
+      await run([
+        '--base-url',
+        'https://gateway.internal/api/agent',
+        '--folders',
+        FRONTDESK_FOLDER,
+        '--signing-key',
+        secret,
+      ]);
+      printed = logSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+    expect(frontdesk.backendGateway?.signingKey).toBe(secret);
+
+    expect(printed).not.toContain(secret);
+    // Masked form shows it's set + a short prefix, not the full key.
+    expect(printed).toContain('signingKey: set (supe');
+  });
+
+  it('maps --signing-headers CSV onto timestamp/nonce/signature names', async () => {
+    await run([
+      '--base-url',
+      'https://gateway.internal/api/agent',
+      '--folders',
+      FRONTDESK_FOLDER,
+      '--signing-key',
+      'k',
+      '--signing-headers',
+      'x-ts,x-nonce,x-sig',
+    ]);
+
+    const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+    expect(frontdesk.backendGateway?.signingHeaders).toEqual({
+      timestamp: 'x-ts',
+      nonce: 'x-nonce',
+      signature: 'x-sig',
+    });
+  });
+
+  it('preserves an existing signingKey when a later run omits --signing-key', async () => {
+    const { writeContainerConfig } = await import('../src/container-config.js');
+    const seeded = readContainerConfig(FRONTDESK_FOLDER);
+    seeded.backendGateway = { baseUrl: '${GATEWAY_BASE_URL}', signingKey: 'kept-key' };
+    writeContainerConfig(FRONTDESK_FOLDER, seeded);
+
+    await run(['--base-url', 'https://gateway.internal/api/agent', '--folders', FRONTDESK_FOLDER]);
+
+    const after = readContainerConfig(FRONTDESK_FOLDER);
+    expect(after.backendGateway?.signingKey).toBe('kept-key');
+  });
+
+  it('falls back to GATEWAY_SIGNING_KEY from the environment', async () => {
+    const prev = process.env.GATEWAY_SIGNING_KEY;
+    process.env.GATEWAY_SIGNING_KEY = 'env-key';
+    try {
+      await run(['--base-url', 'https://gateway.internal/api/agent', '--folders', FRONTDESK_FOLDER]);
+      const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+      expect(frontdesk.backendGateway?.signingKey).toBe('env-key');
+    } finally {
+      if (prev === undefined) delete process.env.GATEWAY_SIGNING_KEY;
+      else process.env.GATEWAY_SIGNING_KEY = prev;
+    }
+  });
 });
