@@ -56,11 +56,13 @@
  * The /metrics endpoint is attached to the shared webhook server so it
  * lives at the same port as adapters' callbacks.
  */
+import crypto from 'crypto';
 import http from 'http';
 
 import client from 'prom-client';
 
 import { METRIC_PREFIX } from './branding.js';
+import { readEnvFile } from './env.js';
 import { log } from './log.js';
 
 const registry = new client.Registry();
@@ -214,6 +216,16 @@ export const gatewayUnsignedGroups = new client.Gauge({
   registers: [registry],
 });
 
+export const webhookRejectedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_webhook_rejected_total`,
+  help: 'Ingress requests rejected by the shared webhook server before handler dispatch',
+  // `reason`:
+  //   - `body_too_large`  : request body exceeded WEBHOOK_MAX_BODY_BYTES (413).
+  //   - `unauthorized`    : /metrics scrape missing/mismatched bearer token (401).
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export function renderMetrics(): Promise<string> {
   return registry.metrics();
 }
@@ -231,6 +243,37 @@ export function startTimer(phase: string): () => void {
 }
 
 /**
+ * Optional bearer token guarding /metrics. Resolves process env → `.env` →
+ * unset, matching the rest of the host's config-reading convention. When
+ * unset, /metrics stays public (backward compatible) — production should set
+ * METRICS_AUTH_TOKEN or isolate the endpoint behind a reverse proxy. Read once
+ * per request (cheap; the endpoint is scrape-rate, not message-rate) so an
+ * operator rotating the token doesn't need a host restart for `.env` changes.
+ */
+function resolveMetricsAuthToken(): string | undefined {
+  const fromEnv = process.env.METRICS_AUTH_TOKEN;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const dotenv = readEnvFile(['METRICS_AUTH_TOKEN']);
+  const fromFile = dotenv.METRICS_AUTH_TOKEN;
+  return fromFile && fromFile.trim() ? fromFile.trim() : undefined;
+}
+
+/**
+ * Constant-time bearer check. The scheme ("Bearer") is matched
+ * case-insensitively per RFC 6750; the token is compared with
+ * `timingSafeEqual` (matching the Feishu signature convention in
+ * src/channels/feishu.ts) so it leaks no timing side-channel.
+ */
+function bearerMatches(authHeader: string | undefined, token: string): boolean {
+  if (!authHeader) return false;
+  const match = /^Bearer[ ]+(.+)$/i.exec(authHeader.trim());
+  if (!match) return false;
+  const provided = Buffer.from(match[1]);
+  const expected = Buffer.from(token);
+  return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+}
+
+/**
  * Attach GET /metrics to the shared webhook server. Separate module so the
  * webhook server doesn't depend on prom-client directly.
  */
@@ -238,6 +281,13 @@ export async function handleMetricsRequest(req: http.IncomingMessage, res: http.
   if (req.method !== 'GET') {
     res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Method Not Allowed');
+    return;
+  }
+  const token = resolveMetricsAuthToken();
+  if (token && !bearerMatches(req.headers.authorization, token)) {
+    webhookRejectedTotal.labels('unauthorized').inc();
+    res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Unauthorized');
     return;
   }
   try {

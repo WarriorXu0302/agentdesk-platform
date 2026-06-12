@@ -12,5 +12,37 @@ services:
     volumes:
       - agentdesk_phoenix_sim_data:/mnt/data
 
+  # Same Prometheus + Alertmanager as prod, reusing the same config files, so
+  # the metrics→alert loop can be smoke-tested without standing up Postgres or
+  # Grafana. Scrape target is still host.docker.internal:3000 — run the host on
+  # the same machine to exercise it.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    depends_on:
+      - alertmanager
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9091}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - agentdesk_prometheus_sim_data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - agentdesk_alertmanager_sim_data:/alertmanager
+
 volumes:
   agentdesk_phoenix_sim_data:
+  agentdesk_prometheus_sim_data:
+  agentdesk_alertmanager_sim_data:

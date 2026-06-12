@@ -24,11 +24,41 @@ services:
       PHOENIX_ENABLE_PROMETHEUS: "true"
       PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
 
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    depends_on:
+      - alertmanager
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9091}:9090"
+    # Scrapes the host process's /metrics across the Docker host boundary.
+    # On Linux, host.docker.internal needs an explicit host-gateway mapping;
+    # Docker Desktop (macOS/Windows) resolves it automatically.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - agentdesk_prometheus_data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - agentdesk_alertmanager_data:/alertmanager
+
   grafana:
     image: grafana/grafana:11.0.0
     depends_on:
       - postgres
       - phoenix
+      - prometheus
     ports:
       - "${GRAFANA_HOST_PORT:-3001}:3000"
     environment:
@@ -47,3 +77,5 @@ services:
 volumes:
   agentdesk_phoenix_postgres_data:
   agentdesk_grafana_data:
+  agentdesk_prometheus_data:
+  agentdesk_alertmanager_data:

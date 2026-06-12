@@ -16,9 +16,15 @@ datasources:
       timescaledb: false
     editable: false
 
-  - name: Phoenix Metrics
-    uid: phoenix-metrics
+  # Prometheus datasource. Points at the in-stack Prometheus server (which
+  # scrapes the host's /metrics and evaluates alerts), NOT at Phoenix's
+  # internal :9090 — that endpoint is a scrape source, not a queryable
+  # Prometheus API, so the old `http://phoenix:9090` config could never serve
+  # PromQL. Phoenix Postgres above stays for trace correlation.
+  - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
-    url: http://phoenix:9090
+    url: http://prometheus:9090
+    isDefault: true
     editable: false

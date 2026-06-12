@@ -1,0 +1,142 @@
+# Prometheus alerting rules for the agent platform.
+#
+# These are the carrier for the alert thresholds documented in
+# docs/RUNBOOK.md §2 — RUNBOOK is the human-readable rationale, this file is
+# what Prometheus actually evaluates. Keep the two in sync.
+#
+# BRAND PREFIX: metric names use the default `agentdesk_` prefix (METRIC_PREFIX
+# in src/branding.ts, derived from BRAND_NAMESPACE). After a rebrand the host
+# emits `<new_namespace>_*` instead — replace every `agentdesk_` below to match,
+# or the rules silently never fire.
+
+groups:
+  - name: agentdesk-platform
+    rules:
+      # Inbound fully stopped: Feishu webhook down / service down / network.
+      - alert: AgentDeskInboundSilent
+        expr: rate(agentdesk_inbound_total{outcome="accepted"}[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: No inbound messages accepted for 10m
+          description: >-
+            agentdesk_inbound_total{outcome="accepted"} rate is flat zero.
+            Feishu webhook delivery, the host process, or the network is down.
+            See RUNBOOK §3.1.
+
+      # Route latency degraded: DB lock, disk IO, slow container startup.
+      - alert: AgentDeskRouteSlow
+        expr: histogram_quantile(0.95, rate(agentdesk_route_seconds_bucket{phase="route"}[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Route p95 latency above 1s
+          description: >-
+            routeInbound p95 exceeded 1s for 5m. Suspect central-DB lock
+            contention, disk IO, or back-pressure. See RUNBOOK §3.
+
+      # Wake latency degraded: slow Docker daemon, image problems.
+      - alert: AgentDeskWakeSlow
+        expr: histogram_quantile(0.95, rate(agentdesk_route_seconds_bucket{phase="wake"}[5m])) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container wake p95 latency above 5s
+          description: >-
+            wakeContainer p95 exceeded 5s for 5m. Docker daemon slow, image
+            pull/build issue, or host resource pressure. See RUNBOOK §3.2.
+
+      # Capacity saturated: MAX_CONCURRENT_CONTAINERS hit repeatedly.
+      - alert: AgentDeskCapacitySaturated
+        expr: rate(agentdesk_wake_rejected_total[10m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container wake requests being rejected (capacity)
+          description: >-
+            agentdesk_wake_rejected_total rate sustained above 0.5/s.
+            MAX_CONCURRENT_CONTAINERS is saturated. See RUNBOOK §3.2.
+
+      # Classification protocol failing: frontdesk LLM skipping classify_intent.
+      - alert: AgentDeskClassificationBypass
+        expr: rate(agentdesk_classification_bypass_total[15m]) > 0.1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Frontdesk classify_intent protocol being bypassed
+          description: >-
+            agentdesk_classification_bypass_total rate above 0.1/s for 30m.
+            Frontdesk is routing without a matching classify_intent call —
+            prompt drift or model regression. See RUNBOOK §3.3.
+
+      # Audit write failing: classification rows being dropped.
+      - alert: AgentDeskClassificationLogFailing
+        expr: rate(agentdesk_classification_log_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Classification log writes are failing
+          description: >-
+            agentdesk_classification_log_failures_total is non-zero. The
+            classification regression corpus is losing rows — investigate the
+            central-DB write path immediately. See RUNBOOK §3.3.
+
+      # Provider error rate: LLM gateway down / quota exhausted.
+      - alert: AgentDeskProviderErrors
+        expr: rate(agentdesk_provider_errors_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Container-provider error rate elevated
+          description: >-
+            agentdesk_provider_errors_total rate above 0.5/s for 5m. LLM
+            gateway down, quota exhausted, or provider auth broken.
+
+      # Container crash storm: image problem / system resources.
+      - alert: AgentDeskContainerCrashing
+        expr: rate(agentdesk_container_exits_total{outcome="crash"}[10m]) > 0.2
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Agent containers crash-looping
+          description: >-
+            agentdesk_container_exits_total{outcome="crash"} rate above 0.2/s
+            for 10m. Image regression, OOM, or host resource exhaustion.
+            See RUNBOOK §3.4.
+
+      # Delivery exhaustion: messages dead-lettered after retries (ADR-0016).
+      - alert: AgentDeskDeliveryPermanentFailures
+        expr: rate(agentdesk_delivery_permanent_failures_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbound messages being permanently dropped (DLQ)
+          description: >-
+            agentdesk_delivery_permanent_failures_total is non-zero. Outbound
+            messages exhausted their retry budget and sit in the session
+            delivered table with status='failed'. Inspect/requeue via
+            scripts/dlq.ts.
+
+      # Identity trust-chain alarm: container-claimed origin failed host-side
+      # cross-validation (ADR-0017). Any non-zero rate is security-relevant.
+      - alert: AgentDeskA2aOriginRejected
+        expr: rate(agentdesk_a2a_origin_rejected_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A2a origin_user_id failed host cross-validation
+          description: >-
+            agentdesk_a2a_origin_rejected_total is non-zero. Either a
+            prompt-injected agent attempted impersonation or a legitimate emit
+            path is stamping unverifiable identities. Both require
+            investigation. See ADR-0017.

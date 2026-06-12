@@ -706,3 +706,33 @@ export function stopDeliveryPolls(): void {
   activePolling = false;
   sweepPolling = false;
 }
+
+/**
+ * Wait for in-flight session drains to finish, or until `timeoutMs` elapses.
+ *
+ * Called during graceful shutdown AFTER the listener is stopped and the poll
+ * loops are flagged off, so no NEW drains can start while we wait. This
+ * shrinks (but does not eliminate) the at-least-once duplicate window from
+ * ADR-0016: a drain caught mid-flight may have already called
+ * adapter.deliver() successfully but not yet run markDelivered() — letting it
+ * finish persists the delivered row so a restart won't re-send. A hard SIGKILL
+ * (or a deliver() call that outlives timeoutMs) still leaves that window open,
+ * which is why delivery stays idempotent at the DB layer and at-least-once
+ * remains the contract.
+ *
+ * Resolves early once the set empties; otherwise resolves after the timeout
+ * (it does not reject — shutdown must proceed regardless).
+ */
+export async function drainInflightDeliveries(timeoutMs = 10_000): Promise<void> {
+  if (inflightDeliveries.size === 0) return;
+  log.info('Draining in-flight deliveries before shutdown', { inflight: inflightDeliveries.size, timeoutMs });
+  const deadline = Date.now() + timeoutMs;
+  while (inflightDeliveries.size > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (inflightDeliveries.size > 0) {
+    log.warn('Drain timed out with deliveries still in flight', { inflight: inflightDeliveries.size });
+  } else {
+    log.info('In-flight deliveries drained');
+  }
+}

@@ -1,0 +1,61 @@
+# Prometheus scrape + alerting config for the observability stack.
+#
+# Scrapes the host process's /metrics endpoint and evaluates the alert rules
+# in alerts.yml, forwarding firing alerts to Alertmanager.
+#
+# The host runs OUTSIDE this compose network (single Node process on the
+# machine), so we reach it via host.docker.internal:3000 (the default webhook
+# port). Prometheus does NOT expand ${ENV} inside this file, so the target is
+# written literally. If the host webhook port is not 3000, edit the target
+# below (or render this file from a template). The compose file maps
+# host.docker.internal to the host gateway so this resolves on Linux too.
+#
+# Metric names carry the brand prefix (default `agentdesk_`, derived from
+# BRAND_NAMESPACE via METRIC_PREFIX in src/branding.ts). The alert rules in
+# alerts.yml use the default prefix; after a rebrand, replace `agentdesk_`
+# there to match the new namespace.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: agentdesk-observability
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  # The host process exposes the platform metrics on the shared webhook port
+  # (GET /metrics). It is not in this compose network, so we scrape it across
+  # the Docker host boundary.
+  - job_name: agentdesk-host
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:3000
+        labels:
+          service: agentdesk-host
+    # IMPORTANT: if the host sets METRICS_AUTH_TOKEN (recommended for prod, see
+    # ADR-0020), /metrics returns 401 and this scrape silently collects NOTHING
+    # — the target shows up=1 but no series. You MUST uncomment the authorization
+    # block below and supply the matching token, OR isolate /metrics on loopback.
+    # Inject the token via env and uncomment the block below. Prometheus
+    # does NOT expand ${VAR} inside file values, so this is wired through the
+    # compose command flag --config.file with envsubst, or you mount a rendered
+    # file. Simplest path: keep /metrics unauthenticated on the loopback
+    # interface, or terminate auth at a sidecar. See README "Prometheus" section.
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/host_metrics_token
+
+  # Prometheus self-scrape — confirms the scraper itself is alive.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

@@ -12,9 +12,12 @@
 
 按顺序看，任一异常进入对应章节。
 
+本平台不附带 launchd / systemd 单元文件（host 是裸 Node 进程，由操作员自己的进程管理器拉起）。所以"进程活着"不要按服务名查，按 host 健康探针查。
+
 | 检查 | 命令 / Panel | 期望 |
 |---|---|---|
-| 进程活着 | `launchctl list \| grep agentdesk` 或 `systemctl --user status agentdesk` | running |
+| 进程活着 | `pgrep -f 'node .*dist/index.js' \|\| pgrep -f 'tsx .*src/index.ts'` 有 PID；再探 `curl -fsS localhost:3000/healthz` | 返回 PID + `/healthz` 200 |
+| 就绪态（DB / 容器 runtime 可用） | `curl -fsS localhost:3000/readyz` | 200 |
 | `/metrics` 返回 200 | `curl -s localhost:3000/metrics \| head -3` | `# HELP ...` |
 | 飞书入站速率 | `rate(agentdesk_inbound_total{outcome="accepted"}[5m])` | 与业务时段一致 |
 | 入站去重比例 | `rate(...{outcome="deduped"}) / rate(...{outcome="accepted"})` | < 5%（飞书重投正常） |
@@ -30,6 +33,10 @@
 ---
 
 ## 2. 告警阈值建议
+
+> 这些规则的**承载体**是 `infra/observability/prometheus/alerts.yml`，由本仓内的 Prometheus 容器加载、Alertmanager 寻呼（见 [ADR-0021](decisions/ADR-0021-metrics-alerting-loop.md)）。下面的 YAML 是同一份规则的人类可读副本 + 阈值理由；改阈值要两边一起改，`scripts/runbook-consistency.test.ts` 不校验告警 YAML，但 `pnpm obs:rules:check`（promtool）会校验 `alerts.yml` 语法。
+>
+> ⚠️ 指标前缀 `agentdesk_` 是默认品牌（`METRIC_PREFIX`，由 `BRAND_NAMESPACE` 派生）。rebrand 后 host 发的是 `<新 namespace>_*`，下面所有规则与 `alerts.yml` 里的 `agentdesk_` 都要相应替换，否则规则永远不触发。
 
 ```yaml
 # 入站完全停了：飞书 webhook 挂了 / 服务挂了 / 网络
@@ -89,56 +96,73 @@
 
 排查顺序：
 
+> 日志：host 把 info 写 stdout、warn/error 写 stderr（见 `src/log.ts`），**不写文件**。日志获取方式取决于你怎么拉起 host：
+> - 进程管理器（pm2 / supervisor / nohup 重定向）→ 看它的日志文件
+> - systemd 单元（如果你自己加了）→ `journalctl --user -u <你的单元名> -n 200`
+> - 前台 / tmux → 直接看终端
+> 下文用 `<host-logs>` 占位代表"你这套部署里 host stdout+stderr 的去处"。
+
 ```bash
-# 1. 最近 200 行 host 日志
-tail -200 logs/agentdesk.log
+# 1. 最近 200 行 host 日志（按你的进程管理器取；示例：pm2）
+#    pm2 logs agentdesk --lines 200    /    journalctl --user -u <unit> -n 200
+<host-logs> | tail -200
 
-# 2. 错误日志（delivery 失败 / crash-loop / warning）
-tail -200 logs/agentdesk.error.log
+# 2. 只看 error/warn（host 把它们写 stderr）
+<host-logs> 2>&1 | grep -E 'ERROR|WARN|FATAL' | tail -200
 
-# 3. 入站是否到达
-sqlite3 data/v2.db "select count(*), max(created_at) from inbound_dedup where created_at > datetime('now','-1 hour')"
+# 3. 入站是否到达（inbound_dedup 用 seen_at）
+sqlite3 data/v2.db "select count(*), max(seen_at) from inbound_dedup where seen_at > datetime('now','-1 hour')"
 
-# 4. 找到这个用户的活跃 session
+# 4. 找到这个用户的活跃 session（sessions 用 last_active）
 sqlite3 data/v2.db \
-  "select id, agent_group_id, owner_user_id, last_active_at, status
-   from sessions where owner_user_id = 'feishu:ou_xxx' order by last_active_at desc limit 5"
+  "select id, agent_group_id, owner_user_id, last_active, status
+   from sessions where owner_user_id = 'feishu:ou_xxx' order by last_active desc limit 5"
 
 # 5. 看 session 的 inbound.db 是否有未处理消息
 sqlite3 data/v2-sessions/<agent_group>/<session>/inbound.db \
   "select id, status, kind, tries, timestamp from messages_in order by timestamp desc limit 10"
 
-# 6. 看 outbound.db 是否有产出
+# 6. 看 outbound.db 是否有产出（messages_out 用 timestamp）
 sqlite3 data/v2-sessions/<agent_group>/<session>/outbound.db \
-  "select id, kind, status, created_at from messages_out order by created_at desc limit 10"
+  "select id, kind, in_reply_to, timestamp from messages_out order by timestamp desc limit 10"
 ```
 
 诊断决策树：
 
+出站投递状态不在 `messages_out`（容器写、无 status 列），而在 host 写的 `inbound.db.delivered` 表（`status` ∈ delivered/failed）。下表"messages_out status" 的判断实际查 `delivered`。
+
 | 症状 | 含义 | 处置 |
 |---|---|---|
 | `inbound_dedup` 没新行 | 飞书 webhook 没到 | 看飞书开放平台事件投递日志 + WEBHOOK_PORT 是否暴露 |
-| inbound_dedup 有，session.last_active_at 不更新 | 路由失败 | 看 `agentdesk.error.log` 的 routeInbound 错误 |
+| inbound_dedup 有，session.last_active 不更新 | 路由失败 | 在 host stderr 里 grep `routeInbound` 错误 |
 | messages_in 有 status=pending 但 outbound 没新行 | 容器没起来 / 死循环 | 看 `docker ps`，看 host-sweep 是否标 stuck |
-| messages_out 有 status=pending | delivery 失败 | 看 `agentdesk.error.log` 的 deliver 错误 + 飞书 SDK 错误 |
-| messages_out delivered 了，用户没看到 | 飞书发送了但用户视角没收到 | 飞书侧面问题（消息撤回 / 群退出 / 卡片渲染失败） |
+| `delivered.status='failed'`（或 messages_out 有行但 delivered 无对应行） | delivery 失败 | 在 host stderr 里 grep `deliver` 错误 + 飞书 SDK 错误 |
+| `delivered.status='delivered'` 了，用户没看到 | 飞书发送了但用户视角没收到 | 飞书侧面问题（消息撤回 / 群退出 / 卡片渲染失败） |
 
 ### 3.2 `wake_rejected_total{reason="capacity"}` 持续非 0
 
 **含义**：`MAX_CONCURRENT_CONTAINERS` 已饱和，host-sweep 在重试。
 
+> 镜像名不是固定串。host 派生为 `<brand_namespace>-agent-v2-<install_slug>:latest`（默认 `agentdesk-agent-v2-<8位 hash>`，见 `container/build.sh` 与 `src/install-slug.ts`）——两份 checkout 在同一台机器上 slug 不同。所以不要 `--filter ancestor=<固定名>`，按本平台镜像前缀过滤：
+>
+> ```bash
+> # 本机本平台的镜像（默认前缀 agentdesk-agent-v2-；rebrand 后换成你的 namespace）
+> docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^agentdesk-agent-v2-'
+> # 把它存成变量复用
+> IMG="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^agentdesk-agent-v2-' | head -n1)"
+> ```
+
 **短期处置**：
 ```bash
-# 看当前在跑多少容器
-docker ps --filter ancestor=nanoclaw-agent:latest | wc -l
+# 看当前在跑多少本平台容器
+docker ps --filter ancestor="$IMG" | wc -l
 
 # 看是不是有僵尸容器
-docker ps -a --filter ancestor=nanoclaw-agent:latest --filter status=exited
+docker ps -a --filter ancestor="$IMG" --filter status=exited
 
-# 调高上限（重启服务后生效）
+# 调高上限（重启 host 后生效）
 echo 'MAX_CONCURRENT_CONTAINERS=20' >> .env
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
-# systemctl --user restart agentdesk                # Linux
+# 重启 host：用你拉起它的进程管理器（pm2 restart / systemctl --user restart <你的单元> / 重跑启动脚本）
 ```
 
 **根因排查**：
@@ -157,17 +181,17 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw   # macOS
 
 **处置**：
 ```bash
-# 看具体哪些 turn 在 bypass
+# 看具体哪些 turn 在 bypass（classification_log 用 occurred_at）
 sqlite3 data/v2.db \
-  "select created_at, classification_id, action, recommended_worker, confidence, outcome_ref
+  "select occurred_at, classification_id, action, recommended_worker, confidence, outcome_ref
    from classification_log
    where outcome_ref is null
-   order by created_at desc limit 30"
+   order by occurred_at desc limit 30"
 
 # 看分类决策的实际分布
 sqlite3 data/v2.db \
   "select action, count(*) from classification_log
-   where created_at > datetime('now','-1 day')
+   where occurred_at > datetime('now','-1 day')
    group by action"
 ```
 
@@ -175,24 +199,26 @@ sqlite3 data/v2.db \
 
 ### 3.4 容器崩溃风暴 (`container_exits_total{outcome="crash"}` 升高)
 
+（`$IMG` 同 §3.2：`docker images ... | grep -E '^agentdesk-agent-v2-'` 取本平台镜像。）
+
 ```bash
 # 最近退出的容器
-docker ps -a --filter ancestor=nanoclaw-agent:latest \
+docker ps -a --filter ancestor="$IMG" \
   --format 'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}' | head
 
-# 看 host-sweep 标记的退出原因
-grep "container exit" logs/agentdesk.log | tail -50
+# 看 host-sweep 标记的退出原因（host stderr/stdout，按你的进程管理器取）
+<host-logs> 2>&1 | grep "container exit" | tail -50
 
-# 集中在某个 agent_group？
+# 集中在某个 agent_group？（sessions 用 last_active）
 sqlite3 data/v2.db \
   "select agent_group_id, count(*) from sessions
-   where status='closed' and last_active_at > datetime('now','-1 hour')
+   where status='closed' and last_active > datetime('now','-1 hour')
    group by agent_group_id order by count(*) desc"
 ```
 
 **注意**：容器是 `--rm` 跑的，退出后日志全丢。要捞容器内栈，先跑一个不 `--rm` 的复现：
 ```bash
-docker run --rm=false --name fl-debug -v ... nanoclaw-agent:latest ...
+docker run --rm=false --name fl-debug -v ... "$IMG" ...
 # 复现后
 docker logs fl-debug
 ```
@@ -201,29 +227,31 @@ docker logs fl-debug
 
 ### 3.5 后端网关调用失败
 
+（`gateway_audit` 用 `occurred_at`；结果状态在 `status` 列，HTTP 码在 `http_status`。）
+
 ```bash
 # 最近的失败 audit 行
 sqlite3 data/v2.db \
-  "select created_at, user_id, operation, requester_source, http_status, duration_ms
+  "select occurred_at, user_id, operation, requester_source, status, http_status, duration_ms
    from gateway_audit
    where http_status >= 400
-   order by created_at desc limit 30"
+   order by occurred_at desc limit 30"
 
 # 单个用户的近期操作
 sqlite3 data/v2.db \
-  "select created_at, operation, http_status, duration_ms
+  "select occurred_at, operation, status, http_status, duration_ms
    from gateway_audit where user_id='feishu:ou_xxx'
-   order by created_at desc limit 50"
+   order by occurred_at desc limit 50"
 
 # 慢调用 (>5s)
 sqlite3 data/v2.db \
   "select operation, count(*), avg(duration_ms), max(duration_ms)
    from gateway_audit
-   where created_at > datetime('now','-1 day') and duration_ms > 5000
+   where occurred_at > datetime('now','-1 day') and duration_ms > 5000
    group by operation"
 ```
 
-**`requester_source='agent-asserted'` 的写操作**应该在后端被拒绝（弱信号身份）。如果发现 audit 里 source=agent-asserted 但操作 success=200，是后端策略漏洞。
+**`requester_source='agent-asserted'` 的写操作**应该在后端被拒绝（弱信号身份）。如果发现 audit 里 `requester_source='agent-asserted'` 但 `http_status` 是 2xx（成功放行），是后端策略漏洞。
 
 ### 3.6 Session 表膨胀
 
@@ -234,10 +262,10 @@ sqlite3 data/v2.db "select status, count(*) from sessions group by status"
 # 归档目录大小
 du -sh data/v2-sessions-archive/ 2>/dev/null
 
-# 没归档但很久没活动的（TTL 没起作用？）
+# 没归档但很久没活动的（TTL 没起作用？sessions 用 last_active）
 sqlite3 data/v2.db \
   "select count(*) from sessions
-   where status='active' and last_active_at < datetime('now','-30 days')"
+   where status='active' and last_active < datetime('now','-30 days')"
 ```
 
 如果 active 里有大量很久没动的 session：检查 `AGENTDESK_SESSION_TTL_DAYS` 是否配置；host-sweep 每 60s 跑一次归档。
@@ -307,12 +335,13 @@ sqlite3 data/v2.db "vacuum"
 `gateway_audit` / `classification_log` / `enterprise_audit` 会持续增长。半年以上的可以导出归档：
 
 ```bash
+# gateway_audit / classification_log 都用 occurred_at；enterprise_audit 见其建表 DDL。
 sqlite3 data/v2.db <<SQL
 .mode csv
 .output /backup/gateway-audit-2025H1.csv
-select * from gateway_audit where created_at < '2026-01-01';
+select * from gateway_audit where occurred_at < '2026-01-01';
 .output stdout
-delete from gateway_audit where created_at < '2026-01-01';
+delete from gateway_audit where occurred_at < '2026-01-01';
 SQL
 
 sqlite3 data/v2.db "vacuum"
@@ -359,13 +388,12 @@ pnpm install --frozen-lockfile
 ls src/db/migrations/
 
 # 5. 重建容器镜像（如果 container/agent-runner/ 有变化）
-./container/build.sh
+pnpm container:build   # = bash container/build.sh，镜像名由 brand namespace + install slug 派生
 
-# 6. 重启
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+# 6. 重启 host（用你拉起它的进程管理器：pm2 restart / systemctl --user restart <你的单元> / 重跑启动脚本）
 
 # 7. 健康检查
-curl -s localhost:3000/metrics | head
+curl -fsS localhost:3000/readyz && curl -s localhost:3000/metrics | head
 ```
 
 ### 6.2 Migration 不可逆性
@@ -391,48 +419,48 @@ curl -s localhost:3000/metrics | head
 用户报"我刚才 14:23 发的消息没回复"：
 
 ```bash
-# 1. inbound dedup 有没有？
+# 1. inbound dedup 有没有？（inbound_dedup 用 seen_at）
 sqlite3 data/v2.db \
-  "select * from inbound_dedup where created_at > '2026-05-09 14:23:00' limit 5"
+  "select * from inbound_dedup where seen_at > '2026-05-09 14:23:00' limit 5"
 
-# 2. 找到这个用户的 session
+# 2. 找到这个用户的 session（sessions 用 last_active）
 sqlite3 data/v2.db \
-  "select id, agent_group_id from sessions where owner_user_id='feishu:ou_xxx' order by last_active_at desc limit 1"
+  "select id, agent_group_id from sessions where owner_user_id='feishu:ou_xxx' order by last_active desc limit 1"
 
 # 3. session inbound 里看 message id
 sqlite3 data/v2-sessions/<group>/<session>/inbound.db \
   "select id, kind, status, tries, timestamp from messages_in
    where timestamp > '2026-05-09 14:23:00' order by timestamp"
 
-# 4. session outbound 里追产出
+# 4. session outbound 里追产出（messages_out 用 timestamp，无 status 列）
 sqlite3 data/v2-sessions/<group>/<session>/outbound.db \
-  "select id, kind, in_reply_to, status, created_at from messages_out
-   where created_at > '2026-05-09 14:23:00' order by created_at"
+  "select id, kind, in_reply_to, timestamp from messages_out
+   where timestamp > '2026-05-09 14:23:00' order by timestamp"
 
 # 5. 如果是 frontdesk 派活：跨 session 追 origin_user_id
 sqlite3 data/v2-sessions/<worker_group>/<worker_session>/inbound.db \
   "select id, origin_user_id, content from messages_in
    where origin_user_id='feishu:ou_xxx' order by timestamp desc limit 5"
 
-# 6. 后端调用？
+# 6. 后端调用？（gateway_audit 用 occurred_at）
 sqlite3 data/v2.db \
   "select * from gateway_audit where user_id='feishu:ou_xxx'
-   and created_at > '2026-05-09 14:23:00'"
+   and occurred_at > '2026-05-09 14:23:00'"
 
-# 7. 分类决策？
+# 7. 分类决策？（classification_log 用 occurred_at）
 sqlite3 data/v2.db \
   "select * from classification_log where session_id='<frontdesk_session>'
-   and created_at > '2026-05-09 14:23:00'"
+   and occurred_at > '2026-05-09 14:23:00'"
 ```
 
 ### 7.2 后端写错了 / 误操作
 
 ```bash
-# 找到这次操作的 audit 行
+# 找到这次操作的 audit 行（gateway_audit 用 occurred_at）
 sqlite3 data/v2.db \
   "select * from gateway_audit
    where operation='<op_name>' and user_id='<user>'
-   order by created_at desc limit 5"
+   order by occurred_at desc limit 5"
 
 # 拿 input_hash 在后端反查具体载荷（hash 是去敏的，原始 input 由后端保留）
 
@@ -457,16 +485,16 @@ sqlite3 data/v2.db \
 ### 8.2 强行清空所有 in-flight
 
 ```bash
-# 杀所有 agent 容器（用户消息会丢一拍）
-docker ps --filter ancestor=nanoclaw-agent:latest -q | xargs docker kill
+# 杀所有 agent 容器（用户消息会丢一拍）。$IMG 取法见 §3.2。
+IMG="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^agentdesk-agent-v2-' | head -n1)"
+docker ps --filter ancestor="$IMG" -q | xargs docker kill
 
 # 重置所有 in-flight inbound 状态
 for db in data/v2-sessions/*/*/inbound.db; do
   sqlite3 "$db" "update messages_in set status='pending' where status='processing'"
 done
 
-# 重启 host
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+# 重启 host（用你的进程管理器；本平台不带 launchd/systemd 单元）
 ```
 
 ### 8.3 临时屏蔽某个用户
@@ -485,8 +513,8 @@ sqlite3 data/v2.db "delete from user_dms where user_id='feishu:ou_xxx'"
 
 | 文件 / 目录 | 含义 |
 |---|---|
-| `logs/agentdesk.log` | 主日志 |
-| `logs/agentdesk.error.log` | 错误 + warning |
+| host stdout（`<host-logs>`，由你的进程管理器捕获） | info 日志 |
+| host stderr（同上） | warn + error + fatal |
 | `data/v2.db` | 中央 DB |
 | `data/v2-sessions/<group>/<session>/inbound.db` | session 入站（host 写） |
 | `data/v2-sessions/<group>/<session>/outbound.db` | session 出站（容器写） |
@@ -501,10 +529,10 @@ sqlite3 data/v2.db "delete from user_dms where user_id='feishu:ou_xxx'"
 
 无法定位的问题，提交工单时附上：
 
-1. `logs/agentdesk.log` 最近 1000 行
-2. `logs/agentdesk.error.log` 全部
+1. host stdout 最近 1000 行（按你的进程管理器导出）
+2. host stderr 全部（warn/error/fatal）
 3. `curl -s localhost:3000/metrics` 输出
-4. `docker ps -a --filter ancestor=nanoclaw-agent:latest`
+4. `docker ps -a --filter ancestor="$IMG"`（`$IMG` 取法见 §3.2）
 5. 涉及的 user_id、session_id、approximate timestamp
 6. `sqlite3 data/v2.db ".schema sessions"` + 故障 session 的行
 

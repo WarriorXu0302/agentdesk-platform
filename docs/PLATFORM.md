@@ -376,7 +376,11 @@ pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
 | `ENTERPRISE_AUTO_WIRE_ALLOW_POLICY_DOWNGRADE` | true | autowire 是否允许降级 unknown_sender_policy |
 | `ENTERPRISE_AUTO_WIRE_P2P` | false | 飞书 P2P 自动接线 |
 | `ENTERPRISE_AUTO_WIRE_GROUPS` | false | 飞书群聊自动接线 |
-| `WEBHOOK_PORT` | 3000 | webhook + `/metrics` 暴露的端口 |
+| `WEBHOOK_PORT` | 3000 | webhook + `/metrics` + `/healthz` + `/readyz` 暴露的端口 |
+| `WEBHOOK_MAX_BODY_BYTES` | 1048576（1 MiB） | ingress 请求体上限；超限返回 413 并计入 `webhook_rejected_total{reason="body_too_large"}`（ADR-0020） |
+| `WEBHOOK_REQUEST_TIMEOUT_MS` | 30000 | 单次请求完整生命周期超时（防慢速请求挂住连接） |
+| `WEBHOOK_HEADERS_TIMEOUT_MS` | 10000 | 请求头阶段超时（slow-loris 防护） |
+| `METRICS_AUTH_TOKEN` | 未设（`/metrics` 公开） | 设置后 `/metrics` 要求 `Authorization: Bearer <token>`，否则 401。生产应设置或用反向代理隔离 |
 
 ### 6.3 资源配置
 
@@ -424,6 +428,19 @@ agentdesk_classification_log_failures_total{reason}      # 审计写失败
 2. `agentdesk_route_seconds` P50 / P95 / P99
 3. `agentdesk_session_count{status="active"}` + `agentdesk_container_exits_total`
 4. `agentdesk_classification_bypass_total` —— 持续非零意味着 LLM 在跳过协议
+
+### 6.5 健康探针与优雅停机（ADR-0020）
+
+host 在同一个 `WEBHOOK_PORT` 上暴露两个免鉴权探针端点（编排器 / k8s / compose healthcheck 用）：
+
+| 端点 | 语义 | 返回 |
+|---|---|---|
+| `GET /healthz` | liveness：进程事件循环存活 | 恒 `200 ok` |
+| `GET /readyz` | readiness：依赖可服务（中央 DB 可读 `SELECT 1` + 容器运行时 `<runtime> info` 可达） | 就绪 `200 ready`；不就绪 `503 not ready: <reason>`（如 `db_unreadable` / `container_runtime_unreachable`） |
+
+注意取舍：`/readyz` 的容器运行时探测是每次请求 `<runtime> info`（3s 超时），探针轮询频率不宜过高（建议 ≥10s）。`/healthz` `/readyz` 不需要 `METRICS_AUTH_TOKEN`（探活必须可达）；`/metrics` 受该 token 保护。
+
+**优雅停机**：收到 SIGTERM/SIGINT 后 host 按序——先关闭 ingress 监听（停止接收）→ 停轮询/sweep → 等待在途投递排空（默认 10s）→ teardown channel adapters → 退出。排空缩小但不能完全消除 ADR-0016 的 at-least-once 重复投递窗口（SIGKILL 或超过排空超时的 `deliver()` 仍可能留下窗口，投递在 DB 层保持幂等）。生产滚动升级应给容器留 ≥ 排空超时 + 余量的 `terminationGracePeriod`，先摘 `/readyz` 流量再发 SIGTERM。
 
 ---
 

@@ -18,7 +18,7 @@
       "id": 1,
       "mode": "markdown",
       "options": {
-        "content": "# Observability Bootstrap\n\nHost-side OpenTelemetry instrumentation is in place. Message-path traces are visible in the Phoenix UI (http://localhost:6006).",
+        "content": "# Observability Bootstrap\n\nHost-side OpenTelemetry instrumentation is in place. Message-path traces are visible in the Phoenix UI (http://localhost:6006).\n\n**Metrics + alerting** now run through the in-stack Prometheus (scrapes the host `/metrics`) and Alertmanager. The live metric panels are on the **Platform Health** dashboard; alert rules live in `infra/observability/prometheus/alerts.yml`.",
         "mode": "markdown"
       },
       "pluginVersion": "11.0.0",

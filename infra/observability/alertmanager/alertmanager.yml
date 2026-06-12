@@ -1,0 +1,57 @@
+# Alertmanager config — minimal, working, placeholder routing.
+#
+# Out of the box this routes everything to a null receiver so the stack runs
+# without external credentials. To actually page someone, replace the null
+# receiver below with one of the commented examples and route to it.
+#
+# Severity labels are set in prometheus/alerts.yml: `critical` and `warning`.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  # Group alerts by name + severity so a crash storm doesn't fan out into one
+  # notification per scrape.
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'null'
+  routes:
+    # Route critical alerts faster than warnings. Both land on the same
+    # placeholder receiver until an operator wires a real one.
+    - matchers:
+        - severity = critical
+      receiver: 'null'
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  # Default no-op receiver. Replace with a real one below.
+  - name: 'null'
+
+  # ---------------------------------------------------------------------------
+  # Wiring examples — uncomment ONE, point `route.receiver` at it, and supply
+  # the URL/token via the Alertmanager environment or a templated config.
+  # Alertmanager does not expand ${VAR}; render the file or use a secrets mount.
+  # ---------------------------------------------------------------------------
+  #
+  # Slack:
+  # - name: 'slack'
+  #   slack_configs:
+  #     - api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+  #       channel: '#agentdesk-alerts'
+  #       send_resolved: true
+  #
+  # Generic webhook (Feishu custom bot / internal relay): point at a small
+  # adapter that reformats the Alertmanager payload into the Feishu bot schema.
+  # - name: 'feishu-webhook'
+  #   webhook_configs:
+  #     - url: 'http://feishu-alert-relay:8080/alert'
+  #       send_resolved: true
+  #
+  # PagerDuty:
+  # - name: 'pagerduty'
+  #   pagerduty_configs:
+  #     - routing_key: '<pagerduty-events-v2-routing-key>'
+  #       send_resolved: true

@@ -31,7 +31,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-delivery';
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { migrateDeliveredTable } from './db/session-db.js';
 import { resolveSession, inboundDbPath, outboundDbPath } from './session-manager.js';
-import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import { deliverSessionMessages, setDeliveryAdapter, drainInflightDeliveries } from './delivery.js';
 import { maybeStartProgressStatus } from './modules/progress-status/index.js';
 import { consumeSessionSpanContext, storeSessionSpanContext } from './observability/context-bridge.js';
 import type { SpanContext } from '@opentelemetry/api';
@@ -374,5 +374,73 @@ describe('delivery resilience — timeout, ordering, persisted backoff (ADR-0016
 
     expect(calls).toBe(0);
     expect(readDeliveredRow('ag-1', session.id, 'out-exhausted')?.status).toBe('failed');
+  });
+});
+
+describe('drainInflightDeliveries — graceful shutdown drain (ADR-0020)', () => {
+  it('resolves immediately when nothing is in flight', async () => {
+    const start = Date.now();
+    await drainInflightDeliveries(5000);
+    // No work means no waiting — should return well under the timeout.
+    expect(Date.now() - start).toBeLessThan(200);
+  });
+
+  it('waits for an in-flight drain to finish before resolving', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-drain');
+
+    let delivered = false;
+    let releaseAdapter: () => void = () => {};
+    setDeliveryAdapter({
+      async deliver() {
+        await new Promise<void>((resolve) => {
+          releaseAdapter = resolve;
+        });
+        delivered = true;
+        return 'plat-msg-drain';
+      },
+    });
+
+    // Start a delivery but don't await it — it's now "in flight" (the adapter
+    // is parked on the unresolved promise above).
+    const inFlight = deliverSessionMessages(session);
+
+    // Drain with a generous timeout; release the adapter shortly after so the
+    // drain completes within the window.
+    const drainPromise = drainInflightDeliveries(5000);
+    setTimeout(() => releaseAdapter(), 50);
+
+    await drainPromise;
+    // By the time drain resolves, the in-flight delivery must have completed.
+    expect(delivered).toBe(true);
+    await inFlight;
+  });
+
+  it('gives up after the timeout when a delivery never settles', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-stuck');
+
+    setDeliveryAdapter({
+      // Never settles within the drain timeout. Note DELIVERY_TIMEOUT_MS is
+      // 300ms (mocked), so the adapter call itself eventually times out as a
+      // failed attempt — we only care that the drain itself respects its own
+      // bound and doesn't hang shutdown.
+      deliver() {
+        return new Promise(() => {});
+      },
+    });
+
+    const inFlight = deliverSessionMessages(session);
+
+    const start = Date.now();
+    await drainInflightDeliveries(100); // shorter than DELIVERY_TIMEOUT_MS (300ms)
+    const elapsed = Date.now() - start;
+    // Drain must return around its own timeout, not block on the stuck send.
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(290);
+
+    await inFlight; // let the underlying delivery time out so the test cleans up
   });
 });

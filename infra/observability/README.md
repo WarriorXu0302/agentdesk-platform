@@ -1,8 +1,8 @@
 # Observability Bootstrap
 
-> 本目录是 observability 基础设施的落地点。仅提供 Phoenix OSS + Grafana 的 compose / provisioning / 占位 dashboards / 运维脚本，不包含任何 host 或 runner 的 instrumentation 代码。
+> 本目录是 observability 基础设施的落地点。提供 Phoenix OSS（trace）+ Prometheus/Alertmanager（metrics + 告警）+ Grafana 的 compose / provisioning / dashboards / 告警规则 / 运维脚本，不包含任何 host 或 runner 的 instrumentation 代码。
 >
-> 选型背景见 [ADR-0007](../../docs/decisions/ADR-0007-observability-phoenix-grafana.md)（观测栈选型）。
+> 选型背景见 [ADR-0007](../../docs/decisions/ADR-0007-observability-phoenix-grafana.md)（观测栈选型，trace 归 Phoenix）与 [ADR-0021](../../docs/decisions/ADR-0021-metrics-alerting-loop.md)（metrics 抓取者 + 告警承载体 = Prometheus + Alertmanager）。
 
 ## 目的（Purpose）
 
@@ -14,9 +14,9 @@
 
 - 本目录不实现任何 host / runner / SDK 层的 span 发射代码（那属于 instrumentation 层）。
 - 不引入 Logfire、Langfuse、OTel-only DIY、LGTM、Loki、Tempo 等其它 observability 后端。
-- 不提供完整业务 dashboards；只保留一张 `Observability Bootstrap` 占位 dashboard，验证 provisioning 通路即可。
-- 不实现 alerts、SLO、寻呼规则、通知 channel。
-- 不修改 identity 信任链（`RequestIdentity` / `origin_user_id` / HMAC / `gateway_audit`）；observability 必须只读化。
+- 不提供完整业务 dashboards；只随仓提供一张 `Platform Health` 核心指标 dashboard + `Observability Bootstrap` 说明页。
+- **告警寻呼不开箱即用**：Prometheus 加载规则、Alertmanager 收 firing alert，但默认 receiver 是 `null`（不寻呼）。接 Slack / 飞书 / PagerDuty 需操作员在 `alertmanager/alertmanager.yml` 填 receiver（见文件内注释）。
+- 不修改 identity 信任链（`RequestIdentity` / `origin_user_id` / HMAC / `gateway_audit`）；observability 必须只读化（Prometheus 是主动 pull host `/metrics`，纯只读 HTTP GET）。
 
 ## 前置条件（Prerequisites）
 
@@ -25,9 +25,10 @@
 | Docker | Engine ≥ 24 |
 | Docker Compose | v2（`docker compose`，非旧版 `docker-compose`） |
 | pnpm | 项目已 `pnpm install` |
-| 端口空闲 | `6006`、`4317`、`9090`、`3001`（host） |
+| 端口空闲 | `6006`、`4317`、`9090`、`9091`、`9093`、`3001`（host） |
 
 > ⚠️ Grafana 不绑 host `3000`：host webhook 默认占用 `3000`，所以 Grafana 走 `3001`。
+> ⚠️ 区分两个 `:9090`：Phoenix 内建指标端点（host `9090`）是 scrape **源**，不可查询；真正的可查询 Prometheus 走 host `9091`。
 
 ## 端口映射（Port Map）
 
@@ -35,7 +36,9 @@
 |---|---|---|---|
 | Phoenix UI / OTLP HTTP collector | `6006` | `6006` | Web UI + `/v1/traces` HTTP 接收 |
 | Phoenix OTLP gRPC collector | `4317` | `4317` | gRPC trace 接收 |
-| Phoenix Prometheus-compatible metrics | `9090` | `9090` | Phoenix 内建 Prometheus 指标端点（不是独立 Prometheus 容器） |
+| Phoenix Prometheus-compatible metrics | `9090` | `9090` | Phoenix 内建 Prometheus 指标端点（scrape 源，**不是**可查询 Prometheus，也不是独立容器） |
+| Prometheus（可查询 + 告警） | `9091` | `9090` | 抓 host `/metrics`、加载 `alerts.yml`、推 Alertmanager；Grafana `Prometheus` datasource 指向它 |
+| Alertmanager | `9093` | `9093` | 收 firing alert，去重/分组/寻呼（默认 `null` receiver） |
 | Grafana | `3001` | `3000` | Grafana Web UI |
 | Postgres | （internal） | `5432` | 仅 compose 网络内部使用，host 不暴露 |
 
@@ -46,8 +49,10 @@
 | Phoenix | `arizephoenix/phoenix:version-8.0.0` |
 | Postgres | `postgres:16` |
 | Grafana | `grafana/grafana:11.0.0` |
+| Prometheus | `prom/prometheus:v2.54.1` |
+| Alertmanager | `prom/alertmanager:v0.27.0` |
 
-> 严禁使用 `:latest`。`scripts/observability-bootstrap.test.ts` 会校验 pin。
+> 严禁使用 `:latest`。所有镜像都用固定 tag。
 
 ## 起停 / 日志 / 配置 / 重置（Operator Commands）
 
@@ -72,8 +77,14 @@ pnpm obs:down
 # 停止 sim 栈
 pnpm obs:down:sim
 
-# 销毁完整栈数据卷（⚠️ 不可恢复，所有 traces / dashboards / Postgres 数据全清）
+# 销毁完整栈数据卷（⚠️ 不可恢复，所有 traces / dashboards / Postgres / Prometheus 数据全清）
 pnpm obs:reset
+
+# 校验告警规则语法（需要本地 docker；跑 promtool check rules）
+pnpm obs:rules:check
+
+# 跑 RUNBOOK ↔ schema 一致性测试（防 SQL 列名漂移）
+pnpm obs:runbook:check
 ```
 
 Compose 项目名是显式的：
@@ -92,8 +103,10 @@ Compose 项目名是显式的：
 | `agentdesk_phoenix_sim_data` | sim 栈 Phoenix `/mnt/data`（仅 sim） |
 | `agentdesk_phoenix_postgres_data` | 完整栈 Postgres `/var/lib/postgresql/data` |
 | `agentdesk_grafana_data` | 完整栈 Grafana `/var/lib/grafana` |
+| `agentdesk_prometheus_data` / `agentdesk_prometheus_sim_data` | 完整栈 / sim 栈 Prometheus TSDB `/prometheus` |
+| `agentdesk_alertmanager_data` / `agentdesk_alertmanager_sim_data` | 完整栈 / sim 栈 Alertmanager `/alertmanager` |
 
-`pnpm obs:down` 不会删除这三个卷；`pnpm obs:reset` 会。
+`pnpm obs:down` 不删这些卷；`pnpm obs:reset` 删完整栈的卷。
 
 ## 数据清除（Wipe Procedure）
 
@@ -174,13 +187,25 @@ GRAFANA_HOST_PORT=3001
      "http://localhost:3001/api/search?query=Observability%20Bootstrap"
    ```
    期望返回至少 1 条结果。
-8. 浏览器打开：
-   - Phoenix：<http://localhost:6006>
-   - Grafana：<http://localhost:3001>（默认 `admin` / `agentdesk-local-observability`，登录后查看 `Observability Bootstrap` dashboard）
-9. 停止：
+8. 验证 Prometheus 起来且抓到 host（host 须在本机跑、`/metrics` 可达）：
    ```bash
-   pnpm obs:down
+   curl -fsS http://localhost:9091/-/healthy && echo " prometheus ok"
+   # 查抓取目标状态：agentdesk-host 的 health 应为 up（host 没跑时为 down，属正常）
+   curl -fsS "http://localhost:9091/api/v1/targets" | grep -o '"health":"[a-z]*"'
    ```
+9. 验证 Alertmanager 起来：
+   ```bash
+   curl -fsS http://localhost:9093/-/healthy && echo " alertmanager ok"
+   ```
+10. 浏览器打开：
+    - Phoenix：<http://localhost:6006>
+    - Prometheus：<http://localhost:9091>
+    - Alertmanager：<http://localhost:9093>
+    - Grafana：<http://localhost:3001>（默认 `admin` / `agentdesk-local-observability`，登录后查看 `Platform Health` dashboard）
+11. 停止：
+    ```bash
+    pnpm obs:down
+    ```
 
 ## 故障排查（Troubleshooting）
 
@@ -191,7 +216,21 @@ GRAFANA_HOST_PORT=3001
 | Phoenix 无法连 Postgres | Postgres 启动慢于 Phoenix（首次启动） | `pnpm obs:down && pnpm obs:up` 或等几秒后 `docker compose -p agentdesk-observability-prod restart phoenix` |
 | `grafana_ro` 角色不存在 | Postgres 已经初始化过，`init/*.sql` 不会再次执行 | 用 `pnpm obs:reset` 销毁数据卷后重启（⚠️ 会丢 trace） |
 | `pnpm obs:config` 警告 unresolved variables | host 没装载 `.env` | `set -a; source infra/observability/.env; set +a` 后再跑，或用 docker compose `--env-file` 选项 |
-| `latest` tag 错误 | 任何 compose 文件被改成 `:latest` | `scripts/observability-bootstrap.test.ts` 会失败；恢复成指定的 pin tag |
+| Prometheus target `agentdesk-host` 显示 down | host 进程没跑 / `/metrics` 不可达 / 端口非 3000 | 先确认 host 在本机跑且 `curl localhost:3000/metrics` 有输出；端口非 3000 则改 `prometheus/prometheus.yml` 的 target |
+| Grafana 面板空 / 告警不触发 | rebrand 后指标前缀变了，规则还用 `agentdesk_` | 把 `prometheus/alerts.yml` 与 dashboard 里的 `agentdesk_` 替换成新 namespace 前缀 |
+| 告警 firing 但没人收到 | Alertmanager 默认 `null` receiver | 在 `alertmanager/alertmanager.yml` 填真实 receiver 并把 `route.receiver` 指过去 |
+
+## Metrics 抓取与告警（Prometheus / Alertmanager）
+
+详见 [ADR-0021](../../docs/decisions/ADR-0021-metrics-alerting-loop.md)。
+
+- **抓取目标**：Prometheus 抓 host 的 `GET /metrics`。host 是容器外的裸 Node 进程，所以 scrape target 写死 `host.docker.internal:3000`（WEBHOOK_PORT 默认）。compose 用 `extra_hosts: host.docker.internal:host-gateway` 让 Linux 也能解析。
+  - **改了 WEBHOOK_PORT**？直接编辑 `prometheus/prometheus.yml` 里的 target——Prometheus **不**展开配置文件里的 `${ENV}`，所以不能靠环境变量覆盖端口。
+  - **`/metrics` 加了 bearer token**？（host 侧若引入鉴权）在 `prometheus.yml` 的 scrape job 里启用 `authorization: { type: Bearer, credentials_file: /etc/prometheus/host_metrics_token }`，把 token 文件挂进 Prometheus 容器（compose volume）。token **不要**写进仓内文件，用 secrets 挂载或模板渲染注入。
+- **指标前缀随品牌变**：默认 `agentdesk_*`（`METRIC_PREFIX`，`src/branding.ts`）。rebrand 后 host 发 `<新 namespace>_*`，`prometheus/alerts.yml` 与 Grafana dashboard 里的 `agentdesk_` 都要相应替换，否则告警永不触发、面板永远空。
+- **告警规则**：`prometheus/alerts.yml`（10 条），是 RUNBOOK §2 的承载体。`pnpm obs:rules:check` 用 promtool 校验语法。
+- **寻呼**：`alertmanager/alertmanager.yml` 默认 `null` receiver（不寻呼）。接 Slack / 飞书 / PagerDuty 见文件内注释；Alertmanager 同样不展开 `${ENV}`，URL/token 走模板渲染或 secrets 挂载。
+- **Grafana datasource**：`Prometheus`（uid `prometheus`）指向 `http://prometheus:9090`（可查询），`isDefault`；`Phoenix Postgres` 保留用于 trace 关联。`Platform Health` dashboard 用 PromQL 画 inbound rate / route+wake p95 / container crash rate / delivery permanent failures / a2a origin rejected。
 
 ## Instrumentation 接入（Instrumentation）
 
@@ -204,11 +243,16 @@ GRAFANA_HOST_PORT=3001
 
 ## 相关文件（Related Files）
 
-- [`docker-compose.sim.yml`](docker-compose.sim.yml) — Phoenix-only sim 栈
-- [`docker-compose.prod.yml`](docker-compose.prod.yml) — 完整 Phoenix + Postgres + Grafana 栈
+- [`docker-compose.sim.yml`](docker-compose.sim.yml) — Phoenix + Prometheus + Alertmanager 的最小 sim 栈
+- [`docker-compose.prod.yml`](docker-compose.prod.yml) — 完整 Phoenix + Postgres + Prometheus + Alertmanager + Grafana 栈
+- [`prometheus/prometheus.yml`](prometheus/prometheus.yml) — scrape host `/metrics` + 加载 rules + 指向 Alertmanager
+- [`prometheus/alerts.yml`](prometheus/alerts.yml) — 10 条告警规则（RUNBOOK §2 承载体）
+- [`alertmanager/alertmanager.yml`](alertmanager/alertmanager.yml) — Alertmanager 路由 + 占位 `null` receiver
 - [`init/grafana_readonly.sql`](init/grafana_readonly.sql) — Postgres 首启动时创建 Grafana 只读角色
-- [`grafana/provisioning/datasources/phoenix-postgres.yml`](grafana/provisioning/datasources/phoenix-postgres.yml) — Phoenix Postgres + Phoenix Metrics 两个 datasource
+- [`grafana/provisioning/datasources/phoenix-postgres.yml`](grafana/provisioning/datasources/phoenix-postgres.yml) — Phoenix Postgres（trace）+ Prometheus（metrics）两个 datasource
 - [`grafana/provisioning/dashboards/dashboards.yml`](grafana/provisioning/dashboards/dashboards.yml) — file provider
-- [`grafana/dashboards/observability-bootstrap.json`](grafana/dashboards/observability-bootstrap.json) — 占位 dashboard
+- [`grafana/dashboards/platform-health.json`](grafana/dashboards/platform-health.json) — 核心指标 dashboard
+- [`grafana/dashboards/observability-bootstrap.json`](grafana/dashboards/observability-bootstrap.json) — bootstrap 说明页
 - [`.env.example`](.env.example) — local-only 默认凭据
-- [`../../docs/decisions/ADR-0007-observability-phoenix-grafana.md`](../../docs/decisions/ADR-0007-observability-phoenix-grafana.md) — 观测栈选型
+- [`../../docs/decisions/ADR-0007-observability-phoenix-grafana.md`](../../docs/decisions/ADR-0007-observability-phoenix-grafana.md) — 观测栈选型（trace）
+- [`../../docs/decisions/ADR-0021-metrics-alerting-loop.md`](../../docs/decisions/ADR-0021-metrics-alerting-loop.md) — metrics 抓取 + 告警闭环

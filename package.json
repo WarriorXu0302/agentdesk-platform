@@ -21,6 +21,8 @@
     "obs:config": "docker compose -p agentdesk-observability-prod -f infra/observability/docker-compose.prod.yml config && docker compose -p agentdesk-observability-sim -f infra/observability/docker-compose.sim.yml config",
     "obs:reset": "docker compose -p agentdesk-observability-prod -f infra/observability/docker-compose.prod.yml down -v",
     "obs:coverage": "vitest run scripts/observability-coverage.test.ts",
+    "obs:rules:check": "docker run --rm --entrypoint promtool -v \"$PWD/infra/observability/prometheus:/work\" prom/prometheus:v2.54.1 check rules /work/alerts.yml",
+    "obs:runbook:check": "vitest run scripts/runbook-consistency.test.ts",
     "container:build": "bash container/build.sh",
     "chat": "tsx scripts/chat.ts",
     "format": "prettier --write \"src/**/*.ts\"",

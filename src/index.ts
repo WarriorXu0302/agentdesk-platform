@@ -17,11 +17,17 @@ import { runMigrations } from './db/migrations/index.js';
 import { checkBaseImage } from './container-runner.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
-import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
+import {
+  startActiveDeliveryPoll,
+  startSweepDeliveryPoll,
+  setDeliveryAdapter,
+  stopDeliveryPolls,
+  drainInflightDeliveries,
+} from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
-import { ensureMetricsServer } from './webhook-server.js';
+import { ensureMetricsServer, stopWebhookServer } from './webhook-server.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
 // circular import cycle: src/index.ts imports src/modules/index.js for side
@@ -181,9 +187,8 @@ async function main(): Promise<void> {
   log.info(`${PLATFORM_NAME} running`);
 }
 
-/** Graceful shutdown. */
-async function shutdown(signal: string): Promise<void> {
-  log.info('Shutdown signal received', { signal });
+/** Ordered graceful-shutdown steps. Wrapped in a hard deadline by `shutdown`. */
+async function runShutdownSteps(): Promise<void> {
   for (const cb of getShutdownCallbacks()) {
     try {
       await cb();
@@ -191,8 +196,20 @@ async function shutdown(signal: string): Promise<void> {
       log.error('Shutdown callback threw', { err });
     }
   }
+  // Order matters: stop accepting first (close the listener), THEN stop the
+  // poll loops, THEN drain. If we drained before closing the listener, a fresh
+  // webhook could enqueue outbound work mid-drain and the wait would never
+  // settle cleanly. Stopping ingress first bounds the in-flight set.
+  try {
+    await stopWebhookServer();
+  } catch (err) {
+    log.error('Webhook server stop threw', { err });
+  }
   stopDeliveryPolls();
   stopHostSweep();
+  // Let any drain caught mid-flight persist its markDelivered row before we
+  // exit, shrinking the ADR-0016 duplicate window (see drainInflightDeliveries).
+  await drainInflightDeliveries();
   try {
     await teardownChannelAdapters();
   } finally {
@@ -201,8 +218,33 @@ async function shutdown(signal: string): Promise<void> {
     // as one.
     resetCircuitBreaker();
     await shutdownObservability();
-    process.exit(0);
   }
+}
+
+/** Graceful shutdown. */
+async function shutdown(signal: string): Promise<void> {
+  log.info('Shutdown signal received', { signal });
+  // Hard deadline: no single step (a hung webhook connection, a stuck adapter
+  // teardown) may block exit indefinitely. Keep this below the orchestrator's
+  // terminationGracePeriod (k8s default 30s) so we exit cleanly before SIGKILL,
+  // which would otherwise skip the delivery drain entirely.
+  const deadlineMs = parseInt(process.env.SHUTDOWN_DEADLINE_MS || '20000', 10);
+  const deadline = new Promise<void>((resolve) => {
+    const t = setTimeout(
+      () => {
+        log.warn('Shutdown deadline hit — forcing exit', { deadlineMs });
+        resolve();
+      },
+      Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : 20000,
+    );
+    t.unref?.();
+  });
+  try {
+    await Promise.race([runShutdownSteps(), deadline]);
+  } catch (err) {
+    log.error('Shutdown threw', { err });
+  }
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
