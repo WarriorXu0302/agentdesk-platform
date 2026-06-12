@@ -302,6 +302,7 @@ CREATE TABLE dm_grants (
   consent_source         TEXT NOT NULL,      -- 'p2p-ingress' | 'directed-card'
   consent_inbound_msg_id TEXT NOT NULL,      -- anchors consent to the exact inbound event
   consent_origin_user_id TEXT,
+  origin_platform_id     TEXT,                -- migration 028: feishu:<chat_id> the consent was given in (NULL for pure p2p); leave-revoke scope (item 11b). NEVER a routing field
   created_at             TEXT NOT NULL,
   expires_at             TEXT,
   revoked_at             TEXT,
@@ -310,7 +311,11 @@ CREATE TABLE dm_grants (
   UNIQUE(scope_id, slot_label),               -- one participant per slot per scope
   UNIQUE(scope_id, participant_open_id)       -- a participant occupies at most one slot per scope
 );
+-- migration 028 also adds idx_dm_grants_origin(origin_platform_id, participant_open_id)
+-- for the leave/disband revoke lookup.
 ```
+
+Harden-after revocation (ADR-0023 items 11-12): a participant can opt out via a p2p `leave` command / "exit" card (`revokeParticipantInScope`); a Feishu `im.chat.member.user.deleted_v1` / `im.chat.disbanded_v1` event revokes grants whose `origin_platform_id` matches the left/disbanded chat (`revokeGrantsForLeaver`, best-effort); and with `ROSTER_VERIFY_MEMBERSHIP=true` the delivery gate fail-closed revokes on a send-time "not a member" answer. The `dm_rate_ledger` also carries an optional `deploy-daily:<key>` rolling-24h bucket for the deployment blast-radius cap (item 14, `ROSTER_DEPLOY_DAILY_CAP`).
 
 `dm_rate_ledger` — persisted multi-key tumbling-window counters (grant / scope / participant / deploy). Survives host restarts so the rate limit can't be reset by bouncing the process.
 

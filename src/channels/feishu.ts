@@ -69,6 +69,10 @@ import {
   verifyFeishuSignature,
 } from './feishu/primitives.js';
 import { captureDirectedCardConsent, captureP2pIngressConsent, parseRosterOptIn } from './feishu/roster-consent.js';
+import { optOutParticipant, parseRosterOptOut } from '../roster-dm.js';
+import { revokeGrantsForLeaver } from '../db/dm-grants.js';
+import { hasTable } from '../db/connection.js';
+import { getDb } from '../db/connection.js';
 
 // Re-export the subset of primitives that existing callers (including
 // tests) reach for via `./feishu`. Keeping the public surface stable means
@@ -462,6 +466,21 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         const text = parseTextContent(event.message.content, event.message.message_type);
         const isMention = isGroup ? mentionsBot(event, config) : true;
 
+        // Roster-DM p2p opt-out (ADR-0023 item 11a). A DIRECT (p2p) message that
+        // is a leave/opt-out command tears down the sender's own grant(s). The
+        // participant_open_id is the inbound sender (trusted) — never the
+        // payload — so a forged scopeId can at most revoke the SENDER's own
+        // grant. Checked before opt-in so a "leave" can't be mistaken for a
+        // re-consent. Only honored in p2p (not group context).
+        if (!isGroup) {
+          const rosterOptOut = parseRosterOptOut(parseJsonObject(text), text);
+          if (rosterOptOut) {
+            const senderOpenId = readString(event.sender.sender_id.open_id);
+            if (senderOpenId) optOutParticipant(senderOpenId, rosterOptOut.scopeId);
+            return;
+          }
+        }
+
         // Roster-DM p2p-ingress consent (ADR-0023). When a DIRECT (p2p) message
         // carries a roster opt-in command, capture consent from the open_id of
         // THIS event. A group-chat message records intent only (no grant, no
@@ -473,6 +492,9 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
             senderOpenId: readString(event.sender.sender_id.open_id),
             inboundMsgId: `msg:${event.message.message_id}`,
             isGroup,
+            // p2p opt-in has no group to leave → null origin (item 11b). A
+            // group-chat opt-in is rejected as intent-only inside the capture.
+            originPlatformId: null,
           });
           return;
         }
@@ -524,6 +546,13 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         }
         await handleMessageReceive(data);
       },
+      // Roster-DM leave/disband revoke (ADR-0023 item 11b, best-effort).
+      'im.chat.member.user.deleted_v1': async (data: unknown) => {
+        handleChatMemberLeave(data, false);
+      },
+      'im.chat.disbanded_v1': async (data: unknown) => {
+        handleChatMemberLeave(data, true);
+      },
     });
 
     wsClient = new WSClient({
@@ -556,6 +585,24 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
       inboundTotal.labels('feishu', 'deduped').inc();
       return;
     }
+    // Roster-DM directed "exit" card (ADR-0023 item 11a). A card whose action
+    // value is a roster opt-out revokes the clicking operator's own grant,
+    // fail-closed on operator identity (same member-scoped check as opt-in).
+    // Terminal branch, checked before the opt-in card.
+    const rosterOptOut = parseRosterOptOut(event.action.value);
+    if (rosterOptOut) {
+      const operatorOpenId = readString(event.operator.open_id);
+      // expectedUserId on the opt-out card (if present) must match the operator,
+      // same fail-closed rule as opt-in cards. Absent expectedUserId is allowed
+      // for opt-out (it only ever revokes the OPERATOR's own grant — fail-safe
+      // direction), but we still require a confirmed operator open_id.
+      const expected = readString((event.action.value as Record<string, unknown>).expectedUserId);
+      if (operatorOpenId && (!expected || cardActionOperatorAllowed(expected, operatorOpenId))) {
+        optOutParticipant(operatorOpenId, rosterOptOut.scopeId);
+      }
+      return;
+    }
+
     // Roster-DM directed-card consent (ADR-0023). A card whose action value is a
     // roster opt-in is captured here, fail-closed: the operator's open_id must
     // match the card's member-scoped expectedUserId (handled inside
@@ -564,10 +611,14 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
     const rosterOptIn = parseRosterOptIn(event.action.value);
     if (rosterOptIn) {
       const operatorOpenId = readString(event.operator.open_id);
+      const cardChatId = readString(event.context.chat_id);
       captureDirectedCardConsent({
         optIn: rosterOptIn,
         operatorOpenId,
         inboundMsgId: `action:${token}`,
+        // Record the chat the card was clicked in so a later leave/disband of
+        // that chat can revoke this grant (item 11b).
+        originPlatformId: cardChatId ? `feishu:${cardChatId}` : null,
       });
       return;
     }
@@ -597,6 +648,43 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
       return;
     }
     setupConfig.onAction(action.questionId, action.selectedOption, operatorUserId);
+  }
+
+  /**
+   * Roster-DM platform leave/disband revoke (ADR-0023 item 11b, best-effort).
+   *
+   * `im.chat.member.user.deleted_v1` fires when one or more members are removed
+   * from / leave a group; `im.chat.disbanded_v1` fires when a group is
+   * dissolved. We revoke grants consented in that chat (origin_platform_id =
+   * `feishu:<chat_id>`) for the leaving member(s) — or, on disband, for every
+   * member whose grant originated there.
+   *
+   * This is BEST-EFFORT: events can be missed (host down, no subscription), so
+   * it never replaces the send-time re-check (item 12) or scope teardown — it
+   * just tightens the window. Guarded by table presence so installs without the
+   * migration are unaffected.
+   */
+  function handleChatMemberLeave(eventData: unknown, disbanded: boolean): void {
+    if (!hasTable(getDb(), 'dm_grants')) return;
+    if (!isRecord(eventData)) return;
+    const chatId = readString(eventData.chat_id);
+    if (!chatId) return;
+    const originPlatformId = `feishu:${chatId}`;
+    if (disbanded) {
+      const n = revokeGrantsForLeaver(originPlatformId, null);
+      if (n > 0) log.info('roster-dm: revoked grants on chat disband', { originPlatformId, revoked: n });
+      return;
+    }
+    // member.user.deleted carries the leaving users in `users[].user_id.open_id`.
+    const users = Array.isArray(eventData.users) ? eventData.users : [];
+    let total = 0;
+    for (const u of users) {
+      if (!isRecord(u)) continue;
+      const userId = isRecord(u.user_id) ? readString(u.user_id.open_id) : undefined;
+      if (!userId) continue;
+      total += revokeGrantsForLeaver(originPlatformId, userId);
+    }
+    if (total > 0) log.info('roster-dm: revoked grants on member leave', { originPlatformId, revoked: total });
   }
 
   async function handleWebhook(req: import('http').IncomingMessage, res: import('http').ServerResponse): Promise<void> {
@@ -681,6 +769,11 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         await handleMessageReceive(eventData);
       } else if (eventType === 'card.action.trigger' && isFeishuCardActionEvent(eventData)) {
         await handleCardAction(eventData);
+      } else if (eventType === 'im.chat.member.user.deleted_v1') {
+        // Roster-DM leave revoke (ADR-0023 item 11b, best-effort).
+        handleChatMemberLeave(eventData, false);
+      } else if (eventType === 'im.chat.disbanded_v1') {
+        handleChatMemberLeave(eventData, true);
       } else {
         log.debug('Feishu webhook event ignored', { eventType: eventType || 'unknown' });
       }
@@ -887,6 +980,52 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
     async openDM(userHandle: string): Promise<string> {
       const normalized = userHandle.trim();
       return `feishu:p2p:${normalized}`;
+    },
+
+    /**
+     * Strong group-membership check for roster-DM send-time verification
+     * (ADR-0023 item 12). `platformId` is the group key (`feishu:<chat_id>`);
+     * `userHandle` is the participant open_id (`ou_*`). Pages the Feishu group
+     * members API (member_id_type=open_id) and reports membership.
+     *
+     * Returns:
+     *   - true / false  on a definite answer from the API.
+     *   - undefined     when we can't determine it (not a group key, malformed
+     *                   input, or an API/network error) — the gate then falls
+     *                   back to the consent-revoke paths rather than dropping a
+     *                   legitimate DM on a transient failure.
+     */
+    async isMember(platformId: string, userHandle: string): Promise<boolean | undefined> {
+      const handle = userHandle.trim();
+      if (!handle.startsWith('ou_')) return undefined; // only open_id members are checkable
+      // Resolve the chat_id. The group key is `feishu:<oc_...>`; refuse p2p keys.
+      const raw = platformId.startsWith('feishu:') ? platformId.slice('feishu:'.length) : platformId;
+      if (raw.startsWith('p2p:') || !raw.startsWith('oc_')) return undefined;
+      const chatId = raw;
+      try {
+        let pageToken: string | undefined;
+        // Bounded paging — a handful of pages covers very large groups; bail to
+        // "unknown" rather than loop unboundedly on a misbehaving API.
+        for (let page = 0; page < 20; page++) {
+          const res = await callApi<
+            FeishuApiResponse & {
+              data?: { items?: Array<{ member_id?: string }>; page_token?: string; has_more?: boolean };
+            }
+          >(`/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members`, {
+            method: 'GET',
+            query: { member_id_type: 'open_id', page_size: 100, page_token: pageToken },
+          });
+          if (res.code !== 0 && res.code !== undefined) return undefined; // API error → unknown
+          const items = res.data?.items ?? [];
+          if (items.some((m) => m.member_id === handle)) return true;
+          if (!res.data?.has_more || !res.data.page_token) return false;
+          pageToken = res.data.page_token;
+        }
+        return false; // exhausted the page budget without finding them
+      } catch (err) {
+        log.warn('Feishu isMember check failed — returning unknown', { chatId, err });
+        return undefined;
+      }
     },
   };
 

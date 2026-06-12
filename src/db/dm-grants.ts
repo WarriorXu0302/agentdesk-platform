@@ -16,6 +16,7 @@
  */
 import { randomUUID } from 'crypto';
 
+import { readEnvFile } from '../env.js';
 import { parseSqliteUtc } from '../host-sweep.js';
 import { getDb } from './connection.js';
 
@@ -35,6 +36,13 @@ export interface DmGrantRow {
   consent_source: DmConsentSource;
   consent_inbound_msg_id: string;
   consent_origin_user_id: string | null;
+  /**
+   * The `feishu:<chat_id>` of the group the participant was acting in when they
+   * consented, or null for a pure p2p opt-in with no group context (item 11b).
+   * NEVER a routing field — routing authority is dm_platform_id. Used only to
+   * scope a platform leave/disband revoke to the chat the participant left.
+   */
+  origin_platform_id: string | null;
   created_at: string;
   expires_at: string | null;
   revoked_at: string | null;
@@ -52,6 +60,8 @@ export interface InsertDmGrantArgs {
   consentSource: DmConsentSource;
   consentInboundMsgId: string;
   consentOriginUserId?: string | null;
+  /** Source group platform id (`feishu:<chat_id>`) for leave-revoke (item 11b). Null for pure p2p. */
+  originPlatformId?: string | null;
   /** Total messages this grant may ever send before it auto-revokes. <=0 disables the cap. */
   maxSends?: number;
   /** Optional absolute expiry. ISO-8601 UTC string. */
@@ -84,8 +94,8 @@ export function insertDmGrant(args: InsertDmGrantArgs): string | null {
         `INSERT INTO dm_grants
            (id, scope_id, agent_group_id, slot_label, participant_open_id, dm_platform_id,
             channel_type, consent_source, consent_inbound_msg_id, consent_origin_user_id,
-            created_at, expires_at, revoked_at, max_sends, sends_used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)
+            origin_platform_id, created_at, expires_at, revoked_at, max_sends, sends_used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)
          ON CONFLICT(scope_id, slot_label) DO UPDATE SET
            participant_open_id    = excluded.participant_open_id,
            dm_platform_id         = excluded.dm_platform_id,
@@ -93,6 +103,7 @@ export function insertDmGrant(args: InsertDmGrantArgs): string | null {
            consent_source         = excluded.consent_source,
            consent_inbound_msg_id = excluded.consent_inbound_msg_id,
            consent_origin_user_id = excluded.consent_origin_user_id,
+           origin_platform_id     = excluded.origin_platform_id,
            expires_at             = excluded.expires_at,
            revoked_at             = NULL
          WHERE dm_grants.participant_open_id = excluded.participant_open_id`,
@@ -108,6 +119,7 @@ export function insertDmGrant(args: InsertDmGrantArgs): string | null {
         args.consentSource,
         args.consentInboundMsgId,
         args.consentOriginUserId ?? null,
+        args.originPlatformId ?? null,
         now,
         args.expiresAt ?? null,
         maxSends,
@@ -145,6 +157,13 @@ export function listGrantsForScope(scopeId: string): DmGrantRow[] {
   return getDb()
     .prepare('SELECT * FROM dm_grants WHERE scope_id = ? ORDER BY created_at ASC')
     .all(scopeId) as DmGrantRow[];
+}
+
+/** All live (non-revoked) grants a participant currently holds, across scopes. */
+export function listLiveGrantsForParticipant(participantOpenId: string): DmGrantRow[] {
+  return getDb()
+    .prepare('SELECT * FROM dm_grants WHERE participant_open_id = ? AND revoked_at IS NULL')
+    .all(participantOpenId) as DmGrantRow[];
 }
 
 /**
@@ -210,6 +229,53 @@ export function revokeScope(scopeId: string, now: Date = new Date()): number {
     .run(nowIso, scopeId).changes;
 }
 
+/**
+ * Revoke a single participant's live grant in one scope (item 11a, explicit
+ * opt-out). The participant DM'd the bot a leave/opt-out command, or clicked an
+ * "exit" card; the host tears down only THAT participant's grant in THAT scope.
+ * Idempotent. Returns the number of rows newly revoked (0 or 1, given the
+ * UNIQUE(scope_id, participant_open_id) constraint).
+ */
+export function revokeParticipantInScope(scopeId: string, participantOpenId: string, now: Date = new Date()): number {
+  return getDb()
+    .prepare(
+      'UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND participant_open_id = ? AND revoked_at IS NULL',
+    )
+    .run(now.toISOString(), scopeId, participantOpenId).changes;
+}
+
+/**
+ * Revoke every live grant a leaver held that was consented in the chat they
+ * just left (item 11b, best-effort platform leave/disband event). Matches on
+ * (origin_platform_id = the chat they left) AND (participant_open_id = the
+ * leaver). Pure-p2p grants (origin_platform_id IS NULL) are intentionally NOT
+ * touched — there is no "leaving" a p2p conversation with the bot; those are
+ * torn down by explicit opt-out or scope finish only. Idempotent. Returns the
+ * count newly revoked.
+ *
+ * On `im.chat.disbanded_v1` there is no single leaver, so callers pass
+ * participantOpenId = null to revoke ALL live grants whose origin was that chat.
+ */
+export function revokeGrantsForLeaver(
+  originPlatformId: string,
+  participantOpenId: string | null,
+  now: Date = new Date(),
+): number {
+  const nowIso = now.toISOString();
+  if (participantOpenId) {
+    return getDb()
+      .prepare(
+        `UPDATE dm_grants SET revoked_at = ?
+           WHERE origin_platform_id = ? AND participant_open_id = ? AND revoked_at IS NULL`,
+      )
+      .run(nowIso, originPlatformId, participantOpenId).changes;
+  }
+  // Disband: revoke every live grant whose origin was this chat.
+  return getDb()
+    .prepare('UPDATE dm_grants SET revoked_at = ? WHERE origin_platform_id = ? AND revoked_at IS NULL')
+    .run(nowIso, originPlatformId).changes;
+}
+
 // ---------------------------------------------------------------------------
 // Multi-key sliding-window rate limit (R5)
 // ---------------------------------------------------------------------------
@@ -223,8 +289,8 @@ export interface RateWindow {
 
 /**
  * Default per-key windows. AND semantics: a send is allowed only if EVERY key
- * is under its limit. Conservative defaults; deployment-level tuning is
- * harden-after (item 14).
+ * is under its limit. Conservative defaults; the deploy bucket is env-tunable
+ * via resolveDeployQuota (item 14).
  */
 export const DEFAULT_RATE_WINDOWS: Record<'grant' | 'scope' | 'participant' | 'deploy', RateWindow> = {
   grant: { windowSec: 60, limit: 3 },
@@ -232,6 +298,93 @@ export const DEFAULT_RATE_WINDOWS: Record<'grant' | 'scope' | 'participant' | 'd
   scope: { windowSec: 60, limit: 20 },
   deploy: { windowSec: 60, limit: 100 },
 };
+
+/**
+ * Deployment-level blast-radius quota (item 14). The `deploy` rate key was a
+ * hardcoded 60s/100 window keyed on the literal string 'global'. Operators can
+ * now tune the per-minute deploy window AND add a separate rolling 24h cap so a
+ * compromised agent cannot drip-send under the per-minute limit indefinitely.
+ *
+ * Resolution mirrors the rest of the host config convention: process env →
+ * `.env` → default. Read lazily (per send) so a config reload doesn't require a
+ * process bounce and tests can drive it via process.env.
+ *
+ *   ROSTER_DEPLOY_WINDOW_SEC   per-minute-style window length   (default 60)
+ *   ROSTER_DEPLOY_WINDOW_CAP   sends allowed in that window      (default 100)
+ *   ROSTER_DEPLOY_DAILY_CAP    sends allowed per rolling 24h     (default 0 = off)
+ *   ROSTER_DEPLOY_KEY          deploy ledger key suffix          (default 'global')
+ */
+function readRosterEnvInt(key: string): number | undefined {
+  const fromProc = process.env[key];
+  const raw = fromProc !== undefined ? fromProc : readEnvFile([key])[key];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const n = parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+function readRosterEnvStr(key: string): string | undefined {
+  const fromProc = process.env[key];
+  const raw = fromProc !== undefined ? fromProc : readEnvFile([key])[key];
+  const v = raw?.trim();
+  return v ? v : undefined;
+}
+
+export interface DeployQuotaConfig {
+  /** Ledger key suffix for the deploy bucket (allows partitioning if ever needed). */
+  key: string;
+  /** Short rolling window (the existing per-minute-style deploy bucket). */
+  window: RateWindow;
+  /** Rolling 24h cap. limit<=0 disables the daily layer. */
+  dailyCap: number;
+  dailyWindowSec: number;
+}
+
+export function resolveDeployQuota(): DeployQuotaConfig {
+  return {
+    key: readRosterEnvStr('ROSTER_DEPLOY_KEY') ?? 'global',
+    window: {
+      windowSec: readRosterEnvInt('ROSTER_DEPLOY_WINDOW_SEC') ?? DEFAULT_RATE_WINDOWS.deploy.windowSec,
+      limit: readRosterEnvInt('ROSTER_DEPLOY_WINDOW_CAP') ?? DEFAULT_RATE_WINDOWS.deploy.limit,
+    },
+    dailyCap: readRosterEnvInt('ROSTER_DEPLOY_DAILY_CAP') ?? 0,
+    dailyWindowSec: 86_400,
+  };
+}
+
+/**
+ * Read-only check of the deployment-level daily cap (item 14). Returns blocked
+ * when the daily deploy bucket is at/over ROSTER_DEPLOY_DAILY_CAP. This is a
+ * TUMBLING window (floored to the dailyWindowSec boundary), not a true sliding
+ * 24h sum — cheap and restart-stable. Known edge: up to ~2× the cap can land
+ * across a boundary; acceptable for a defense-in-depth blast-radius ceiling
+ * (primary controls are consent + per-grant max_sends). The short deploy window
+ * is still enforced by checkRateKeys via the same ledger; this adds the
+ * long-horizon ceiling. Does NOT mutate — consumption is recorded by
+ * recordDeployDailyConsumption only after the send commits.
+ */
+export function checkDeployDailyCap(quota: DeployQuotaConfig, now: Date = new Date()): RateCheckResult {
+  if (quota.dailyCap <= 0) return { allowed: true };
+  const ledgerKey = `deploy-daily:${quota.key}`;
+  const ws = windowStartIso(now, quota.dailyWindowSec);
+  if (currentCount(ledgerKey, ws) >= quota.dailyCap) {
+    return { allowed: false, blockedKey: ledgerKey };
+  }
+  return { allowed: true };
+}
+
+/** Persist one unit against the daily deploy bucket (tumbling window, see
+ *  checkDeployDailyCap). No-op when the cap is off. */
+export function recordDeployDailyConsumption(quota: DeployQuotaConfig, now: Date = new Date()): void {
+  if (quota.dailyCap <= 0) return;
+  const ws = windowStartIso(now, quota.dailyWindowSec);
+  getDb()
+    .prepare(
+      `INSERT INTO dm_rate_ledger (key, window_start, count)
+         VALUES (?, ?, 1)
+         ON CONFLICT(key, window_start) DO UPDATE SET count = count + 1`,
+    )
+    .run(`deploy-daily:${quota.key}`, ws);
+}
 
 function windowStartIso(now: Date, windowSec: number): string {
   // Floor the current time to the window boundary so all sends in the same

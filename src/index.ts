@@ -173,6 +173,13 @@ async function main(): Promise<void> {
       const adapter = getChannelAdapter(channelType);
       await adapter?.setTyping?.(platformId, threadId);
     },
+    // Roster-DM send-time membership re-check (ADR-0023 item 12). Delegates to
+    // the channel adapter's optional isMember; absence → undefined (unknown).
+    async isMember(channelType: string, platformId: string, userHandle: string): Promise<boolean | undefined> {
+      const adapter = getChannelAdapter(channelType);
+      if (!adapter?.isMember) return undefined;
+      return adapter.isMember(platformId, userHandle);
+    },
   };
   setDeliveryAdapter(deliveryAdapter);
 

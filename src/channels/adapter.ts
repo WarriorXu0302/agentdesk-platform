@@ -138,6 +138,16 @@ export interface ChannelAdapter {
   resolveChannelName?(platformId: string): Promise<string | null>;
 
   /**
+   * Optional real-time membership check (ADR-0023 item 12). Returns whether
+   * `userHandle` is currently a member of the group `platformId`. A definite
+   * boolean lets the roster-DM gate fail-closed on "not a member" before
+   * sending; returning `undefined` means the channel can't answer right now
+   * (API error / unsupported) and the gate falls back to consent-revoke paths.
+   * Channels that can't query group membership omit this entirely.
+   */
+  isMember?(platformId: string, userHandle: string): Promise<boolean | undefined>;
+
+  /**
    * Subscribe the bot to a thread so follow-up messages route via the
    * platform's "subscribed message" path (onSubscribedMessage in Chat SDK).
    * Called by the router when a mention-sticky wiring first engages in a

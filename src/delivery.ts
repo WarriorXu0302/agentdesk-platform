@@ -36,14 +36,28 @@ import {
   deliveryRetriesTotal,
 } from './metrics.js';
 import { normalizeOptions } from './channels/ask-question.js';
-import { checkGrantLive, checkRateKeys, incrementSends, recordRateConsumption } from './db/dm-grants.js';
+import {
+  checkGrantLive,
+  checkRateKeys,
+  incrementSends,
+  recordRateConsumption,
+  resolveDeployQuota,
+  checkDeployDailyCap,
+  recordDeployDailyConsumption,
+  revokeParticipantInScope,
+  DEFAULT_RATE_WINDOWS,
+} from './db/dm-grants.js';
 import { recordDmAudit } from './db/dm-audit.js';
 import {
   hostScopeForSession,
   isRootSessionModeForRosterDm,
   looksLikeRawPlatformId,
   rosterDmEnabledForGroup,
+  rosterVerifyMembershipEnabled,
+  originGroupPlatformIdForGrant,
 } from './roster-dm.js';
+import { rosterGatewayAuthorityEnabled, authorizeDm } from './roster-gateway.js';
+import { readContainerConfig } from './container-config.js';
 import { rosterDmRejectedTotal } from './metrics.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { markProgressStatusCompleted, markProgressStatusFailed } from './modules/progress-status/index.js';
@@ -104,6 +118,48 @@ function withDeliveryTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  */
 const inflightDeliveries = new Set<string>();
 
+/**
+ * Short-lived membership cache (ADR-0023 item 12). When ROSTER_VERIFY_MEMBERSHIP
+ * is on, every roster send would otherwise hit the channel's group-member API;
+ * a tiny TTL cache collapses bursts (e.g. a per-participant broadcast) into one
+ * call per (group, member) per window without keeping a stale answer long
+ * enough to matter for revocation latency. Keyed by `${channelType}|${platformId}|${userHandle}`.
+ */
+const MEMBERSHIP_CACHE_TTL_MS = 30_000;
+const membershipCache = new Map<string, { value: boolean | undefined; expiresAt: number }>();
+
+async function isMemberCached(
+  adapter: ChannelDeliveryAdapter,
+  channelType: string,
+  groupPlatformId: string,
+  userHandle: string,
+  now: number = Date.now(),
+): Promise<boolean | undefined> {
+  if (!adapter.isMember) return undefined;
+  const key = `${channelType}|${groupPlatformId}|${userHandle}`;
+  const hit = membershipCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value;
+  let value: boolean | undefined;
+  try {
+    value = await adapter.isMember(channelType, groupPlatformId, userHandle);
+  } catch (err) {
+    // Treat an API error as "unknown" (undefined), NOT "not a member" — a flaky
+    // members API must not start dropping legitimate DMs. Unknown falls back to
+    // the item-11 revoke paths.
+    log.warn('roster-dm: isMember check threw — treating as unknown', { groupPlatformId, err });
+    value = undefined;
+  }
+  // Cache definite answers only; don't pin an "unknown" so a transient API blip
+  // is retried on the next send rather than masking a real membership change.
+  if (value !== undefined) membershipCache.set(key, { value, expiresAt: now + MEMBERSHIP_CACHE_TTL_MS });
+  return value;
+}
+
+/** Test seam: clear the membership cache between cases. */
+export function __clearMembershipCacheForTests(): void {
+  membershipCache.clear();
+}
+
 export interface ChannelDeliveryAdapter {
   deliver(
     channelType: string,
@@ -114,6 +170,16 @@ export interface ChannelDeliveryAdapter {
     files?: OutboundFile[],
   ): Promise<string | undefined>;
   setTyping?(channelType: string, platformId: string, threadId: string | null): Promise<void>;
+  /**
+   * Optional strong membership check (ADR-0023 item 12). Returns whether
+   * `userHandle` is still a member of the group `platformId`. A definite
+   * boolean lets the roster gate fail-closed on "not a member"; `undefined`
+   * means the channel can't answer right now (API error / unknown) and the
+   * gate falls back to the item-11 revoke paths. Only consulted when
+   * ROSTER_VERIFY_MEMBERSHIP=true. Channels that can't query membership omit
+   * this method entirely.
+   */
+  isMember?(channelType: string, platformId: string, userHandle: string): Promise<boolean | undefined>;
 }
 
 let deliveryAdapter: ChannelDeliveryAdapter | null = null;
@@ -736,16 +802,97 @@ async function deliverRosterMessage(
     });
   }
 
+  // The destination the adapter will actually receive. Starts as the local
+  // grant's authoritative target; the gateway (item 13) may override it.
+  let deliverChannelType = grant.channel_type;
+  let deliverPlatformId = grant.dm_platform_id;
+
+  // 8b. Gateway authority (ADR-0023 item 13). When this agent group has a
+  // backendGateway AND ROSTER_GATEWAY_AUTHORITY=true, the host asks the gateway
+  // whether this DM may proceed BEFORE honoring the local grant — moving the
+  // source of truth toward the "gateway is the only business path" invariant.
+  // The local table degrades to a cache/audit layer (it still gated us this
+  // far, but the gateway has the final say). fail-closed: a deny / unreachable
+  // gateway rejects the send — if you configured a gateway authority you asked
+  // to trust it, so a flaky gateway must NOT silently fall back to the local
+  // table. When the flag is off or no gateway is configured, the local table
+  // remains authoritative (documented PoC transitional state).
+  if (rosterGatewayAuthorityEnabled()) {
+    const group = getAgentGroup(session.agent_group_id);
+    const gateway = group ? readContainerConfig(group.folder).backendGateway : undefined;
+    if (gateway?.baseUrl) {
+      const decision = await authorizeDm(gateway, {
+        scopeId,
+        slotLabel,
+        participantOpenId: grant.participant_open_id,
+        dmPlatformId: grant.dm_platform_id,
+        agentGroupId: session.agent_group_id,
+        channelType: grant.channel_type,
+      });
+      if (decision.decision !== 'allow') {
+        return reject('gateway_denied', {
+          slotLabel,
+          grantId: grant.id,
+          participantOpenId: grant.participant_open_id,
+          dmPlatformId: grant.dm_platform_id,
+        });
+      }
+      // Optional authoritative target override from the gateway. Re-validate
+      // its shape exactly like the local grant target so the gateway can't be
+      // tricked (or misconfigured) into widening to a group/non-p2p target.
+      if (decision.target?.dmPlatformId) {
+        const t = decision.target;
+        const ct = t.channelType ?? grant.channel_type;
+        const pid = t.dmPlatformId as string;
+        const tmg = getMessagingGroupByPlatform(ct, pid);
+        if (ct !== 'feishu' || !/^feishu:p2p:ou_/i.test(pid) || !tmg || tmg.is_group !== 0) {
+          return reject('gateway_target_invalid', {
+            slotLabel,
+            grantId: grant.id,
+            participantOpenId: grant.participant_open_id,
+            dmPlatformId: pid,
+          });
+        }
+        deliverChannelType = ct;
+        deliverPlatformId = pid;
+      }
+    }
+    // No gateway configured for this group while the flag is on → fall through
+    // to the local table (the flag is a deployment-wide intent; a group without
+    // a gateway simply has nothing to delegate to). Documented in the ADR.
+  }
+
   // 7. multi-key rate limit (read-only — does not burn quota on rejection).
+  // The deploy bucket window/key are operator-tunable (item 14); build the
+  // windows object so the deploy short-window matches resolveDeployQuota.
+  const deployQuota = resolveDeployQuota();
   const rateKeys = {
     grant: grant.id,
     scope: scopeId,
     participant: grant.participant_open_id,
-    deploy: 'global',
+    deploy: deployQuota.key,
   };
-  const rate = checkRateKeys(rateKeys);
+  const rateWindows: typeof DEFAULT_RATE_WINDOWS = {
+    grant: DEFAULT_RATE_WINDOWS.grant,
+    participant: DEFAULT_RATE_WINDOWS.participant,
+    scope: DEFAULT_RATE_WINDOWS.scope,
+    deploy: deployQuota.window,
+  };
+  const rate = checkRateKeys(rateKeys, rateWindows);
   if (!rate.allowed) {
     return reject('rate_limited', {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+  // 7b. Deployment-level rolling-24h blast-radius cap (item 14). Separate from
+  // the short deploy window so a compromised agent can't drip-send under the
+  // per-minute limit indefinitely. Off (no rejection) when ROSTER_DEPLOY_DAILY_CAP<=0.
+  const dailyCap = checkDeployDailyCap(deployQuota);
+  if (!dailyCap.allowed) {
+    return reject('deploy_daily_cap', {
       slotLabel,
       grantId: grant.id,
       participantOpenId: grant.participant_open_id,
@@ -766,6 +913,39 @@ async function deliverRosterMessage(
     });
   }
 
+  // 9. Send-time membership re-check (ADR-0023 item 12, optional, default OFF).
+  // The item-11 revoke paths (explicit opt-out + best-effort leave/disband
+  // events) are the baseline. ROSTER_VERIFY_MEMBERSHIP=true adds a strong,
+  // real-time check immediately before the adapter call (same critical section
+  // as the send): confirm the participant is STILL in the scope's origin group
+  // via the channel adapter's optional isMember. A definite "no" fails closed —
+  // we reject AND revoke the participant's grant in this scope (a leaver who
+  // slipped past the events). "unknown" (adapter has no isMember, or its API
+  // erred) falls back to item 11 — see the doc trade-off.
+  if (rosterVerifyMembershipEnabled()) {
+    const originGroup = originGroupPlatformIdForGrant(grant);
+    if (originGroup) {
+      const stillMember = await isMemberCached(
+        deliveryAdapter,
+        grant.channel_type,
+        originGroup,
+        grant.participant_open_id,
+      );
+      if (stillMember === false) {
+        // Fail-closed: drop the in-flight DM and tear down the grant so future
+        // sends in this scope are rejected at the live check, not re-queried.
+        revokeParticipantInScope(scopeId, grant.participant_open_id);
+        membershipCache.delete(`${grant.channel_type}|${originGroup}|${grant.participant_open_id}`);
+        return reject('not_in_scope', {
+          slotLabel,
+          grantId: grant.id,
+          participantOpenId: grant.participant_open_id,
+          dmPlatformId: grant.dm_platform_id,
+        });
+      }
+    }
+  }
+
   // Scrub model reasoning tags from user-facing text, same as the channel path.
   let outboundContent = msg.content;
   if (typeof content.text === 'string') {
@@ -778,8 +958,8 @@ async function deliverRosterMessage(
   const platformMsgId = await withSpan(
     'delivery.roster.send',
     chainAttrs({
-      'channel.type': grant.channel_type,
-      'platform.id': grant.dm_platform_id,
+      'channel.type': deliverChannelType,
+      'platform.id': deliverPlatformId,
       'roster.scope_id': scopeId,
       'roster.slot_label': slotLabel as string,
       ...outputAttrs(typeof content.text === 'string' ? content.text : outboundContent),
@@ -787,8 +967,8 @@ async function deliverRosterMessage(
     async () => {
       return await withDeliveryTimeout(
         deliveryAdapter!.deliver(
-          grant.channel_type,
-          grant.dm_platform_id,
+          deliverChannelType,
+          deliverPlatformId,
           null, // directed DMs are never threaded into a group
           msg.kind,
           outboundContent,
@@ -807,14 +987,15 @@ async function deliverRosterMessage(
   // writes under-counts by one — acceptable and consistent with ADR-0016's
   // at-least-once stance. incrementSends auto-revokes the grant at max_sends.
   incrementSends(grant.id);
-  recordRateConsumption(rateKeys);
+  recordRateConsumption(rateKeys, rateWindows);
+  recordDeployDailyConsumption(deployQuota);
 
   recordDmAudit({
     ...auditBase,
     slotLabel,
     grantId: grant.id,
     participantOpenId: grant.participant_open_id,
-    dmPlatformId: grant.dm_platform_id,
+    dmPlatformId: deliverPlatformId,
     decision: 'delivered',
   });
   log.info('Roster DM delivered', {
@@ -822,7 +1003,7 @@ async function deliverRosterMessage(
     scopeId,
     slotLabel,
     grantId: grant.id,
-    dmPlatformId: grant.dm_platform_id,
+    dmPlatformId: deliverPlatformId,
     platformMsgId,
   });
 

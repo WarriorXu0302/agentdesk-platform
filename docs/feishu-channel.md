@@ -78,6 +78,13 @@ Current scope:
 - `im.message.receive_v1`
 - `card.action.trigger`
 - `url_verification`
+- `im.chat.member.user.deleted_v1` (roster-DM leave revoke, best-effort; ADR-0023 item 11b)
+- `im.chat.disbanded_v1` (roster-DM disband revoke, best-effort; ADR-0023 item 11b)
+
+Subscribe the bot to the two `im.chat.*` events in the Feishu developer console
+if you enable roster DMs and want the best-effort leave/disband revoke (the
+hard guarantee is the opt-out command + the optional send-time membership
+re-check below — the events only tighten the window).
 
 ## Session identity model
 
@@ -141,6 +148,106 @@ plain channel row) is rejected. Roster rows may not carry `deliver_after` /
 Scope teardown: when the scope's root session is archived, all of its grants are
 revoked (`revokeScope`), so any not-yet-delivered roster row fails on its next
 drain tick.
+
+### Opt-out / leave revoke (ADR-0023 item 11)
+
+A consented participant can stop being reached at any time:
+
+1. **Explicit opt-out (always available, no membership source needed).** The
+   participant DMs the bot a leave command — `leave`, `unsubscribe`, `opt out`,
+   `退出`, `退订`, `取消` (optionally prefixed with `@bot`), or a structured
+   `{"kind":"roster.optout","scopeId":...}` payload — or clicks a directed
+   "exit" card. The host revokes that participant's grant. A plain-text `leave`
+   (no scope) revokes the participant across **all** scopes; a scoped payload
+   revokes only that scope. The participant id always comes from the inbound
+   sender, so a forged `scopeId` can at most revoke the sender's **own** grant.
+
+2. **Platform leave/disband events (best-effort).** When the bot is subscribed
+   to `im.chat.member.user.deleted_v1` / `im.chat.disbanded_v1`, leaving or
+   dissolving the group revokes grants that were consented **in that chat**
+   (matched on the grant's recorded `origin_platform_id`). Pure p2p opt-ins have
+   no origin group and are untouched by these events — they end only via
+   explicit opt-out or scope teardown. Events can be missed (host downtime), so
+   this is best-effort; the real backstop is item 12 below.
+
+### Send-time membership re-check (optional, ADR-0023 item 12)
+
+Default behavior re-checks only that the grant has not been revoked. Set
+`ROSTER_VERIFY_MEMBERSHIP=true` to add a **strong** real-time check immediately
+before each send: the host calls the Feishu adapter's group-members API to
+confirm the participant is still in the scope's origin group.
+
+- A definite **"not a member"** → fail-closed: the DM is dropped and the grant
+  is revoked.
+- **Unknown** (members API errored, or the channel can't answer) → falls back to
+  the item-11 revoke paths (does NOT drop a legitimate DM on a transient blip).
+
+A 30s membership cache collapses bursts into one API call per (group, member)
+per window — so a per-participant broadcast doesn't hammer the API, at the cost
+of up to ~30s of staleness on a membership change.
+
+Trade-off: when off (the default), revocation latency depends on the opt-out
+command + the best-effort leave events. Turn this on for deployments where a
+participant silently leaving the source group must stop DMs within seconds.
+
+### Gateway authorization authority (optional, ADR-0023 item 13)
+
+By default the local `dm_grants` table is the authorization source of truth
+(the documented PoC transitional state). To move the source of truth toward the
+backend gateway, set `ROSTER_GATEWAY_AUTHORITY=true` AND configure the agent
+group's `container.json` `backendGateway`. The host then asks the gateway
+`POST <baseUrl>/authorizeDm` (HMAC-signed with the same headers as the
+container's gateway calls) **before** honoring the local grant:
+
+- Request body: `{ operation:"roster.dm.authorize", scopeId, slotLabel,
+  participantOpenId, dmPlatformId, agentGroupId, channelType }`.
+- The gateway must reply `{"decision":"allow"}` (optionally with an authoritative
+  `target:{channelType,dmPlatformId}` override, re-validated to a `feishu:p2p:ou_*`
+  p2p destination) to permit the send; anything else denies.
+- **fail-closed:** an unreachable / non-2xx / malformed gateway response rejects
+  the send. If you configured a gateway authority you asked to trust it.
+- When the flag is off, or no gateway is configured for the group, the local
+  table remains authoritative.
+
+### Worst-case blast radius (ADR-0023 item 14)
+
+Quantified ceilings for a single deployment with roster DMs enabled:
+
+| Bound | Mechanism | Default | Env knob |
+|-------|-----------|---------|----------|
+| Addressable people per scope | `UNIQUE(scope_id, participant_open_id)` — one slot per participant; only consented participants are addressable | bounded by number of consents in the scope | — (consent-gated) |
+| Sends per grant (lifetime) | per-grant `max_sends` (auto-revoke) | 0 = uncapped | set `maxSends` on the opt-in payload |
+| Sends per grant / window | rate ledger `grant` key | 3 / 60s | (code default) |
+| Sends per participant / window | rate ledger `participant` key | 5 / 60s | (code default) |
+| Sends per scope / window | rate ledger `scope` key | 20 / 60s | (code default) |
+| Sends per deployment / short window | rate ledger `deploy` key | 100 / 60s | `ROSTER_DEPLOY_WINDOW_CAP`, `ROSTER_DEPLOY_WINDOW_SEC` |
+| Sends per deployment / day (tumbling, UTC boundary) | deploy daily cap | 0 = off | `ROSTER_DEPLOY_DAILY_CAP` |
+
+All windows are AND-combined (a send must be under every key) and the ledger is
+host-single-writer, so the limits survive a process restart. The deploy daily
+cap is the hard blast-radius ceiling: with `ROSTER_DEPLOY_DAILY_CAP=N`, a fully
+compromised agent group can emit at most N roster DMs across the whole
+deployment per day (tumbling window floored to a UTC boundary; up to ~2x the cap may land across a boundary) regardless of how many scopes/participants it holds.
+
+### Operator enablement checklist
+
+1. Set `ALLOW_ROSTER_DM=true` for the specific agent group (its
+   `container.json` `env`), and ensure that group runs
+   `a2aSessionMode: "root-session"`.
+2. Pick a deployment blast-radius ceiling: set `ROSTER_DEPLOY_DAILY_CAP` (and,
+   if needed, `ROSTER_DEPLOY_WINDOW_CAP` / `ROSTER_DEPLOY_WINDOW_SEC`).
+3. Recommended: set a per-grant `maxSends` on consent payloads so individual
+   grants self-expire.
+4. If silent leavers must stop DMs within seconds, set
+   `ROSTER_VERIFY_MEMBERSHIP=true` and grant the bot the group-members read
+   scope in the Feishu console.
+5. Subscribe the bot to `im.chat.member.user.deleted_v1` and
+   `im.chat.disbanded_v1` for best-effort leave/disband revoke.
+6. If the backend gateway is the authorization authority, set
+   `ROSTER_GATEWAY_AUTHORITY=true` and implement `POST /authorizeDm` on the
+   gateway (HMAC-verified).
+7. Monitor `*_roster_dm_rejected_total{reason}` — a sustained non-zero rate
+   means an agent is attempting DMs it isn't entitled to.
 
 ## Current limitations
 

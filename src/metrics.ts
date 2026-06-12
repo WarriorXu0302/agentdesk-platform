@@ -249,8 +249,12 @@ export const rosterDmRejectedTotal = new client.Counter({
   help: 'Roster directed-message sends rejected by the host outbound authorization gate (ADR-0023)',
   // `reason`: no_grant | bad_consent_source | scope_mismatch | revoked |
   //   expired | max_sends | rate_limited | raw_platform_id | not_p2p_open_id |
-  //   target_mismatch | flag_disabled. Any sustained non-zero rate means an
-  //   agent is attempting roster DMs it isn't entitled to — investigate.
+  //   target_mismatch | flag_disabled | agent_shared_mode | scheduled_or_recurring |
+  //   missing_slot | no_adapter | channel_branch_p2p_bypass |
+  //   gateway_denied | gateway_target_invalid (item 13) |
+  //   not_in_scope (item 12 membership re-check) |
+  //   deploy_daily_cap (item 14 blast-radius cap). Any sustained non-zero rate
+  //   means an agent is attempting roster DMs it isn't entitled to — investigate.
   labelNames: ['reason'] as const,
   registers: [registry],
 });

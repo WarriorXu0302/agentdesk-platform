@@ -21,11 +21,17 @@
  */
 import { readContainerConfig } from './container-config.js';
 import { getAgentGroup } from './db/agent-groups.js';
-import { revokeScope as revokeScopeGrants } from './db/dm-grants.js';
+import { getSession } from './db/sessions.js';
+import { getMessagingGroup } from './db/messaging-groups.js';
+import {
+  revokeScope as revokeScopeGrants,
+  revokeParticipantInScope,
+  listLiveGrantsForParticipant,
+} from './db/dm-grants.js';
 import { readEnvFile } from './env.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
-import type { DmConsentSource } from './db/dm-grants.js';
+import type { DmConsentSource, DmGrantRow } from './db/dm-grants.js';
 
 /**
  * Per-agent-group opt-in. Resolution order mirrors the rest of the host's
@@ -171,4 +177,113 @@ export function revokeScope(scopeId: string): number {
   const n = revokeScopeGrants(scopeId);
   if (n > 0) log.info('roster-dm: scope revoked', { scopeId, revoked: n });
   return n;
+}
+
+// ---------------------------------------------------------------------------
+// Item 11a — explicit opt-out (leave) parsing + host-side revoke
+// ---------------------------------------------------------------------------
+
+/**
+ * Recognize an explicit roster opt-out command. Mirrors the conservative,
+ * shape-first style of parseRosterOptIn (channels/feishu/roster-consent.ts):
+ * the participant either sends a structured leave payload
+ * (`{"kind":"roster.optout","scopeId":...}`) or a plain text command
+ * (`@bot leave` / `leave` / `退出` / `unsubscribe`). Returns the scopeId to
+ * revoke against, or null when it isn't an opt-out.
+ *
+ * The structured form carries an explicit scopeId; the plain-text form does
+ * NOT (a user typing "leave" can't know the host's unguessable scope id), so it
+ * returns scopeId=null and the caller resolves the scope from the session/grant
+ * lookup. participant_open_id ALWAYS comes from the inbound event sender — never
+ * from the payload — so a forged scopeId can at most revoke the sender's OWN
+ * grant in some scope, never someone else's (fail-safe direction).
+ */
+export interface RosterOptOut {
+  scopeId: string | null;
+}
+
+const PLAIN_OPTOUT_RE = /^\s*(?:@\S+\s+)?(?:roster[:\s-]*)?(leave|unsubscribe|opt[\s-]*out|退出|退订|取消)\s*$/i;
+
+export function parseRosterOptOut(value: unknown, rawText?: string): RosterOptOut | null {
+  // Structured leave payload (parallels roster.optin).
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (obj.kind === 'roster.optout') {
+      const scopeId = typeof obj.scopeId === 'string' && obj.scopeId.trim() ? obj.scopeId.trim() : null;
+      return { scopeId };
+    }
+  }
+  // Plain-text leave command.
+  if (typeof rawText === 'string' && PLAIN_OPTOUT_RE.test(rawText)) {
+    return { scopeId: null };
+  }
+  return null;
+}
+
+/**
+ * Host-side opt-out (item 11a). Revoke the participant's grant(s).
+ *
+ *   - scopeId provided  → revoke that participant in exactly that scope.
+ *   - scopeId null       → the participant typed a plain "leave"; revoke EVERY
+ *                          live grant this participant holds across scopes (we
+ *                          can't ask them to know an unguessable scope id, and
+ *                          a participant opting out of "the bot DMing me" should
+ *                          stop all of it). participant_open_id is the trusted
+ *                          inbound sender, so this only ever affects their own
+ *                          grants.
+ *
+ * Returns the number of grants newly revoked.
+ */
+export function optOutParticipant(participantOpenId: string, scopeId: string | null): number {
+  const id = participantOpenId?.trim();
+  if (!id || !id.startsWith('ou_')) return 0;
+  let revoked = 0;
+  if (scopeId) {
+    revoked = revokeParticipantInScope(scopeId, id);
+  } else {
+    for (const grant of listLiveGrantsForParticipant(id)) {
+      revoked += revokeParticipantInScope(grant.scope_id, id);
+    }
+  }
+  if (revoked > 0) log.info('roster-dm: participant opted out', { participantOpenId: id, scopeId, revoked });
+  return revoked;
+}
+
+// ---------------------------------------------------------------------------
+// Item 12 — send-time membership re-check (optional, default OFF)
+// ---------------------------------------------------------------------------
+
+/**
+ * Strong send-time membership verification. Default OFF. When
+ * ROSTER_VERIFY_MEMBERSHIP=true, the delivery gate calls the channel adapter's
+ * optional isMember(platformId, userHandle) right before adapter.deliver to
+ * confirm the participant is STILL in the scope's origin group. A definite "no"
+ * fails closed (reject + revoke). An adapter that doesn't implement isMember or
+ * returns undefined (unknown) falls back to the default behavior — relying on
+ * the item-11 revoke paths (explicit opt-out + best-effort leave events).
+ *
+ * Resolution: process env → `.env`. Read lazily so tests can drive it.
+ */
+export function rosterVerifyMembershipEnabled(): boolean {
+  const fromProc = process.env.ROSTER_VERIFY_MEMBERSHIP;
+  if (fromProc !== undefined) return fromProc.trim().toLowerCase() === 'true';
+  const dotenv = readEnvFile(['ROSTER_VERIFY_MEMBERSHIP']);
+  return (dotenv.ROSTER_VERIFY_MEMBERSHIP ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * Resolve the origin group platform id for a grant, so the membership check
+ * knows WHICH group to ask about. Prefers the grant's own origin_platform_id
+ * (recorded at consent time, item 11b). Falls back to the scope's root session
+ * messaging group (`feishu:<chat_id>`) when the grant predates the column.
+ * Returns null when neither is available — the caller then skips the check
+ * (unknown → fall back to item-11 revokes).
+ */
+export function originGroupPlatformIdForGrant(grant: DmGrantRow): string | null {
+  if (grant.origin_platform_id) return grant.origin_platform_id;
+  const session = getSession(grant.scope_id);
+  if (!session?.messaging_group_id) return null;
+  const mg = getMessagingGroup(session.messaging_group_id);
+  if (!mg || mg.is_group !== 1) return null;
+  return `${mg.channel_type}:${mg.platform_id}`;
 }

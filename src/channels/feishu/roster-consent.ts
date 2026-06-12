@@ -108,6 +108,14 @@ export function captureP2pIngressConsent(args: {
   inboundMsgId: string;
   isGroup: boolean;
   originUserId?: string | null;
+  /**
+   * Source group platform id (`feishu:<chat_id>`) the consent was given in, for
+   * leave-revoke (item 11b). For a pure p2p opt-in there is no group to leave,
+   * so callers pass null/omit — those grants are torn down only by explicit
+   * opt-out or scope finish. A group-chat consent is rejected upstream anyway
+   * (group_intent_only), so in practice this stays null for p2p-ingress.
+   */
+  originPlatformId?: string | null;
   now?: Date;
 }): ConsentResult {
   if (args.isGroup) {
@@ -134,6 +142,7 @@ export function captureP2pIngressConsent(args: {
     consentSource: 'p2p-ingress',
     inboundMsgId: args.inboundMsgId,
     originUserId: args.originUserId ?? null,
+    originPlatformId: args.originPlatformId ?? null,
     now: args.now,
   });
 }
@@ -150,6 +159,13 @@ export function captureDirectedCardConsent(args: {
   operatorOpenId: string | undefined;
   inboundMsgId: string;
   originUserId?: string | null;
+  /**
+   * Source group platform id (`feishu:<chat_id>`) the card was clicked in, for
+   * leave-revoke (item 11b). A directed card is typically posted in a group, so
+   * the host passes `feishu:<context.chat_id>`; null when there's no group
+   * context.
+   */
+  originPlatformId?: string | null;
   now?: Date;
 }): ConsentResult {
   const expectedUserId = args.optIn.expectedUserId;
@@ -184,6 +200,7 @@ export function captureDirectedCardConsent(args: {
     consentSource: 'directed-card',
     inboundMsgId: args.inboundMsgId,
     originUserId: args.originUserId ?? null,
+    originPlatformId: args.originPlatformId ?? null,
     now: args.now,
   });
 }
@@ -194,6 +211,7 @@ function mintGrant(args: {
   consentSource: 'p2p-ingress' | 'directed-card';
   inboundMsgId: string;
   originUserId: string | null;
+  originPlatformId: string | null;
   now?: Date;
 }): ConsentResult {
   const now = args.now ?? new Date();
@@ -208,6 +226,7 @@ function mintGrant(args: {
     consentSource: args.consentSource,
     consentInboundMsgId: args.inboundMsgId,
     consentOriginUserId: args.originUserId,
+    originPlatformId: args.originPlatformId,
     maxSends: args.optIn.maxSends,
     expiresAt: args.optIn.expiresAt ?? null,
     now,

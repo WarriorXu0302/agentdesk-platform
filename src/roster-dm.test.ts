@@ -36,6 +36,7 @@ vi.mock('./config.js', async () => {
 // stub readContainerConfig so the flag and mode are test-driven.
 let mockRosterEnabled = true;
 let mockA2aMode: 'agent-shared' | 'root-session' = 'root-session';
+let mockBackendGateway: import('./container-config.js').BackendGatewayConfig | undefined;
 vi.mock('./container-config.js', async () => {
   const actual = await vi.importActual<typeof import('./container-config.js')>('./container-config.js');
   return {
@@ -46,6 +47,7 @@ vi.mock('./container-config.js', async () => {
       additionalMounts: [],
       skills: 'all' as const,
       a2aSessionMode: mockA2aMode,
+      backendGateway: mockBackendGateway,
       env: { ALLOW_ROSTER_DM: mockRosterEnabled ? 'true' : 'false' },
     })),
   };
@@ -56,16 +58,25 @@ const TEST_DIR = '/tmp/nanoclaw-test-roster';
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { getDb } from './db/connection.js';
 import { resolveSession, outboundDbPath, inboundDbPath } from './session-manager.js';
-import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import { deliverSessionMessages, setDeliveryAdapter, __clearMembershipCacheForTests } from './delivery.js';
 import {
   insertDmGrant,
   getBySlot,
+  getByParticipant,
   checkGrantLive,
   revokeScope,
+  revokeGrantsForLeaver,
   checkRateKeys,
   recordRateConsumption,
 } from './db/dm-grants.js';
-import { assertRootSessionForRosterDm, parseConsentTarget, looksLikeRawPlatformId } from './roster-dm.js';
+import {
+  assertRootSessionForRosterDm,
+  parseConsentTarget,
+  looksLikeRawPlatformId,
+  parseRosterOptOut,
+  optOutParticipant,
+} from './roster-dm.js';
+import { authorizeDm } from './roster-gateway.js';
 import { captureP2pIngressConsent, captureDirectedCardConsent } from './channels/feishu/roster-consent.js';
 import type { Session } from './types.js';
 
@@ -124,17 +135,30 @@ function lastAudit(scopeId: string): { decision: string; reason: string | null }
     .get(scopeId) as { decision: string; reason: string | null } | undefined;
 }
 
+const ROSTER_ENV_KEYS = [
+  'ROSTER_GATEWAY_AUTHORITY',
+  'ROSTER_VERIFY_MEMBERSHIP',
+  'ROSTER_DEPLOY_DAILY_CAP',
+  'ROSTER_DEPLOY_WINDOW_SEC',
+  'ROSTER_DEPLOY_WINDOW_CAP',
+  'ROSTER_DEPLOY_KEY',
+];
+
 beforeEach(() => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
   mockRosterEnabled = true;
   mockA2aMode = 'root-session';
+  mockBackendGateway = undefined;
+  for (const k of ROSTER_ENV_KEYS) delete process.env[k];
+  __clearMembershipCacheForTests();
   runMigrations(initTestDb());
   seed();
 });
 
 afterEach(() => {
   closeDb();
+  for (const k of ROSTER_ENV_KEYS) delete process.env[k];
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
@@ -369,7 +393,7 @@ describe('delivery gate', () => {
     return session;
   }
 
-  function mintGrantForScope(scopeId: string, opts: { maxSends?: number } = {}): void {
+  function mintGrantForScope(scopeId: string, opts: { maxSends?: number; originPlatformId?: string } = {}): void {
     insertDmGrant({
       scopeId,
       agentGroupId: 'ag-1',
@@ -378,6 +402,7 @@ describe('delivery gate', () => {
       dmPlatformId: DM_PLATFORM,
       consentSource: 'p2p-ingress',
       consentInboundMsgId: 'msg:1',
+      originPlatformId: opts.originPlatformId ?? null,
       maxSends: opts.maxSends ?? 0,
     });
     // The grant target must resolve to a p2p messaging group (is_group=0).
@@ -561,5 +586,503 @@ describe('delivery gate', () => {
     await deliverSessionMessages(session);
     expect(calls).toBe(0);
     expect(lastAudit(session.id)?.reason).toBe('flag_disabled');
+  });
+});
+
+// --- harden-after (ADR-0023 items 11-14) ---------------------------------
+
+const ORIGIN_GROUP = 'feishu:oc_origin_group';
+
+function rootSession2(): Session {
+  const { session } = resolveSession('ag-1', null, null, 'agent-shared');
+  return session;
+}
+
+function mintGrant2(
+  scopeId: string,
+  opts: { maxSends?: number; originPlatformId?: string | null; slot?: string } = {},
+): string | null {
+  const id = insertDmGrant({
+    scopeId,
+    agentGroupId: 'ag-1',
+    slotLabel: opts.slot ?? 'reviewer',
+    participantOpenId: PARTICIPANT,
+    dmPlatformId: DM_PLATFORM,
+    consentSource: 'p2p-ingress',
+    consentInboundMsgId: 'msg:1',
+    originPlatformId: opts.originPlatformId ?? null,
+    maxSends: opts.maxSends ?? 0,
+  });
+  if (!getDb().prepare('SELECT 1 FROM messaging_groups WHERE platform_id = ?').get(DM_PLATFORM)) {
+    createMessagingGroup({
+      id: 'mg-p2p',
+      channel_type: 'feishu',
+      platform_id: DM_PLATFORM,
+      name: null,
+      is_group: 0,
+      unknown_sender_policy: 'strict',
+      created_at: now(),
+    });
+  }
+  return id;
+}
+
+// --- item 11a: explicit opt-out (leave) ----------------------------------
+
+describe('item 11a — explicit opt-out / leave', () => {
+  it('parses structured and plain-text leave commands; ignores chatter', () => {
+    expect(parseRosterOptOut({ kind: 'roster.optout', scopeId: 'scope-X' })).toEqual({ scopeId: 'scope-X' });
+    expect(parseRosterOptOut({ kind: 'roster.optout' })).toEqual({ scopeId: null });
+    expect(parseRosterOptOut(null, 'leave')).toEqual({ scopeId: null });
+    expect(parseRosterOptOut(null, '@bot leave')).toEqual({ scopeId: null });
+    expect(parseRosterOptOut(null, '退出')).toEqual({ scopeId: null });
+    expect(parseRosterOptOut(null, 'unsubscribe')).toEqual({ scopeId: null });
+    expect(parseRosterOptOut(null, 'please review the doc')).toBeNull();
+    expect(parseRosterOptOut(null, undefined)).toBeNull();
+  });
+
+  it('scoped opt-out revokes only that participant in that scope', () => {
+    mintGrant2('scope-A');
+    expect(checkGrantLive('scope-A', 'reviewer').ok).toBe(true);
+    expect(optOutParticipant(PARTICIPANT, 'scope-A')).toBe(1);
+    const after = checkGrantLive('scope-A', 'reviewer');
+    expect(after.ok).toBe(false);
+    if (!after.ok) expect(after.reason).toBe('revoked');
+  });
+
+  it('plain-text opt-out (no scope) revokes the participant across all scopes', () => {
+    mintGrant2('scope-A');
+    insertDmGrant({
+      scopeId: 'scope-B',
+      agentGroupId: 'ag-1',
+      slotLabel: 'reviewer',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'p2p-ingress',
+      consentInboundMsgId: 'm2',
+    });
+    expect(optOutParticipant(PARTICIPANT, null)).toBe(2);
+    expect(checkGrantLive('scope-A', 'reviewer').ok).toBe(false);
+    expect(checkGrantLive('scope-B', 'reviewer').ok).toBe(false);
+  });
+
+  it('a non-open_id sender cannot opt out (fail-safe)', () => {
+    mintGrant2('scope-A');
+    expect(optOutParticipant('not_an_open_id', 'scope-A')).toBe(0);
+    expect(checkGrantLive('scope-A', 'reviewer').ok).toBe(true);
+  });
+
+  it('opt-out drops a not-yet-delivered roster row on its drain tick', async () => {
+    const session = rootSession2();
+    mintGrant2(session.id);
+    optOutParticipant(PARTICIPANT, session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(calls).toBe(0);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('revoked');
+  });
+});
+
+// --- item 11b: platform leave/disband revoke -----------------------------
+
+describe('item 11b — leave/disband event revoke', () => {
+  it('revokeGrantsForLeaver revokes only grants from the chat the leaver left', () => {
+    // Two grants for the same participant, different origin chats + scopes.
+    insertDmGrant({
+      scopeId: 'scope-A',
+      agentGroupId: 'ag-1',
+      slotLabel: 'reviewer',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm1',
+      originPlatformId: ORIGIN_GROUP,
+    });
+    insertDmGrant({
+      scopeId: 'scope-B',
+      agentGroupId: 'ag-1',
+      slotLabel: 'reviewer',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm2',
+      originPlatformId: 'feishu:oc_other_group',
+    });
+    expect(revokeGrantsForLeaver(ORIGIN_GROUP, PARTICIPANT)).toBe(1);
+    expect(getByParticipant('scope-A', PARTICIPANT)?.revoked_at).not.toBeNull();
+    // The grant from a different origin chat is untouched.
+    expect(getByParticipant('scope-B', PARTICIPANT)?.revoked_at ?? null).toBeNull();
+  });
+
+  it('a pure p2p grant (null origin) is NOT touched by a leave event', () => {
+    mintGrant2('scope-A', { originPlatformId: null });
+    expect(revokeGrantsForLeaver(ORIGIN_GROUP, PARTICIPANT)).toBe(0);
+    expect(checkGrantLive('scope-A', 'reviewer').ok).toBe(true);
+  });
+
+  it('disband revokes every live grant originating in the disbanded chat', () => {
+    insertDmGrant({
+      scopeId: 'scope-A',
+      agentGroupId: 'ag-1',
+      slotLabel: 'reviewer',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm1',
+      originPlatformId: ORIGIN_GROUP,
+    });
+    insertDmGrant({
+      scopeId: 'scope-A',
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: 'ou_participant_2',
+      dmPlatformId: 'feishu:p2p:ou_participant_2',
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm2',
+      originPlatformId: ORIGIN_GROUP,
+    });
+    // null leaver = disband: revoke all from this origin.
+    expect(revokeGrantsForLeaver(ORIGIN_GROUP, null)).toBe(2);
+  });
+});
+
+// --- item 12: send-time membership re-check (fail-closed) ----------------
+
+describe('item 12 — ROSTER_VERIFY_MEMBERSHIP strong check', () => {
+  it('fail-closed: a participant the adapter reports as NOT a member is rejected + revoked', async () => {
+    process.env.ROSTER_VERIFY_MEMBERSHIP = 'true';
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+
+    const checked: Array<{ platformId: string; userHandle: string }> = [];
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+      async isMember(_ct, platformId, userHandle) {
+        checked.push({ platformId, userHandle });
+        return false; // definitively not a member
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(0);
+    expect(checked).toEqual([{ platformId: ORIGIN_GROUP, userHandle: PARTICIPANT }]);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('not_in_scope');
+    // Fail-closed also tears down the grant.
+    expect(getBySlot(session.id, 'reviewer')?.revoked_at).not.toBeNull();
+  });
+
+  it('still a member → delivers normally', async () => {
+    process.env.ROSTER_VERIFY_MEMBERSHIP = 'true';
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, platformId) {
+        calls.push(platformId);
+        return 'plat-1';
+      },
+      async isMember() {
+        return true;
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(calls).toEqual([DM_PLATFORM]);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+
+  it('unknown membership (adapter returns undefined) falls back to item-11 and delivers', async () => {
+    process.env.ROSTER_VERIFY_MEMBERSHIP = 'true';
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+      async isMember() {
+        return undefined; // can't determine — fall back, do not drop
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(calls).toBe(1);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+
+  it('adapter without isMember (flag on) delivers — relies on item 11', async () => {
+    process.env.ROSTER_VERIFY_MEMBERSHIP = 'true';
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(calls).toBe(1);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+
+  it('flag OFF: isMember is never consulted', async () => {
+    // ROSTER_VERIFY_MEMBERSHIP unset by beforeEach.
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let memberChecks = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-1';
+      },
+      async isMember() {
+        memberChecks++;
+        return false;
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(memberChecks).toBe(0);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+});
+
+// --- item 13: gateway authority (allow / deny / unreachable fail-closed) --
+
+describe('item 13 — gateway authority', () => {
+  it('authorizeDm: allow lets the send proceed; signs with HMAC header when key set', async () => {
+    const seen: { headers: Record<string, string>; body: string } = { headers: {}, body: '' };
+    const fakeFetch = (async (_url: string, init: { headers: Record<string, string>; body: string }) => {
+      seen.headers = init.headers;
+      seen.body = init.body;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ decision: 'allow' }) } as Response;
+    }) as unknown as typeof fetch;
+    const decision = await authorizeDm(
+      { baseUrl: 'https://gw.example', signingKey: 'k' },
+      {
+        scopeId: 's',
+        slotLabel: 'reviewer',
+        participantOpenId: PARTICIPANT,
+        dmPlatformId: DM_PLATFORM,
+        agentGroupId: 'ag-1',
+        channelType: 'feishu',
+      },
+      fakeFetch,
+    );
+    expect(decision.decision).toBe('allow');
+    // A signature header is present (exact name depends on namespace).
+    expect(Object.keys(seen.headers).some((h) => h.endsWith('-signature'))).toBe(true);
+  });
+
+  it('authorizeDm: explicit deny rejects', async () => {
+    const fakeFetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ decision: 'deny', reason: 'no_role' }),
+      }) as Response) as unknown as typeof fetch;
+    const decision = await authorizeDm(
+      { baseUrl: 'https://gw.example' },
+      {
+        scopeId: 's',
+        slotLabel: 'r',
+        participantOpenId: PARTICIPANT,
+        dmPlatformId: DM_PLATFORM,
+        agentGroupId: 'ag-1',
+        channelType: 'feishu',
+      },
+      fakeFetch,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('authorizeDm: unreachable / non-2xx → fail-closed deny', async () => {
+    const boom = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const d1 = await authorizeDm(
+      { baseUrl: 'https://gw.example' },
+      {
+        scopeId: 's',
+        slotLabel: 'r',
+        participantOpenId: PARTICIPANT,
+        dmPlatformId: DM_PLATFORM,
+        agentGroupId: 'ag-1',
+        channelType: 'feishu',
+      },
+      boom,
+    );
+    expect(d1.decision).toBe('deny');
+    const http500 = (async () =>
+      ({ ok: false, status: 500, text: async () => 'err' }) as Response) as unknown as typeof fetch;
+    const d2 = await authorizeDm(
+      { baseUrl: 'https://gw.example' },
+      {
+        scopeId: 's',
+        slotLabel: 'r',
+        participantOpenId: PARTICIPANT,
+        dmPlatformId: DM_PLATFORM,
+        agentGroupId: 'ag-1',
+        channelType: 'feishu',
+      },
+      http500,
+    );
+    expect(d2.decision).toBe('deny');
+  });
+
+  it('delivery gate: gateway DENY rejects even with a valid local grant', async () => {
+    process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
+    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    // Force the gateway to deny by pointing it at a fetch that returns deny.
+    vi.stubGlobal(
+      'fetch',
+      (async () =>
+        ({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ decision: 'deny' }),
+        }) as Response) as unknown as typeof fetch,
+    );
+    const session = rootSession2();
+    mintGrant2(session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    vi.unstubAllGlobals();
+    expect(calls).toBe(0);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('gateway_denied');
+  });
+
+  it('delivery gate: gateway unreachable → fail-closed reject', async () => {
+    process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
+    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    vi.stubGlobal('fetch', (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch);
+    const session = rootSession2();
+    mintGrant2(session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    vi.unstubAllGlobals();
+    expect(calls).toBe(0);
+    expect(lastAudit(session.id)?.reason).toBe('gateway_denied');
+  });
+
+  it('delivery gate: gateway ALLOW delivers', async () => {
+    process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
+    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    vi.stubGlobal(
+      'fetch',
+      (async () =>
+        ({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ decision: 'allow' }),
+        }) as Response) as unknown as typeof fetch,
+    );
+    const session = rootSession2();
+    mintGrant2(session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, platformId) {
+        calls.push(platformId);
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    vi.unstubAllGlobals();
+    expect(calls).toEqual([DM_PLATFORM]);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+
+  it('delivery gate: flag on but no gateway configured → local table remains authoritative', async () => {
+    process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
+    mockBackendGateway = undefined; // group has no gateway
+    const session = rootSession2();
+    mintGrant2(session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    const calls: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, platformId) {
+        calls.push(platformId);
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    expect(calls).toEqual([DM_PLATFORM]);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
+  });
+});
+
+// --- item 14: deployment-level blast-radius daily cap --------------------
+
+describe('item 14 — deploy daily cap', () => {
+  it('rejects once the rolling-24h deploy cap is reached', async () => {
+    process.env.ROSTER_DEPLOY_DAILY_CAP = '1';
+    const session = rootSession2();
+    mintGrant2(session.id);
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-1';
+      },
+    });
+    insertRosterOutbound(session.id, 'out-1', { slot: 'reviewer' });
+    await deliverSessionMessages(session);
+    expect(readDelivered(session.id, 'out-1')?.status).toBe('delivered');
+
+    // Second send in the same day is over the deploy cap.
+    insertRosterOutbound(session.id, 'out-2', { slot: 'reviewer' });
+    await deliverSessionMessages(session);
+    expect(readDelivered(session.id, 'out-2')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('deploy_daily_cap');
+  });
+
+  it('cap unset (default 0) does not block', async () => {
+    // ROSTER_DEPLOY_DAILY_CAP unset.
+    const session = rootSession2();
+    mintGrant2(session.id);
+    setDeliveryAdapter({
+      async deliver() {
+        return 'plat-1';
+      },
+    });
+    insertRosterOutbound(session.id, 'out-1', { slot: 'reviewer' });
+    insertRosterOutbound(session.id, 'out-2', { slot: 'reviewer' });
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    expect(readDelivered(session.id, 'out-1')?.status).toBe('delivered');
+    expect(readDelivered(session.id, 'out-2')?.status).toBe('delivered');
   });
 });
