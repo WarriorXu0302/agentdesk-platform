@@ -4,9 +4,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { touchHeartbeat } from '../db/connection.js';
 import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 import { setContinuation } from '../db/session-state.js';
+import { buildCompactionInstructions } from '../compact-instructions.js';
+import { getAllDestinations } from '../destinations.js';
 import { registerProvider } from './provider-registry.js';
 import type {
   AgentProvider,
@@ -25,6 +30,31 @@ const MAX_REQUEST_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = 1_500;
 const MAX_REPLAY_TRANSCRIPT_ITEMS = 128;
 const MAX_REPLAY_TRANSCRIPT_CHARS = 120_000;
+// Soft threshold (chars of JSON-serialized transcript) above which we trigger
+// summary-based compaction *before* the next API call. Sits between the
+// 120k hard trim ceiling and Claude's 165k-token auto-compact window so the
+// OpenAI provider compacts proactively rather than hard-truncating. JSON char
+// count is a cheap token proxy — we deliberately avoid pulling in a tokenizer.
+const COMPACT_TRIGGER_CHARS = 150_000;
+// Storage ceiling for a persisted/restored transcript. Higher than the
+// COMPACT_TRIGGER_CHARS soft threshold so a transcript can actually reach the
+// compaction trigger and survive between turns instead of being hard-trimmed
+// below the threshold on every save/restore (which would make compaction dead
+// code). Still bounded so a runaway transcript can't grow without limit; if
+// compaction can't bring it under this, the hard-trim fallback (120k) applies.
+const MAX_PERSIST_TRANSCRIPT_CHARS = 200_000;
+// How many recent transcript items to keep verbatim during compaction. The
+// older window is replaced by a single summary message. The boundary is
+// nudged outward so a paired function_call/function_call_output is never
+// split (which would orphan a call_id).
+const KEEP_RECENT_ITEMS = 20;
+// Char budget for the verbatim recent window. The recent window keeps tail
+// items until EITHER KEEP_RECENT_ITEMS or this budget is hit — so a transcript
+// of "few but huge" items (e.g. a couple of pasted documents / large web
+// fetches) still gets its oldest large items summarized instead of silently
+// hard-trimmed. Sized well under COMPACT_TRIGGER_CHARS so compaction leaves
+// real headroom.
+const KEEP_RECENT_CHARS = 60_000;
 const PREVIOUS_RESPONSE_UNSUPPORTED_RE = /previous_response_id.*(?:responses websocket v2|only supported)/i;
 const RESPONSES_TRANSPORT_FALLBACK_RE =
   /non-json response \((404|405|502|503|504)\)|unreadable sse response \((404|405|502|503|504)\)|request failed with status (404|405|502|503|504)|does not support the ['"]?\/v1\/responses['"]? api|\/v1\/responses[^a-z0-9]+(?:is\s+)?(?:not\s+supported|unsupported)|failed to deserialize the json body.*invalid ['"]?input['"]?|invalid ['"]?input['"]?:\s*value did not match any expected variant/i;
@@ -256,23 +286,109 @@ function transcriptSize(item: JsonObject): number {
   }
 }
 
-function trimTranscript(items: JsonObject[]): JsonObject[] {
+// Hard-trim fallback: slice the oldest items until under the given char cap
+// (and the item cap). Drops the oldest context with no summary — used only as
+// the fallback when summary compaction is unavailable, and as the storage
+// safety ceiling on persist/restore.
+function trimTranscriptTo(items: JsonObject[], maxChars: number): JsonObject[] {
   const capped = items.slice(-MAX_REPLAY_TRANSCRIPT_ITEMS);
   if (capped.length === 0) return capped;
 
   const sizes = capped.map(transcriptSize);
   let total = sizes.reduce((sum, size) => sum + size, 0);
   let start = 0;
-  while (total > MAX_REPLAY_TRANSCRIPT_CHARS && start < capped.length - 1) {
+  while (total > maxChars && start < capped.length - 1) {
     total -= sizes[start] ?? 0;
     start += 1;
   }
   return capped.slice(start);
 }
 
+function trimTranscript(items: JsonObject[]): JsonObject[] {
+  return trimTranscriptTo(items, MAX_REPLAY_TRANSCRIPT_CHARS);
+}
+
+// Storage-ceiling trim applied on persist/restore. Lets the transcript carry
+// enough history to reach the compaction soft threshold while still bounding
+// worst-case storage size.
+function trimTranscriptForPersist(items: JsonObject[]): JsonObject[] {
+  return trimTranscriptTo(items, MAX_PERSIST_TRANSCRIPT_CHARS);
+}
+
 function appendTranscript(existing: JsonObject[], items: JsonObject[]): JsonObject[] {
   if (items.length === 0) return existing;
-  return trimTranscript([...existing, ...items.map((item) => cloneJson(item))]);
+  // Bound to the storage ceiling, not the hard-trim threshold, so the
+  // transcript can reach COMPACT_TRIGGER_CHARS and get summarized instead of
+  // silently losing the oldest context to a hard slice.
+  return trimTranscriptForPersist([...existing, ...items.map((item) => cloneJson(item))]);
+}
+
+function totalTranscriptChars(items: JsonObject[]): number {
+  let total = 0;
+  for (const item of items) total += transcriptSize(item);
+  return total;
+}
+
+/**
+ * Pick the split index that divides `transcript` into [old | recent].
+ *
+ * We start by keeping the last `keepRecent` items verbatim, then nudge the
+ * boundary *earlier* (more items into the recent window) if it would land
+ * between a `function_call` and its matching `function_call_output`. A
+ * function_call_output references the call_id of an immediately-preceding
+ * function_call; if the call lands in the summarized (dropped) window while
+ * the output stays in the recent window, the upstream API sees an orphan
+ * tool-result id and rejects the request. Moving the boundary outward (left)
+ * keeps both halves of every tool pair together in the recent window.
+ *
+ * The recent window is bounded by BOTH a max item count (`keepRecentItems`)
+ * AND a char budget (`keepRecentChars`), whichever is hit first walking from
+ * the tail — so "few but huge" transcripts (a couple of pasted docs / large
+ * fetches that blow past the trigger with <20 items) still push their oldest
+ * large items into the summarized window instead of being silently hard-trimmed
+ * (the item-count-only boundary skipped compaction in exactly that case).
+ *
+ * Returns the index of the first recent item. 0 means "nothing to compact"
+ * (the whole transcript fits the recent window, or it's a single item).
+ */
+function computeCompactionBoundary(
+  transcript: JsonObject[],
+  keepRecentItems: number,
+  keepRecentChars: number,
+): number {
+  // Need at least one old item and one recent item to compact.
+  if (transcript.length <= 1) return 0;
+  // Walk from the tail, accumulating the recent window until either cap is
+  // exceeded. Always keep at least one recent item regardless of its size.
+  let recentItems = 0;
+  let recentChars = 0;
+  let boundary = transcript.length;
+  for (let i = transcript.length - 1; i >= 0; i -= 1) {
+    const size = transcriptSize(transcript[i]);
+    if (recentItems >= 1 && (recentItems + 1 > keepRecentItems || recentChars + size > keepRecentChars)) {
+      break;
+    }
+    recentItems += 1;
+    recentChars += size;
+    boundary = i;
+  }
+  // If the recent window opens with a function_call_output, its originating
+  // function_call sits just before the boundary — pull the boundary back to
+  // include the call (and any contiguous run of preceding calls) so a tool pair
+  // is never split across the summary boundary (orphan call_id). This shrinks
+  // the old window; if it collapses to empty, there's nothing to compact.
+  while (boundary > 0) {
+    const firstRecent = readString(transcript[boundary]?.type);
+    if (firstRecent !== 'function_call_output') break;
+    const prev = readString(transcript[boundary - 1]?.type);
+    if (prev !== 'function_call' && prev !== 'function_call_output') break;
+    boundary -= 1;
+  }
+  return boundary;
+}
+
+function compactedSummaryMessage(summary: string): JsonObject {
+  return userMessageInput(`<compacted_summary>\n${summary}\n</compacted_summary>`);
 }
 
 function userMessageInput(text: string): JsonObject {
@@ -325,7 +441,9 @@ function parseContinuationState(raw: string | undefined): OpenAIContinuationStat
     const mode = parsed.mode === 'stateless' ? 'stateless' : 'responses';
     const transport = parsed.transport === 'chat-completions' ? 'chat-completions' : 'responses';
     const transcript = Array.isArray(parsed.transcript)
-      ? trimTranscript(stripStaleToolCallTranscript(parsed.transcript.filter(isRecord).map((item) => cloneJson(item))))
+      ? trimTranscriptForPersist(
+          stripStaleToolCallTranscript(parsed.transcript.filter(isRecord).map((item) => cloneJson(item))),
+        )
       : [];
     const responseId = readString(parsed.responseId);
     return {
@@ -346,7 +464,11 @@ function serializeContinuationState(state: OpenAIContinuationState): string {
     mode: state.mode,
     transport: state.transport,
     responseId: state.responseId,
-    transcript: trimTranscript(stripStaleToolCallTranscript(state.transcript)),
+    // Persist up to the storage ceiling (not the hard-trim threshold) so a
+    // transcript can carry enough history between turns to reach the
+    // compaction trigger. Compaction (this turn) or the hard-trim fallback
+    // keep the *replayed* request bounded; this only bounds stored size.
+    transcript: trimTranscriptForPersist(stripStaleToolCallTranscript(state.transcript)),
   });
 }
 
@@ -735,6 +857,8 @@ export class OpenAIProvider implements AgentProvider {
   private readonly reasoningEffort?: string;
   private readonly timeoutMs: number;
   private readonly forceTransport?: OpenAITransport;
+  private readonly compactModel: string;
+  private readonly compactArchive: boolean;
   private readonly bridge: OpenAIMcpBridge;
 
   constructor(options: ProviderOptions = {}) {
@@ -746,6 +870,10 @@ export class OpenAIProvider implements AgentProvider {
     this.timeoutMs = Number.parseInt(readString(env.OPENAI_TIMEOUT_MS) || '', 10) || DEFAULT_TIMEOUT_MS;
     const force = readString(env.OPENAI_FORCE_TRANSPORT)?.toLowerCase();
     this.forceTransport = force === 'chat-completions' || force === 'responses' ? force : undefined;
+    // Summary-compaction uses a (possibly cheaper) model and falls back to the
+    // main model. Archiving the dropped window to markdown is opt-in.
+    this.compactModel = readString(env.OPENAI_COMPACT_MODEL) || this.model;
+    this.compactArchive = /^(1|true|yes|on)$/i.test(readString(env.OPENAI_COMPACT_ARCHIVE) || '');
     this.bridge = new OpenAIMcpBridge(options.mcpServers ?? {}, env);
   }
 
@@ -782,6 +910,14 @@ export class OpenAIProvider implements AgentProvider {
 
             continuation = turn.continuation;
             yield { type: 'init', continuation };
+            // Emit `compacted` after `init` but before `result`: the poll-loop
+            // (poll-loop.ts:613-629) reacts by pushing a destination reminder
+            // into the *still-active* query, and a `result` marks the turn
+            // done. Ordering here keeps that contract: query alive, turn not
+            // yet completed.
+            if (turn.compacted) {
+              yield { type: 'compacted', text: turn.compacted.text };
+            }
             for (const progress of turn.progressMessages) {
               yield { type: 'progress', message: progress };
             }
@@ -849,6 +985,7 @@ export class OpenAIProvider implements AgentProvider {
     continuation: string;
     text: string | null;
     progressMessages: string[];
+    compacted?: { text: string };
     usages: Array<{
       model: string;
       inputTokens?: number;
@@ -877,8 +1014,36 @@ export class OpenAIProvider implements AgentProvider {
     let transport: OpenAITransport = this.forceTransport ?? restored.transport;
     let previousResponseId =
       this.forceTransport === 'chat-completions' ? undefined : restored.mode === 'responses' ? restored.responseId : undefined;
-    let transcript = trimTranscript(restored.transcript);
-    transcript = appendTranscript(transcript, [userMessageInput(params.prompt)]);
+    // Restored transcript is already bounded to the storage ceiling by
+    // parseContinuationState. Do NOT hard-trim it here — let the full history
+    // reach the compaction size check below so the old window can be
+    // summarized rather than sliced away.
+    let transcript = appendTranscript(restored.transcript, [userMessageInput(params.prompt)]);
+    let compacted: { text: string } | undefined;
+
+    // Summary-based context compaction. Evaluate the transcript size after the
+    // new prompt is appended but before the first API call. If we're over the
+    // soft threshold, replace the stale window with a single summary message.
+    // A successful compaction forces stateless replay (see runCompaction).
+    const preCompactSize = totalTranscriptChars(transcript);
+    if (preCompactSize > COMPACT_TRIGGER_CHARS) {
+      const result = await this.runCompaction(transcript, params.instructions, usages, params.signal);
+      if (result) {
+        transcript = result.transcript;
+        compacted = { text: `Context compacted (${preCompactSize}→${result.postChars} chars)` };
+        // Local compaction forks history from whatever the server stored under
+        // previous_response_id: continuing to send it would re-inject the full
+        // pre-compaction context server-side. Force stateless full replay.
+        mode = 'stateless';
+        previousResponseId = undefined;
+      } else {
+        // Compaction unavailable (summary failed / nothing safely separable):
+        // fall back to the existing hard trim so the request still ships
+        // bounded. No `compacted` event — the turn completes as before.
+        transcript = trimTranscript(transcript);
+      }
+    }
+
     let nextInput: unknown =
       transport === 'chat-completions' || mode === 'stateless' ? transcript : transcript[transcript.length - 1];
 
@@ -972,6 +1137,7 @@ export class OpenAIProvider implements AgentProvider {
           continuation,
           text: extractOutputText(response),
           progressMessages,
+          compacted,
           usages,
         };
       }
@@ -1006,6 +1172,155 @@ export class OpenAIProvider implements AgentProvider {
       persistAliasedContinuation(continuation);
       previousResponseId = responseId;
       nextInput = transport === 'responses' && mode === 'responses' ? toolOutputs : transcript;
+    }
+  }
+
+  /**
+   * Summary-based context compaction. Splits the transcript into an old
+   * window (summarized into a single message) and a recent window (kept
+   * verbatim), then returns the new transcript. Returns `undefined` on any
+   * failure so the caller falls back to the existing hard-trim path and
+   * still completes the turn without emitting a `compacted` event.
+   *
+   * Tool-call pairs are never split (computeCompactionBoundary), so no orphan
+   * call_id survives. The replacement is a plain `message` item, which passes
+   * `stripStaleToolCallTranscript` and serializes safely into the
+   * continuation.
+   */
+  private async runCompaction(
+    transcript: JsonObject[],
+    instructions: string | undefined,
+    usages: Array<{
+      model: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      durationMs?: number;
+      transport: OpenAITransport;
+    }>,
+    signal: AbortSignal,
+  ): Promise<{ transcript: JsonObject[]; postChars: number } | undefined> {
+    const boundary = computeCompactionBoundary(transcript, KEEP_RECENT_ITEMS, KEEP_RECENT_CHARS);
+    if (boundary <= 0) {
+      // Nothing safely separable (e.g. the whole transcript is one tool run).
+      return undefined;
+    }
+
+    const oldWindow = transcript.slice(0, boundary);
+    const recentWindow = transcript.slice(boundary);
+
+    try {
+      const summary = await this.summarizeOldWindow(oldWindow, instructions, usages, signal);
+      if (!summary) return undefined;
+
+      // P3: opt-in archive of the dropped window. One-way file write only —
+      // never re-injected, never touches outbound.db. Failures are swallowed.
+      if (this.compactArchive) {
+        this.archiveWindow(oldWindow);
+      }
+
+      let next: JsonObject[] = [compactedSummaryMessage(summary), ...recentWindow.map((item) => cloneJson(item))];
+      // If the compacted transcript still exceeds the hard ceiling, fall back
+      // to the existing hard trim so we never ship an oversized request.
+      if (totalTranscriptChars(next) > MAX_REPLAY_TRANSCRIPT_CHARS) {
+        next = trimTranscript(next);
+      }
+      return { transcript: next, postChars: totalTranscriptChars(next) };
+    } catch (err) {
+      if (signal.aborted) throw err;
+      log(`Context compaction failed; falling back to hard trim: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Ask a (possibly cheaper) model to summarize the old window. Uses a plain
+   * chat-completions call with NO tools, reusing the same baseUrl/apiKey and
+   * the createChatCompletionResponse transport (so it honors the same
+   * abort/timeout/retry plumbing and is interruptible by push/abort). The old
+   * window is rendered to readable chat turns via transcriptToChatMessages,
+   * and the shared compaction instructions become the system prompt so the
+   * summary preserves the `<message to="…">` discipline and destination
+   * roster (P2).
+   */
+  private async summarizeOldWindow(
+    oldWindow: JsonObject[],
+    instructions: string | undefined,
+    usages: Array<{
+      model: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      totalTokens?: number;
+      durationMs?: number;
+      transport: OpenAITransport;
+    }>,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    const customInstructions = buildCompactionInstructions(getAllDestinations());
+    const systemPrompt = instructions ? `${instructions}\n\n${customInstructions}` : customInstructions;
+
+    // Render the old window as a transcript the summarizer can read, prefixed
+    // with a directive turn so the model produces a summary (not a reply).
+    const conversation = transcriptToChatMessages(oldWindow);
+    const messages: JsonObject[] = [
+      { role: 'system', content: systemPrompt },
+      ...conversation,
+      {
+        role: 'user',
+        content:
+          'Summarize the conversation above into a compact context block. ' +
+          'Follow the preservation rules in the system prompt exactly: keep recent message ' +
+          'XML structure and attributes, the chronological reply sequence, and the destination ' +
+          'roster so the agent can still address `<message to="name">` correctly. Output only the summary.',
+      },
+    ];
+
+    const callStartedAt = Date.now();
+    const response = await this.callSummaryCompletion(messages, signal);
+    if (response.usage) {
+      const u = response.usage;
+      usages.push({
+        model: this.compactModel,
+        inputTokens: u.input_tokens ?? u.prompt_tokens,
+        outputTokens: u.output_tokens ?? u.completion_tokens,
+        totalTokens: u.total_tokens,
+        durationMs: Date.now() - callStartedAt,
+        transport: 'chat-completions',
+      });
+    }
+    return extractOutputText(response);
+  }
+
+  /**
+   * P3: write the dropped window to a markdown file under
+   * /workspace/agent/conversations. One-way, best-effort — failures are
+   * swallowed so archiving never blocks the turn. Mirrors the Claude
+   * PreCompact archive location/format.
+   */
+  private archiveWindow(oldWindow: JsonObject[]): void {
+    try {
+      const conversationsDir = '/workspace/agent/conversations';
+      fs.mkdirSync(conversationsDir, { recursive: true });
+      const now = new Date();
+      const stamp = `${now.toISOString().split('T')[0]}-openai-compact-${now
+        .getHours()
+        .toString()
+        .padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now
+        .getSeconds()
+        .toString()
+        .padStart(2, '0')}`;
+      const messages = transcriptToChatMessages(oldWindow);
+      const lines = [`# Compacted conversation window`, '', `Archived: ${now.toLocaleString('en-US')}`, '', '---', ''];
+      for (const m of messages) {
+        const role = readString((m as { role?: unknown }).role) || 'unknown';
+        const content = extractMessageTextContent((m as { content?: unknown }).content);
+        const trimmed = content.length > 2000 ? `${content.slice(0, 2000)}...` : content;
+        lines.push(`**${role}**: ${trimmed}`, '');
+      }
+      fs.writeFileSync(path.join(conversationsDir, `${stamp}.md`), lines.join('\n'));
+      log(`Archived compacted window to ${stamp}.md`);
+    } catch (err) {
+      log(`Failed to archive compacted window: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1224,6 +1539,90 @@ export class OpenAIProvider implements AgentProvider {
     } finally {
       clearTimeout(timeout);
       params.signal.removeEventListener('abort', abortFromCaller);
+    }
+  }
+
+  /**
+   * One-shot, no-tools chat-completions call used only by summary compaction.
+   * Reuses baseUrl/apiKey and the same abort/timeout/retry plumbing as the
+   * main chat-completions path, but targets `this.compactModel` and posts
+   * pre-built messages directly (the old window is already rendered to chat
+   * turns by the caller). Honors `signal` so push/abort can interrupt it.
+   */
+  private async callSummaryCompletion(messages: JsonObject[], signal: AbortSignal): Promise<OpenAIResponse> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const abortFromCaller = () => controller.abort();
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+
+    const body: Record<string, unknown> = {
+      model: this.compactModel,
+      messages,
+      stream: false,
+    };
+
+    try {
+      for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+        let response: Response;
+        try {
+          response = await withHeartbeat(() =>
+            fetch(`${this.baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${this.apiKey}`,
+              },
+              body: JSON.stringify(body),
+              signal: controller.signal,
+            }),
+          );
+        } catch (err) {
+          if (signal.aborted) throw err;
+          if (controller.signal.aborted) {
+            throw new Error(`OpenAI compaction summary timed out after ${this.timeoutMs}ms`);
+          }
+          if (attempt < MAX_REQUEST_ATTEMPTS) {
+            await sleep(RETRY_BACKOFF_MS * attempt);
+            continue;
+          }
+          throw err;
+        }
+
+        const raw = await withHeartbeat(() => response.text());
+        let parsed: unknown;
+        try {
+          parsed = raw ? JSON.parse(raw) : {};
+        } catch {
+          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+            await sleep(RETRY_BACKOFF_MS * attempt);
+            continue;
+          }
+          throw new Error(`OpenAI compaction summary returned non-JSON response (${response.status})`);
+        }
+
+        if (!response.ok) {
+          const message =
+            isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string'
+              ? parsed.error.message
+              : `OpenAI compaction summary failed with status ${response.status}`;
+          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+            await sleep(RETRY_BACKOFF_MS * attempt);
+            continue;
+          }
+          throw new Error(message);
+        }
+
+        if (!isRecord(parsed)) {
+          throw new Error('OpenAI compaction summary returned an invalid response payload');
+        }
+
+        return chatCompletionToResponse(parsed as OpenAIChatCompletionResponse);
+      }
+
+      throw new Error('OpenAI compaction summary exhausted retries');
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abortFromCaller);
     }
   }
 }

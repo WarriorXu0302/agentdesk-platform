@@ -16,6 +16,10 @@ const OPENAI_ENV_KEYS = [
   'OPENAI_MODEL',
   'OPENAI_REASONING_EFFORT',
   'OPENAI_TIMEOUT_MS',
+  // Summary-based context compaction (ADR-0024). Optional; the container
+  // falls back to OPENAI_MODEL / archiving-off when unset.
+  'OPENAI_COMPACT_MODEL',
+  'OPENAI_COMPACT_ARCHIVE',
 ] as const;
 
 function buildOpenAIContribution(): ProviderContainerContribution {
@@ -30,4 +34,4 @@ function buildOpenAIContribution(): ProviderContainerContribution {
 
 registerProviderContainerConfig('openai', buildOpenAIContribution);
 registerProviderContainerConfig('codex', buildOpenAIContribution);
-registerProviderContainerConfig('sdk-openai', buildOpenAIContribution);
+// 'sdk-openai' removed with its container provider — see ADR-0024.

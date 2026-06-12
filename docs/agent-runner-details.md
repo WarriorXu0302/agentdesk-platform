@@ -88,6 +88,7 @@ type ProviderEvent =
 - **`result`** — emitted when the agent produces a complete response. May be emitted multiple times per query (e.g., Claude's multi-turn with subagents). The agent-runner writes each result to messages_out.
 - **`error`** — emitted on failure. `retryable` indicates whether the agent-runner should retry. `classification` is optional detail (e.g., 'quota', 'auth', 'transport').
 - **`progress`** — optional, for logging. The agent-runner logs these but doesn't act on them.
+- **`compacted`** — emitted when the provider compresses the conversation context near its window limit. The poll-loop reacts by re-injecting the destination/`<message to="…">` routing reminder into the live query. Claude emits it from its SDK auto-compact boundary; the OpenAI provider emits it from its own summary-based compaction (see ADR-0024). Distinct from `result` so it doesn't mark the turn done.
 
 ## Provider Implementations
 

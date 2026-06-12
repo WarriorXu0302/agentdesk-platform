@@ -579,9 +579,9 @@ async function buildContainerArgs(
 
   // OneCLI gateway — injects HTTPS_PROXY + certs so container API calls
   // are routed through the agent vault for credential injection. Providers
-  // that receive their own direct credentials (openai/codex/sdk-openai)
+  // that receive their own direct credentials (openai/codex)
   // or are fully offline (mock) don't need the gateway to spawn.
-  if (provider === 'openai' || provider === 'codex' || provider === 'mock' || provider === 'sdk-openai') {
+  if (provider === 'openai' || provider === 'codex' || provider === 'mock') {
     log.info('Skipping OneCLI gateway for direct-credential provider', {
       containerName,
       provider,
