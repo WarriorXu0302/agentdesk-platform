@@ -76,6 +76,38 @@ const recentlyKilled = new Set<string>();
  */
 const wakePromises = new Map<string, Promise<boolean>>();
 
+/**
+ * Build the `-e KEY=VALUE` docker args that bridge host tracing into the
+ * runner (ADR-0026). Pure + exported for unit testing.
+ *
+ * Contract:
+ *   - When the host has NO active trace (carrier.traceparent absent), inject
+ *     nothing trace-related — the runner stays a pure no-op. This preserves
+ *     "runner behaves exactly as before when host tracing is off".
+ *   - When a traceparent exists, also inject the OTLP traces endpoint so the
+ *     runner knows where to export. The container can't reach the host's
+ *     loopback, so localhost/127.0.0.1 is rewritten to the docker host gateway
+ *     alias (`host.docker.internal`, made resolvable by hostGatewayArgs()).
+ *   - OTEL_SDK_DISABLED is forwarded verbatim whenever set, so an operator can
+ *     hard-off runner tracing independently of the host.
+ */
+export function buildRunnerTracingEnvArgs(carrier: Record<string, string>, env: NodeJS.ProcessEnv): string[] {
+  const args: string[] = [];
+  if (carrier.traceparent) {
+    args.push('-e', `OTEL_TRACEPARENT=${carrier.traceparent}`);
+    if (carrier.tracestate) {
+      args.push('-e', `OTEL_TRACESTATE=${carrier.tracestate}`);
+    }
+    const hostEndpoint = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || 'http://localhost:6006/v1/traces';
+    const containerEndpoint = hostEndpoint.replace(/\/\/(localhost|127\.0\.0\.1)(:|\/|$)/, '//host.docker.internal$2');
+    args.push('-e', `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${containerEndpoint}`);
+  }
+  if (env.OTEL_SDK_DISABLED) {
+    args.push('-e', `OTEL_SDK_DISABLED=${env.OTEL_SDK_DISABLED}`);
+  }
+  return args;
+}
+
 export function getActiveContainerCount(): number {
   return activeContainers.size;
 }
@@ -237,12 +269,11 @@ async function spawnContainer(session: Session): Promise<void> {
         agentIdentifier,
       );
 
-      // Inject OTEL_TRACEPARENT so the container can continue the trace context
+      // Inject OTEL_TRACEPARENT (+ endpoint) so the container can continue the
+      // host trace context. See buildRunnerTracingEnvArgs for the rewrite rule.
       const carrier: Record<string, string> = {};
       injectTraceContext(carrier);
-      if (carrier.traceparent) {
-        args.push('-e', `OTEL_TRACEPARENT=${carrier.traceparent}`);
-      }
+      args.push(...buildRunnerTracingEnvArgs(carrier, process.env));
 
       log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 

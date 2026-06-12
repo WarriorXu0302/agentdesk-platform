@@ -28,6 +28,7 @@ import {
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
 import { resolveBatchIdentity, splitBatchByTurn } from './request-identity.js';
+import { context, getTracer, parentContextFromEnv, recordError } from './observability/tracer.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -454,7 +455,42 @@ interface QueryResult {
   continuation?: string;
 }
 
+/**
+ * agent.turn (AGENT) span (ADR-0026). One think/act/respond iteration of the
+ * runner. Parented under the host session-root span via OTEL_TRACEPARENT so
+ * the whole turn — and any provider.request / mcp.* children — lands in the
+ * same Phoenix trace as the host. No-op when host tracing is off.
+ *
+ * Span only READS routing.* / provider name as attributes; it never mutates
+ * the message flow, identity chain, or session DBs.
+ */
 async function processQuery(
+  query: AgentQuery,
+  routing: RoutingContext,
+  initialBatchIds: string[],
+  providerName: string,
+): Promise<QueryResult> {
+  const tracer = getTracer();
+  return context.with(parentContextFromEnv(), () =>
+    tracer.startActiveSpan('agent.turn', async (turnSpan) => {
+      // Inline literal kind so the static coverage scanner sees it; setKind()
+      // would set the same key at runtime but is invisible to the regex gate.
+      turnSpan.setAttribute('openinference.span.kind', 'AGENT');
+      if (routing.channelType) turnSpan.setAttribute('channel.type', routing.channelType);
+      turnSpan.setAttribute('provider', providerName);
+      try {
+        return await runQuery(query, routing, initialBatchIds, providerName);
+      } catch (err) {
+        recordError(turnSpan, err, 'agent_turn_error');
+        throw err;
+      } finally {
+        turnSpan.end();
+      }
+    }),
+  );
+}
+
+async function runQuery(
   query: AgentQuery,
   routing: RoutingContext,
   initialBatchIds: string[],
@@ -628,6 +664,33 @@ async function processQuery(
           );
         }
       } else if (event.type === 'usage') {
+        // provider.request (LLM) span (ADR-0026). Each usage event marks one
+        // completed model invocation. agent.turn is the active span, so this
+        // auto-nests as its child. Synchronous start+end: usage arrives after
+        // the call already finished, so the span is a zero-duration marker
+        // carrying model + token attributes (the canonical LLM boundary for
+        // Phoenix). This wave does NOT attach prompt/completion text — that is
+        // a follow-up wave gated on full redaction.
+        const llmTracer = getTracer();
+        llmTracer.startActiveSpan('provider.request', (llmSpan) => {
+          llmSpan.setAttribute('openinference.span.kind', 'LLM');
+          llmSpan.setAttribute('llm.system', providerName);
+          llmSpan.setAttribute('llm.model_name', event.model);
+          if (event.inputTokens !== undefined) {
+            llmSpan.setAttribute('llm.token_count.prompt', event.inputTokens);
+          }
+          if (event.outputTokens !== undefined) {
+            llmSpan.setAttribute('llm.token_count.completion', event.outputTokens);
+          }
+          if (event.totalTokens !== undefined) {
+            llmSpan.setAttribute('llm.token_count.total', event.totalTokens);
+          }
+          if (event.durationMs !== undefined) {
+            llmSpan.setAttribute('llm.duration_ms', event.durationMs);
+          }
+          if (event.transport) llmSpan.setAttribute('llm.transport', event.transport);
+          llmSpan.end();
+        });
         // Per-LLM-call cost/latency record. Persisted as a sentinel row in
         // outbound.db with kind='llm-usage' so host-side observability can
         // attribute spend to the originating turn without instrumenting

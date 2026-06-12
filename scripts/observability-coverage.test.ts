@@ -332,7 +332,23 @@ export async function ignoredFixture(): Promise<void> {
     expect(report.migrations).toHaveLength(11);
     expect(report.moduleSlugs).toHaveLength(13);
     expect(report.hostSpanOccurrences.length).toBeGreaterThanOrEqual(10);
-    expect(report.runnerSpanOccurrences).toHaveLength(0);
+
+    // Runner-tracing wave (ADR-0026): the runner now emits manual spans. The
+    // ADR-0015 §47 "runnerSpanOccurrences === 0" waiver is lifted. Assert the
+    // three new runner span classes are present and discoverable by the
+    // static scanner (literal names: agent.turn, provider.request, and the
+    // mcp.* tool span — `mcp.tool.execute` is the scanner-visible literal that
+    // updateName() rewrites to the real mcp.<group>.<tool> at runtime).
+    const runnerNames = report.runnerSpanOccurrences.map((occurrence) => occurrence.name);
+    expect(report.runnerSpanOccurrences.length).toBeGreaterThanOrEqual(3);
+    expect(runnerNames).toContain('agent.turn');
+    expect(runnerNames).toContain('provider.request');
+    expect(runnerNames.some((name) => name.startsWith('mcp.'))).toBe(true);
+    // Every runner span must carry openinference.span.kind (now enforced).
+    for (const occurrence of report.runnerSpanOccurrences) {
+      expect(occurrence.attrCoverage.openinferenceSpanKind).toBe('present');
+    }
+
     expect(validation.forwardViolations).toHaveLength(0);
     expect(validation.backwardViolations).toHaveLength(0);
     expect(validation.kindViolations).toHaveLength(0);

@@ -133,9 +133,9 @@
 | `container.*` | host-side container wake / spawn / kill orchestration | `CHAIN` | host infra child spans inside session trace | Active | `container.spawn` | `src/container-runner.ts` |
 | `session.*` | session lifecycle governance | `CHAIN` | lifecycle spans outside or inside trace depending event source | Reserved for explicit lifecycle spans | `session.archive` | `src/router.ts`, `src/host-sweep.ts`, `src/db/` |
 | `sweep.*` | periodic sweeper real-work units | `CHAIN` | maintenance trace when real work exists | Reserved with no-empty-loop guard | `sweep.run` | `src/host-sweep.ts` |
-| `agent.*` | container-side agent lifecycle / turn loop | `AGENT` | runner root / child spans after context extraction | Planned (runner tracing) | `agent.turn` | `container/agent-runner/src/` |
-| `provider.*` | LLM provider request boundary | `LLM` | model invocation span | Planned (runner tracing) | `provider.request` | `container/agent-runner/src/providers/` |
-| `mcp.*` | MCP tool surface grouped by tool family | `TOOL` | tool invocation span | Planned (runner tracing) | `mcp.core.send_message` | `container/agent-runner/src/mcp-tools/` |
+| `agent.*` | container-side agent lifecycle / turn loop | `AGENT` | runner root / child spans after context extraction | Active (ADR-0026 runner tracing) | `agent.turn` | `container/agent-runner/src/` |
+| `provider.*` | LLM provider request boundary | `LLM` | model invocation span | Active (ADR-0026 runner tracing) | `provider.request` | `container/agent-runner/src/providers/` |
+| `mcp.*` | MCP tool surface grouped by tool family | `TOOL` | tool invocation span | Active (ADR-0026 runner tracing) | `mcp.core.send_message` | `container/agent-runner/src/mcp-tools/` |
 | `erp.*` | ERP gateway HTTP / RPC contract boundary | `TOOL` | gateway call span | Planned (gateway tracing) | `erp.call` | `container/agent-runner/src/mcp-tools/gateway.ts`, `scripts/configure-enterprise-gateway.ts` |
 | `identity.*` | identity resolution / propagation / trust-chain handling | `CHAIN` | authorization-context span | Reserved | `identity.resolve` | `src/router.ts`, `src/channels/`, `src/modules/permissions/` |
 | `module.*` | platform modules under `src/modules/` | `CHAIN` | module-local business child spans | Active / extensible by registry | `module.permissions.check_sender` | `src/modules/` |
@@ -418,6 +418,16 @@ host -> container 仍按 W3C propagation 过边界：
 - extract point：before `agent.run` / `agent.turn`
 `OTEL_TRACEPARENT` 是 transport carrier，不是 span-name segment，也不是 namespace。
 session / user semantic context 继续通过 OpenInference context propagation preserve，不靠 ad-hoc custom env var duplication。
+
+**ADR-0026 runner-tracing 落地后的实际拓扑**：
+- runner 主进程（poll-loop）在 `OTEL_TRACEPARENT` parent 下创建 `agent.turn`（AGENT），
+  `provider.request`（LLM）在 `agent.turn` 仍 active 时创建，进程内自动成为其 child。
+- 内置 MCP server 是**独立进程**（StdioServerTransport），in-process OTel context
+  不过进程边界，故它自己 bootstrap OTel 并从 `OTEL_TRACEPARENT` 读 parent。
+  因此 `mcp.<group>.<tool>`（TOOL）span 与 `agent.turn` **同处一棵 trace**，
+  但挂在 host session root 之下（是 root 的 sibling，不是 `agent.turn` 的 child）。
+- host endpoint 在 `container.spawn` 注入时把 `localhost`/`127.0.0.1` 改写为
+  `host.docker.internal`，使容器内 exporter 可达 Phoenix。
 ### 5b.5 Why this matters
 如果 pre-session spans 直接混进 session root chain，会导致：
 - Phoenix Sessions root placement 不稳定；

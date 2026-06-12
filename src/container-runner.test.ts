@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { checkBaseImage, resolveProviderName } from './container-runner.js';
+import { buildRunnerTracingEnvArgs, checkBaseImage, resolveProviderName } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over group and container.json', () => {
@@ -48,5 +48,69 @@ describe('checkBaseImage', () => {
 
   it('returns false without throwing when the image is missing (non-fatal precheck)', () => {
     expect(checkBaseImage(() => false)).toBe(false);
+  });
+});
+
+describe('buildRunnerTracingEnvArgs (ADR-0026 endpoint injection)', () => {
+  const TRACEPARENT = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
+
+  function envArgsToMap(args: string[]): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '-e') {
+        const [key, ...rest] = args[i + 1].split('=');
+        map[key] = rest.join('=');
+      }
+    }
+    return map;
+  }
+
+  it('injects traceparent + rewrites localhost endpoint to host.docker.internal', () => {
+    const args = buildRunnerTracingEnvArgs(
+      { traceparent: TRACEPARENT },
+      { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://localhost:6006/v1/traces' },
+    );
+    const env = envArgsToMap(args);
+    expect(env.OTEL_TRACEPARENT).toBe(TRACEPARENT);
+    expect(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe('http://host.docker.internal:6006/v1/traces');
+  });
+
+  it('defaults the endpoint and rewrites it when host env is unset', () => {
+    const args = buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT }, {});
+    const env = envArgsToMap(args);
+    expect(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe('http://host.docker.internal:6006/v1/traces');
+  });
+
+  it('rewrites 127.0.0.1 too and preserves non-loopback hosts', () => {
+    expect(
+      envArgsToMap(
+        buildRunnerTracingEnvArgs(
+          { traceparent: TRACEPARENT },
+          { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://127.0.0.1:6006/v1/traces' },
+        ),
+      ).OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+    ).toBe('http://host.docker.internal:6006/v1/traces');
+
+    expect(
+      envArgsToMap(
+        buildRunnerTracingEnvArgs(
+          { traceparent: TRACEPARENT },
+          { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://phoenix.internal:6006/v1/traces' },
+        ),
+      ).OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+    ).toBe('http://phoenix.internal:6006/v1/traces');
+  });
+
+  it('injects nothing trace-related when the host has no active trace (no-op runner)', () => {
+    expect(buildRunnerTracingEnvArgs({}, {})).toEqual([]);
+  });
+
+  it('forwards OTEL_SDK_DISABLED verbatim even without a traceparent', () => {
+    expect(buildRunnerTracingEnvArgs({}, { OTEL_SDK_DISABLED: 'true' })).toEqual(['-e', 'OTEL_SDK_DISABLED=true']);
+  });
+
+  it('passes tracestate through when present', () => {
+    const env = envArgsToMap(buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT, tracestate: 'foo=bar' }, {}));
+    expect(env.OTEL_TRACESTATE).toBe('foo=bar');
   });
 });

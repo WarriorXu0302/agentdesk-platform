@@ -216,7 +216,10 @@ export function validateObservabilityCoverage(
     }
   }
 
-  const kindViolations = report.hostSpanOccurrences
+  // Runner-tracing wave (ADR-0026) lifted the ADR-0015 §47 runner-kind waiver:
+  // every manual span — host AND runner — must now carry
+  // `openinference.span.kind`. Scan allSpanOccurrences, not just host.
+  const kindViolations = report.allSpanOccurrences
     .filter((occurrence) => occurrence.attrCoverage.openinferenceSpanKind !== 'present')
     .map((occurrence) => ({
       name: occurrence.name,

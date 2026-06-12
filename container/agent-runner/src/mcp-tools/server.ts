@@ -13,6 +13,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { MCP_SERVER_NAME } from '../branding.js';
+import { context, getTracer, parentContextFromEnv, recordError } from '../observability/tracer.js';
+import { mcpSpanName } from '../observability/mcp-span-name.js';
+import { redactedParamSummary } from '../observability/redact.js';
 import type { McpToolDefinition } from './types.js';
 
 function log(msg: string): void {
@@ -42,11 +45,44 @@ export async function startMcpServer(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const tool = toolMap.get(name);
-    if (!tool) {
-      return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
-    }
-    return tool.handler(args ?? {});
+
+    // TOOL span (ADR-0026). The MCP server is a separate process, so it parents
+    // the span under the host trace via OTEL_TRACEPARENT (parentContextFromEnv).
+    // The literal `mcp.tool.execute` name is what the static coverage scanner
+    // matches; updateName() then sets the real, schema-compliant
+    // `mcp.<group>.<tool>` runtime name (low-cardinality, no dynamic values).
+    const spanName = mcpSpanName(name);
+    const tracer = getTracer();
+    const startedAt = Date.now();
+    return context.with(parentContextFromEnv(), () =>
+      tracer.startActiveSpan('mcp.tool.execute', async (span) => {
+        span.updateName(spanName);
+        // Inline literal kind so the static coverage scanner detects it.
+        span.setAttribute('openinference.span.kind', 'TOOL');
+        span.setAttribute('tool.name', name);
+        // Desensitized only — never raw argument values (see redact.ts).
+        span.setAttribute('tool.parameters', redactedParamSummary(args));
+        // Gateway tools front the ERP boundary; surface the coarse operation.
+        if (name.startsWith('gateway_') && args && typeof args === 'object') {
+          const op = (args as Record<string, unknown>).operation;
+          if (typeof op === 'string') span.setAttribute('erp.operation', op);
+        }
+        try {
+          const tool = toolMap.get(name);
+          if (!tool) {
+            return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
+          }
+          const result = await tool.handler(args ?? {});
+          span.setAttribute('tool.duration_ms', Date.now() - startedAt);
+          return result;
+        } catch (err) {
+          recordError(span, err, 'mcp_tool_error');
+          throw err;
+        } finally {
+          span.end();
+        }
+      }),
+    );
   });
 
   const transport = new StdioServerTransport();

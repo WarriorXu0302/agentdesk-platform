@@ -21,6 +21,11 @@
  *   /home/node/.claude/ ← Claude SDK state + skill symlinks (RW)
  */
 
+// OTel bootstrap MUST be the first import so the SDK is initialized before any
+// provider / MCP module starts emitting spans (ADR-0026). No-op when host
+// tracing is off (no OTEL_TRACEPARENT). Side-effect import only.
+import './observability/init.js';
+
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -74,12 +79,32 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'mcp-tools', 'index.ts');
 
+  // OTel context for the built-in MCP server. It runs as a SEPARATE `bun run`
+  // process (StdioServerTransport), so the in-process OTel active context does
+  // NOT reach it — the trace bridge must travel through these env vars, which
+  // the MCP server's own `observability/init.js` reads to join the same trace.
+  // Without this passthrough the tool spans would land in their own orphan
+  // trace instead of under the host session root.
+  const mcpOtelEnv: Record<string, string> = {};
+  for (const key of [
+    'OTEL_TRACEPARENT',
+    'OTEL_TRACESTATE',
+    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+    'OTEL_SDK_DISABLED',
+    'OTEL_SERVICE_NAME',
+    'NODE_ENV',
+    'BRAND_NAMESPACE',
+  ]) {
+    const value = process.env[key];
+    if (value !== undefined) mcpOtelEnv[key] = value;
+  }
+
   // Build MCP servers config: built-in tools server + any from container.json
   const mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {
     [MCP_SERVER_NAME]: {
       command: 'bun',
       args: ['run', mcpServerPath],
-      env: {},
+      env: mcpOtelEnv,
     },
   };
 
