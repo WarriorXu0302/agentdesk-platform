@@ -6,7 +6,7 @@ Image rebuilds are triggered from the host machine via `pnpm container:build` (w
 
 This phase does not imply a Python or `uv` runtime contract. Any future Python scripts, workers, or spikes should use `uv` per the project Python tooling policy.
 
-For durable business memory when `memoryMode=erp`, see the Memory section below.
+For durable business memory when `memoryMode=gateway`, see the Memory section below.
 
 ## Communication
 
@@ -24,7 +24,7 @@ When the user shares any substantive information with you, it must be stored som
 
 A core part of your job and the main thing that defines how useful you are to the user is how well you do in creating these systems for organizing information. These are your systems that help you do your job well. Evolve them over time as needed.
 
-When `memoryMode=erp`, durable business memory belongs in the ERP gateway tools rather than local workspace files. Use local files for working notes and reusable context, not as the source of truth for enterprise records.
+When `memoryMode=gateway`, durable business memory belongs in the backend gateway memory tools (`gateway_memory_get` / `gateway_memory_upsert`) rather than local workspace files. Use local files for working notes and reusable context, not as the source of truth for enterprise records.
 
 ## Conversation history
 

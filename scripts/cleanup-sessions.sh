@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Prune stale session artifacts (JSONLs, debug logs, todos, telemetry, group logs).
-# Safe to run while FrontLane is live — active sessions are read from the DB.
+# Safe to run while the host is live — active sessions are read from the DB.
 #
 # Usage:  ./scripts/cleanup-sessions.sh [--dry-run]
 #

@@ -11,8 +11,6 @@
  *
  * Runs on every spawn from `container-runner.buildMounts()`. Deterministic —
  * same inputs produce the same CLAUDE.md, and stale fragments are pruned.
- *
- * See `docs/claude-md-composition.md` for the full design.
  */
 import fs from 'fs';
 import path from 'path';
@@ -103,8 +101,7 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
   // skill content lands in transcript only when needed.
   const skillsHostDir = path.join(process.cwd(), 'container', 'skills');
   if (fs.existsSync(skillsHostDir)) {
-    const candidates =
-      config.skills === 'all' ? fs.readdirSync(skillsHostDir) : config.skills;
+    const candidates = config.skills === 'all' ? fs.readdirSync(skillsHostDir) : config.skills;
 
     if (config.progressiveDisclosure === 'lean') {
       // Lean mode — no skill index at all. Dispatcher agents that route
@@ -122,7 +119,7 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
       const indexLines: string[] = [
         '# Available Skills',
         '',
-        'These skills are available but NOT loaded into your prompt. To use a skill, call the `load_skill(name)` MCP tool FIRST — its `instructions.md` will be returned as a tool result and become part of the conversation history. After loading, follow the skill\'s instructions to complete the task.',
+        "These skills are available but NOT loaded into your prompt. To use a skill, call the `load_skill(name)` MCP tool FIRST — its `instructions.md` will be returned as a tool result and become part of the conversation history. After loading, follow the skill's instructions to complete the task.",
         '',
         '## Decision shortcut (DO NOT skip)',
         '',

@@ -369,7 +369,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // Stale/corrupt continuation recovery: ask the provider whether
       // this error means the stored continuation is unusable, and clear
       // it so the next attempt starts fresh.
-      const sessionInvalid = continuation && config.provider.isSessionInvalid(err);
+      const sessionInvalid = Boolean(continuation && config.provider.isSessionInvalid(err));
       if (sessionInvalid) {
         log(`Stale session detected (${continuation}) — clearing for next retry`);
         continuation = undefined;

@@ -19,15 +19,59 @@
  * It is read once at process start and treated as stable for the lifetime
  * of the process — changing it mid-flight would orphan running containers
  * and on-disk config.
+ *
+ * Both variables resolve as: process env → `.env` in the working directory →
+ * default. `container/build.sh` resolves `BRAND_NAMESPACE` the same way, so
+ * the image name it builds matches the one the host derives here.
  */
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Minimal `.env` fallback for the two brand variables. Inlined rather than
+ * reusing `env.ts` readEnvFile because branding must stay import-cycle-free
+ * (env → log → observability/tracer → branding). Parsing rules mirror
+ * readEnvFile: trim, skip comments, strip one layer of matching quotes,
+ * last assignment wins.
+ */
+function readBrandVar(key: string): string | undefined {
+  const fromEnv = process.env[key];
+  if (fromEnv) return fromEnv;
+  let content: string;
+  try {
+    content = fs.readFileSync(path.join(process.cwd(), '.env'), 'utf-8');
+  } catch {
+    return undefined;
+  }
+  let found: string | undefined;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1 || trimmed.slice(0, eqIdx).trim() !== key) continue;
+    let value = trimmed.slice(eqIdx + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (value) found = value;
+  }
+  return found;
+}
 
 function sanitizeNamespace(raw: string | undefined, fallback: string): string {
-  const slug = (raw ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
+  const slug = (raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/^-+|-+$/g, '');
   return slug || fallback;
 }
 
 /** Human-facing platform name. Used in logs, banners, default assistant name. */
-export const PLATFORM_BRAND = (process.env.BRAND_NAME || 'AgentDesk').trim();
+export const PLATFORM_BRAND = (readBrandVar('BRAND_NAME') || 'AgentDesk').trim();
 
 /** Full platform name for banners / startup logs. */
 export const PLATFORM_NAME = `${PLATFORM_BRAND} Agent Platform`;
@@ -36,7 +80,7 @@ export const PLATFORM_NAME = `${PLATFORM_BRAND} Agent Platform`;
  * Machine namespace. Lowercase slug. Derives container labels, image base,
  * signing-header prefix, metric prefix, config dirs, MCP server name.
  */
-export const PLATFORM_PROTOCOL_NAMESPACE = sanitizeNamespace(process.env.BRAND_NAMESPACE, 'agentdesk');
+export const PLATFORM_PROTOCOL_NAMESPACE = sanitizeNamespace(readBrandVar('BRAND_NAMESPACE'), 'agentdesk');
 
 /** Built-in MCP server name (shown to the agent provider). */
 export const MCP_SERVER_NAME = PLATFORM_PROTOCOL_NAMESPACE;

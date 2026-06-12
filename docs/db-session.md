@@ -57,18 +57,28 @@ Content shapes: see [api-details.md §Session DB Schema Details](api-details.md#
 
 ### 2.2 `delivered`
 
-Host writes here after handing a `messages_out` row to the channel adapter. Container reads `platform_message_id` to target edits and reactions.
+Host writes here after handing a `messages_out` row to the channel adapter. Container reads `platform_message_id` to target edits and reactions. The table also carries the persistent retry state for failed deliveries (see [ADR-0016](decisions/ADR-0016-delivery-resilience.md)).
 
 ```sql
 CREATE TABLE delivered (
   message_out_id      TEXT PRIMARY KEY,
   platform_message_id TEXT,
   status              TEXT NOT NULL DEFAULT 'delivered',  -- delivered|failed
-  delivered_at        TEXT NOT NULL
+  delivered_at        TEXT NOT NULL,                      -- last write (success or failure)
+  attempts            INTEGER NOT NULL DEFAULT 0,         -- failed attempts so far (persisted)
+  next_retry_at       TEXT                                -- scheduled retry; NULL = no automatic retry
 );
 ```
 
-Writer: `markDelivered()` / `markDeliveryFailed()` in `src/db/session-db.ts`. Older session DBs are brought up to schema lazily by `migrateDeliveredTable()`.
+Retry semantics for `status='failed'` rows:
+
+- Each failed attempt increments `attempts` and schedules `next_retry_at` with exponential backoff (1m / 5m / 30m / 2h / 6h cap — `DELIVERY_BACKOFF_SCHEDULE_SEC` in `src/config.ts`). State lives in the DB, so it survives host restarts.
+- `getUndeliverableIds()` treats a failed row as deliverable again once `next_retry_at` has passed — the normal poll/sweep drain then re-attempts it; there is no separate retry queue.
+- After `DELIVERY_MAX_ATTEMPTS` (10), `next_retry_at` is set NULL: the row stays for audit but is never auto-retried. Inspect and requeue with `scripts/dlq.ts`.
+- `next_retry_at IS NULL` on a failed row always means "parked". This also covers pre-migration failed rows, which are deliberately not resurrected on upgrade.
+- A successful retry flips the row to `delivered` via a status-gated upsert in `markDelivered()`; `attempts` is kept as the historical failure count, and a late failure write can never downgrade a delivered row.
+
+Writers: `markDelivered()` / `markDeliveryFailed()` / `requeueFailedDelivery()` in `src/db/session-db.ts`. Older session DBs are brought up to schema lazily by `migrateDeliveredTable()`, which the delivery path runs before every delivered-table read.
 
 ### 2.3 `destinations`
 

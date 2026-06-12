@@ -21,13 +21,16 @@ vi.mock('./container-runner.js', () => ({
 
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-delivery' };
+  // Short delivery timeout so the hung-adapter test completes quickly.
+  // Kept well above the 100ms adapter hold used by the race test.
+  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-delivery', DELIVERY_TIMEOUT_MS: 300 };
 });
 
 const TEST_DIR = '/tmp/nanoclaw-test-delivery';
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
-import { resolveSession, outboundDbPath } from './session-manager.js';
+import { migrateDeliveredTable } from './db/session-db.js';
+import { resolveSession, inboundDbPath, outboundDbPath } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
 import { maybeStartProgressStatus } from './modules/progress-status/index.js';
 import { consumeSessionSpanContext, storeSessionSpanContext } from './observability/context-bridge.js';
@@ -81,13 +84,32 @@ function insertOutbound(
   msgId: string,
   channelType = 'telegram',
   platformId = 'telegram:123',
+  timestamp?: string,
 ): void {
   const db = new Database(outboundDbPath(agentGroupId, sessionId));
   db.prepare(
     `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
-     VALUES (?, datetime('now'), 'chat', ?, ?, ?)`,
-  ).run(msgId, platformId, channelType, JSON.stringify({ text: 'hello' }));
+     VALUES (?, COALESCE(?, datetime('now')), 'chat', ?, ?, ?)`,
+  ).run(msgId, timestamp ?? null, platformId, channelType, JSON.stringify({ text: 'hello' }));
   db.close();
+}
+
+interface DeliveredRow {
+  status: string;
+  attempts: number;
+  next_retry_at: string | null;
+  platform_message_id: string | null;
+}
+
+function readDeliveredRow(agentGroupId: string, sessionId: string, msgId: string): DeliveredRow | undefined {
+  const db = new Database(inboundDbPath(agentGroupId, sessionId));
+  try {
+    return db
+      .prepare('SELECT status, attempts, next_retry_at, platform_message_id FROM delivered WHERE message_out_id = ?')
+      .get(msgId) as DeliveredRow | undefined;
+  } finally {
+    db.close();
+  }
 }
 
 beforeEach(() => {
@@ -241,5 +263,116 @@ describe('deliverSessionMessages — concurrent invocations', () => {
         emoji: 'THINKING',
       }),
     ]);
+  });
+});
+
+describe('delivery resilience — timeout, ordering, persisted backoff (ADR-0016)', () => {
+  it('treats a hung adapter call as a failed attempt after DELIVERY_TIMEOUT_MS', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-hang');
+
+    let calls = 0;
+    setDeliveryAdapter({
+      deliver() {
+        calls++;
+        return new Promise(() => {}); // never settles — simulates a stuck channel API
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(1);
+    const row = readDeliveredRow('ag-1', session.id, 'out-hang');
+    expect(row?.status).toBe('failed');
+    expect(row?.attempts).toBe(1);
+    expect(row?.next_retry_at).not.toBeNull();
+  });
+
+  it('stops draining the session for the tick once a message fails (no overtaking)', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-a', 'telegram', 'telegram:123', '2026-01-01 00:00:01');
+    insertOutbound('ag-1', session.id, 'out-b', 'telegram', 'telegram:123', '2026-01-01 00:00:02');
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        throw new Error('channel down');
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    // Only the first message may be attempted; out-b must not overtake out-a.
+    expect(calls).toBe(1);
+    expect(readDeliveredRow('ag-1', session.id, 'out-a')?.status).toBe('failed');
+    expect(readDeliveredRow('ag-1', session.id, 'out-b')).toBeUndefined();
+  });
+
+  it('respects next_retry_at backoff and redelivers once the window opens', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-retry');
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        if (calls === 1) throw new Error('transient channel error');
+        return 'plat-after-retry';
+      },
+    });
+
+    await deliverSessionMessages(session); // fails → attempts=1, next_retry_at ≈ +60s
+    expect(calls).toBe(1);
+
+    await deliverSessionMessages(session); // backoff window still closed → no attempt
+    expect(calls).toBe(1);
+
+    // Open the retry window, as if the backoff elapsed.
+    const inDb = new Database(inboundDbPath('ag-1', session.id));
+    inDb
+      .prepare("UPDATE delivered SET next_retry_at = datetime('now', '-1 second') WHERE message_out_id = ?")
+      .run('out-retry');
+    inDb.close();
+
+    await deliverSessionMessages(session);
+    expect(calls).toBe(2);
+    const row = readDeliveredRow('ag-1', session.id, 'out-retry');
+    expect(row?.status).toBe('delivered');
+    expect(row?.platform_message_id).toBe('plat-after-retry');
+    expect(row?.attempts).toBe(1); // kept as historical failure count
+  });
+
+  it('stops auto-retrying once the attempts cap is reached, even when due', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-exhausted');
+
+    // Simulate an exhausted message: attempts at the cap, retry long overdue.
+    const inDb = new Database(inboundDbPath('ag-1', session.id));
+    migrateDeliveredTable(inDb);
+    inDb
+      .prepare(
+        `INSERT INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_retry_at)
+         VALUES (?, NULL, 'failed', datetime('now'), 10, datetime('now', '-1 hour'))`,
+      )
+      .run('out-exhausted');
+    inDb.close();
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'should-not-happen';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(0);
+    expect(readDeliveredRow('ag-1', session.id, 'out-exhausted')?.status).toBe('failed');
   });
 });

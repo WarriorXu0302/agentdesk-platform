@@ -84,6 +84,38 @@ export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
 
+function defaultInspectImage(image: string): boolean {
+  try {
+    execSync(`${CONTAINER_RUNTIME_BIN} image inspect ${image}`, { stdio: 'pipe', timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Startup precheck: verify the base agent image exists locally.
+ *
+ * Non-fatal by design — a missing image must not crash the host (channels
+ * and /metrics stay up), but every wake would fail with "No such image",
+ * so log a loud, actionable error at boot instead of letting the operator
+ * discover it on the first inbound message. Checks the same CONTAINER_IMAGE
+ * the wake path uses (per-group `imageTag` overrides are built FROM it).
+ *
+ * `inspectImage` is injectable so tests don't need a container runtime.
+ */
+export function checkBaseImage(inspectImage: (image: string) => boolean = defaultInspectImage): boolean {
+  if (inspectImage(CONTAINER_IMAGE)) {
+    log.debug('Base agent image present', { image: CONTAINER_IMAGE });
+    return true;
+  }
+  log.error('Base agent image not found — agents cannot spawn until it is built. Run: pnpm container:build', {
+    image: CONTAINER_IMAGE,
+    runtime: CONTAINER_RUNTIME_BIN,
+  });
+  return false;
+}
+
 /**
  * Decide whether a new wake should be admitted. Pure function so tests
  * don't have to mock the whole spawn pipeline. The cap is `>=` against
@@ -161,107 +193,107 @@ async function spawnContainer(session: Session): Promise<void> {
     'container.spawn',
     chainAttrs({ 'session.id': session.id, 'agent.group.id': session.agent_group_id }),
     async () => {
-    const agentGroup = getAgentGroup(session.agent_group_id);
-    if (!agentGroup) {
-      log.error('Agent group not found', { agentGroupId: session.agent_group_id });
-      return;
-    }
-
-    // Refresh the destination map and default reply routing so any admin
-    // changes take effect on wake. Destinations come from the agent-to-agent
-    // module — skip when the module isn't installed (table absent).
-    if (hasTable(getDb(), 'agent_destinations')) {
-      const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
-      writeDestinations(agentGroup.id, session.id);
-    }
-    writeSessionRouting(agentGroup.id, session.id);
-
-    // Read container config once — threaded through provider resolution,
-    // buildMounts, and buildContainerArgs so we don't re-read the file.
-    const containerConfig = readContainerConfig(agentGroup.folder);
-
-    // Ensure container.json has the agent group identity fields the runner needs.
-    // Written at spawn time so the runner can read them from the RO mount.
-    ensureRuntimeFields(containerConfig, agentGroup);
-
-    // Resolve the effective provider + any host-side contribution it declares
-    // (extra mounts, env passthrough). Computed once and threaded through both
-    // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
-    const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
-    getActiveSpan()?.setAttribute('provider', provider);
-
-    const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
-    const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-v2-${agentGroup.folder}-${Date.now()}`;
-    // OneCLI agent identifier is always the agent group id — stable across
-    // sessions and reversible via getAgentGroup() for approval routing.
-    const agentIdentifier = agentGroup.id;
-    const args = await buildContainerArgs(
-      mounts,
-      containerName,
-      agentGroup,
-      containerConfig,
-      provider,
-      contribution,
-      agentIdentifier,
-    );
-
-    // Inject OTEL_TRACEPARENT so the container can continue the trace context
-    const carrier: Record<string, string> = {};
-    injectTraceContext(carrier);
-    if (carrier.traceparent) {
-      args.push('-e', `OTEL_TRACEPARENT=${carrier.traceparent}`);
-    }
-
-    log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
-
-    // Clear any orphan heartbeat from a previous container instance — the
-    // sweep's ceiling check treats a missing file as "fresh spawn, give grace"
-    // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
-    // immediate kill before the new container touches the file itself.
-    fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
-
-    const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-    activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
-    markContainerRunning(session.id);
-
-    // Log stderr
-    container.stderr?.on('data', (data) => {
-      for (const line of data.toString().trim().split('\n')) {
-        if (line) log.debug(line, { container: agentGroup.folder });
+      const agentGroup = getAgentGroup(session.agent_group_id);
+      if (!agentGroup) {
+        log.error('Agent group not found', { agentGroupId: session.agent_group_id });
+        return;
       }
-    });
 
-    // stdout is unused in v2 (all IO is via session DB)
-    container.stdout?.on('data', () => {});
-
-    // No host-side idle timeout. Stale/stuck detection is driven by the host
-    // sweep reading heartbeat mtime + processing_ack claim age + container_state
-    // (see src/host-sweep.ts). This avoids killing long-running legitimate work
-    // on a wall-clock timer.
-
-    container.on('close', (code) => {
-      const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
-      recentlyKilled.delete(session.id);
-      activeContainers.delete(session.id);
-      markContainerStopped(session.id);
-      stopTypingRefresh(session.id);
-      containerExitsTotal.labels(agentGroup.id, outcome).inc();
-      if (outcome === 'crash' || outcome === 'killed') {
-        failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
+      // Refresh the destination map and default reply routing so any admin
+      // changes take effect on wake. Destinations come from the agent-to-agent
+      // module — skip when the module isn't installed (table absent).
+      if (hasTable(getDb(), 'agent_destinations')) {
+        const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
+        writeDestinations(agentGroup.id, session.id);
       }
-      log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
-    });
+      writeSessionRouting(agentGroup.id, session.id);
 
-    container.on('error', (err) => {
-      recentlyKilled.delete(session.id);
-      activeContainers.delete(session.id);
-      markContainerStopped(session.id);
-      stopTypingRefresh(session.id);
-      containerExitsTotal.labels(agentGroup.id, 'crash').inc();
-      failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
-      log.error('Container spawn error', { sessionId: session.id, err });
-    });
+      // Read container config once — threaded through provider resolution,
+      // buildMounts, and buildContainerArgs so we don't re-read the file.
+      const containerConfig = readContainerConfig(agentGroup.folder);
+
+      // Ensure container.json has the agent group identity fields the runner needs.
+      // Written at spawn time so the runner can read them from the RO mount.
+      ensureRuntimeFields(containerConfig, agentGroup);
+
+      // Resolve the effective provider + any host-side contribution it declares
+      // (extra mounts, env passthrough). Computed once and threaded through both
+      // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
+      const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
+      getActiveSpan()?.setAttribute('provider', provider);
+
+      const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
+      const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-v2-${agentGroup.folder}-${Date.now()}`;
+      // OneCLI agent identifier is always the agent group id — stable across
+      // sessions and reversible via getAgentGroup() for approval routing.
+      const agentIdentifier = agentGroup.id;
+      const args = await buildContainerArgs(
+        mounts,
+        containerName,
+        agentGroup,
+        containerConfig,
+        provider,
+        contribution,
+        agentIdentifier,
+      );
+
+      // Inject OTEL_TRACEPARENT so the container can continue the trace context
+      const carrier: Record<string, string> = {};
+      injectTraceContext(carrier);
+      if (carrier.traceparent) {
+        args.push('-e', `OTEL_TRACEPARENT=${carrier.traceparent}`);
+      }
+
+      log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
+
+      // Clear any orphan heartbeat from a previous container instance — the
+      // sweep's ceiling check treats a missing file as "fresh spawn, give grace"
+      // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
+      // immediate kill before the new container touches the file itself.
+      fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
+
+      const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
+      markContainerRunning(session.id);
+
+      // Log stderr
+      container.stderr?.on('data', (data) => {
+        for (const line of data.toString().trim().split('\n')) {
+          if (line) log.debug(line, { container: agentGroup.folder });
+        }
+      });
+
+      // stdout is unused in v2 (all IO is via session DB)
+      container.stdout?.on('data', () => {});
+
+      // No host-side idle timeout. Stale/stuck detection is driven by the host
+      // sweep reading heartbeat mtime + processing_ack claim age + container_state
+      // (see src/host-sweep.ts). This avoids killing long-running legitimate work
+      // on a wall-clock timer.
+
+      container.on('close', (code) => {
+        const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
+        recentlyKilled.delete(session.id);
+        activeContainers.delete(session.id);
+        markContainerStopped(session.id);
+        stopTypingRefresh(session.id);
+        containerExitsTotal.labels(agentGroup.id, outcome).inc();
+        if (outcome === 'crash' || outcome === 'killed') {
+          failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
+        }
+        log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
+      });
+
+      container.on('error', (err) => {
+        recentlyKilled.delete(session.id);
+        activeContainers.delete(session.id);
+        markContainerStopped(session.id);
+        stopTypingRefresh(session.id);
+        containerExitsTotal.labels(agentGroup.id, 'crash').inc();
+        failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
+        log.error('Container spawn error', { sessionId: session.id, err });
+      });
     },
   );
 }

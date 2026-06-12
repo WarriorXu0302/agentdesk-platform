@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveProviderName } from './container-runner.js';
+import { checkBaseImage, resolveProviderName } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over group and container.json', () => {
@@ -28,5 +28,25 @@ describe('resolveProviderName', () => {
   it('treats empty string as unset (falls through)', () => {
     expect(resolveProviderName('', 'codex', null)).toBe('codex');
     expect(resolveProviderName(null, '', 'opencode')).toBe('opencode');
+  });
+});
+
+describe('checkBaseImage', () => {
+  it('inspects the wake-path image (namespace + agent-v2 + install slug) and passes when present', () => {
+    const inspected: string[] = [];
+    const result = checkBaseImage((image) => {
+      inspected.push(image);
+      return true;
+    });
+    expect(result).toBe(true);
+    expect(inspected).toHaveLength(1);
+    // Same constant the wake path resolves (config CONTAINER_IMAGE), not a
+    // second hand-rolled construction — assert the derived shape only, since
+    // namespace and slug vary per environment.
+    expect(inspected[0]).toMatch(/^[a-z0-9-]+-agent-v2-[0-9a-f]{8}:latest$/);
+  });
+
+  it('returns false without throwing when the image is missing (non-fatal precheck)', () => {
+    expect(checkBaseImage(() => false)).toBe(false);
   });
 });

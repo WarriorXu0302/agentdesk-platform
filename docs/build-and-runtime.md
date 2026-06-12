@@ -65,6 +65,9 @@ Both paths end with Bun running the same source file from `/app/src/index.ts`.
 6. `pnpm exec vitest run` (host tests)
 7. `bun test` in `container/agent-runner/` (container tests)
 
+A parallel `image-smoke` job builds the agent container image via `container/build.sh`
+(with `CONTAINER_IMAGE_BASE=ci-smoke-agent`) to catch Dockerfile/build-script breakage.
+
 Any failure fails the PR.
 
 ## Key invariants

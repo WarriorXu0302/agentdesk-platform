@@ -1,24 +1,36 @@
 #!/bin/bash
-# Build the FrontLane agent container image.
+# Build the agent container image.
 #
-# Reads one optional build flag from ../.env:
+# Reads optional build flags from the caller's env, falling back to ../.env:
+#   BRAND_NAMESPACE=acme     — image name prefix (default: agentdesk)
 #   INSTALL_CJK_FONTS=true   — add Chinese/Japanese/Korean fonts (~200MB)
-# Callers can also override by exporting INSTALL_CJK_FONTS directly.
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# pwd -P resolves symlinks — Node's process.cwd() returns the physical path,
+# so the slug input must be physical on this side too or the names diverge.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 cd "$SCRIPT_DIR"
 
-# Derive the image name from the checkout path so two FrontLane installs on
-# the same host don't clobber each other. Mirrors src/install-slug.ts.
+# Brand namespace — caller's env takes precedence, then .env, then default.
+# Must produce the exact same value the host derives in src/branding.ts,
+# otherwise the host looks for an image this script never built.
+if [ -z "${BRAND_NAMESPACE:-}" ] && [ -f "../.env" ]; then
+    BRAND_NAMESPACE="$(grep -E '^[[:space:]]*BRAND_NAMESPACE=' ../.env | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+fi
+# Sanitize to a DNS/label-safe slug. Mirrors sanitizeNamespace in src/branding.ts.
+BRAND_NAMESPACE="$(printf '%s' "${BRAND_NAMESPACE:-}" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//')"
+BRAND_NAMESPACE="${BRAND_NAMESPACE:-agentdesk}"
+
+# Derive the image name from the checkout path so two installs on the same
+# host don't clobber each other. Mirrors src/install-slug.ts.
 if command -v shasum >/dev/null 2>&1; then
     INSTALL_SLUG="$(printf '%s' "$PROJECT_ROOT" | shasum | cut -c1-8)"
 else
     INSTALL_SLUG="$(printf '%s' "$PROJECT_ROOT" | sha1sum | cut -c1-8)"
 fi
-IMAGE_NAME="${CONTAINER_IMAGE_BASE:-frontlane-agent-v2-${INSTALL_SLUG}}"
+IMAGE_NAME="${CONTAINER_IMAGE_BASE:-${BRAND_NAMESPACE}-agent-v2-${INSTALL_SLUG}}"
 TAG="${1:-latest}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
@@ -33,7 +45,7 @@ if [ "${INSTALL_CJK_FONTS:-false}" = "true" ]; then
     BUILD_ARGS+=(--build-arg INSTALL_CJK_FONTS=true)
 fi
 
-echo "Building FrontLane agent container image..."
+echo "Building agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
 ${CONTAINER_RUNTIME} build "${BUILD_ARGS[@]}" -t "${IMAGE_NAME}:${TAG}" .

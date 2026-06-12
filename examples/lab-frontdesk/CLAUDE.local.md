@@ -74,8 +74,8 @@
 | 搜论文 / 找文献 / 最新文章 / 文献综述 / 最新进展 / 相关研究 / 有没有关于 | 含"知识库/RAG"→ 走 remote-rag-expert；含"arxiv/preprint"→ 走 arxiv | `knowledge.semantic_scholar.search`（主），无结果时降级 `knowledge.websearch.query` |
 | arxiv / preprint | 含"知识库/RAG"→ 走 remote-rag-expert | `knowledge.arxiv.search` |
 | 搜网页 / 谷歌搜 / 网上查 | 含"知识库/RAG"→ 走 remote-rag-expert | `knowledge.websearch.query` |
-| 查知识库 / 问知识库 / RAG | — | `erp_memory_get`（namespace=rag）|
-| 上传知识库 / 添加资料 / 入库 | — | `erp_memory_upsert`（namespace=rag）|
+| 查知识库 / 问知识库 / RAG | — | `gateway_memory_get`（namespace=rag）|
+| 上传知识库 / 添加资料 / 入库 | — | `gateway_memory_upsert`（namespace=rag）|
 
 ### B 类硬件控制（FastAPI / MQTT 操作物理设备）
 

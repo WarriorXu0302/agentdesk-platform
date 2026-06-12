@@ -1,0 +1,60 @@
+# CI gate — the canonical step order is documented in docs/build-and-runtime.md §"CI shape".
+# Keep the two in sync: any step added/removed here must be reflected there in the same PR.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Keep in sync with BUN_VERSION in container/Dockerfile — CI should
+          # exercise the same runtime the production image pins.
+          bun-version: 1.3.12
+
+      - name: Install host deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Install agent-runner deps
+        run: bun install --frozen-lockfile
+        working-directory: container/agent-runner
+
+      - name: Format check
+        run: pnpm run format:check
+
+      - name: Host typecheck
+        run: pnpm exec tsc --noEmit
+
+      - name: Agent-runner typecheck
+        run: pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit
+
+      - name: Host tests
+        run: pnpm exec vitest run
+
+      - name: Agent-runner tests
+        run: bun test
+        working-directory: container/agent-runner
+
+  image-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build agent container image
+        run: bash container/build.sh
+        env:
+          CONTAINER_IMAGE_BASE: ci-smoke-agent

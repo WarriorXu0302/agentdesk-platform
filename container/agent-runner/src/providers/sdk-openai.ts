@@ -71,8 +71,8 @@ class SdkOpenAIProvider implements AgentProvider {
           yield {
             type: 'usage',
             model: self.model,
-            inputTokens: result.usage.promptTokens,
-            outputTokens: result.usage.completionTokens,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
             totalTokens: result.usage.totalTokens,
             durationMs,
             transport: 'chat-completions',

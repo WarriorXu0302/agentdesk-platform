@@ -1,5 +1,5 @@
 #!/bin/bash
-# FrontLane agent container entrypoint.
+# Agent container entrypoint.
 #
 # The host passes initial session parameters via stdin as a single JSON blob,
 # then the agent-runner opens the session DBs at /workspace/{inbound,outbound}.db

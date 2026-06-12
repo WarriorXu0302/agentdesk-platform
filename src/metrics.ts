@@ -43,6 +43,16 @@
  *   - <namespace>_classification_log_failures_total{reason}
  *       classification rows lost to DB write errors. Alert on non-zero.
  *
+ *   - <namespace>_delivery_failures_total{reason}
+ *       failed outbound delivery attempts (per attempt). `reason` is
+ *       `timeout` or `error`.
+ *
+ *   - <namespace>_delivery_retries_total
+ *       delivery retries scheduled with persisted backoff (ADR-0016).
+ *
+ *   - <namespace>_delivery_permanent_failures_total
+ *       messages whose automatic retries are exhausted — DLQ candidates.
+ *
  * The /metrics endpoint is attached to the shared webhook server so it
  * lives at the same port as adapters' callbacks.
  */
@@ -144,6 +154,34 @@ export const routeSeconds = new client.Histogram({
   registers: [registry],
 });
 
+export const deliveryFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_delivery_failures_total`,
+  help: 'Failed outbound delivery attempts by reason',
+  // `reason`:
+  //   - `timeout` : adapter call exceeded DELIVERY_TIMEOUT_MS. Note the
+  //                 underlying send may still have landed — see ADR-0016's
+  //                 at-least-once duplicate window.
+  //   - `error`   : adapter threw, destination permission check failed,
+  //                 or a2a routing failed.
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
+export const deliveryRetriesTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_delivery_retries_total`,
+  help: 'Outbound delivery retries scheduled with persisted backoff',
+  registers: [registry],
+});
+
+export const deliveryPermanentFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_delivery_permanent_failures_total`,
+  help: 'Outbound messages whose automatic delivery retries are exhausted',
+  // Alert on non-zero rate: these rows sit in the session's delivered table
+  // with status='failed' until an operator inspects/requeues them via
+  // scripts/dlq.ts.
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',
@@ -171,10 +209,7 @@ export function startTimer(phase: string): () => void {
  * Attach GET /metrics to the shared webhook server. Separate module so the
  * webhook server doesn't depend on prom-client directly.
  */
-export async function handleMetricsRequest(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<void> {
+export async function handleMetricsRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (req.method !== 'GET') {
     res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Method Not Allowed');

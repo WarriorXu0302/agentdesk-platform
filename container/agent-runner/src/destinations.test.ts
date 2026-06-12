@@ -61,10 +61,10 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('`casa`');
   });
 
-  it('includes ERP memory restrictions when memoryMode=erp', () => {
+  it('includes backend memory restrictions when memoryMode=gateway', () => {
     seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
 
-    const prompt = buildSystemPromptAddendum('Casa', 'erp');
+    const prompt = buildSystemPromptAddendum('Casa', 'gateway');
 
     expect(prompt).toContain('Memory policy');
     expect(prompt).toContain('Do not store durable user');

@@ -47,10 +47,26 @@ export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10);
 // inbound traffic from fork-bombing the host. Sessions that can't be woken
 // because the cap is full stay pending — the host sweep (60s) will retry
 // them on its next tick once earlier containers have exited.
-export const MAX_CONCURRENT_CONTAINERS = Math.max(
-  1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '10', 10) || 10,
-);
+export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '10', 10) || 10);
+
+// --- Outbound delivery resilience (see ADR-0016) ---
+// Timeout for a single channel-adapter deliver() call. A timed-out attempt
+// counts as failed and is retried with backoff, but the underlying send may
+// still land — timeouts open an at-least-once duplicate window, so keep this
+// comfortably above the channel's p99 send latency.
+export const DELIVERY_TIMEOUT_MS = Math.max(1000, parseInt(process.env.DELIVERY_TIMEOUT_MS || '30000', 10) || 30000);
+// How many sessions the delivery poll loops drain concurrently. Bounds
+// cross-session head-of-line blocking without letting a burst of sessions
+// fan out into unbounded parallel channel calls. Per-session ordering is
+// unaffected (delivery.ts serializes drains within a session).
+export const DELIVERY_CONCURRENCY = Math.max(1, parseInt(process.env.DELIVERY_CONCURRENCY || '4', 10) || 4);
+// Persistent retry policy for failed deliveries (delivered.status='failed').
+// Attempts beyond the schedule's length reuse its last entry; after
+// DELIVERY_MAX_ATTEMPTS the row stops auto-retrying and waits for
+// scripts/dlq.ts. Deliberately not env-tunable: the cap interacts with the
+// delivered-table semantics in src/db/session-db.ts.
+export const DELIVERY_MAX_ATTEMPTS = 10;
+export const DELIVERY_BACKOFF_SCHEDULE_SEC = [60, 300, 1800, 7200, 21600]; // 1m / 5m / 30m / 2h / 6h cap
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

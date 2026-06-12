@@ -356,6 +356,7 @@ AGENTDESK_SESSION_TTL_DAYS=30
 
 ```bash
 pnpm install
+pnpm container:build              # 构建 agent 基础镜像（首次部署必须；BRAND_NAMESPACE 或路径变更后需重建）
 pnpm init:enterprise              # 创建一个空白模板 frontdesk（带默认资源限制）
 pnpm configure:enterprise-gateway --base-url https://your-gateway.example.com/api/agent
 pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
@@ -366,6 +367,8 @@ pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `MAX_CONCURRENT_CONTAINERS` | 10 | 全局并发容器上限 |
+| `DELIVERY_TIMEOUT_MS` | 30000 | 单次渠道 adapter 投递调用超时；超时计为失败并按退避重试（ADR-0016） |
+| `DELIVERY_CONCURRENCY` | 4 | 投递轮询跨 session 并发度（session 内仍严格串行） |
 | `AGENTDESK_IDLE_EXIT_MS` | 0（关） | 容器空闲多久主动退 |
 | `AGENTDESK_SESSION_TTL_DAYS` | 0（关） | 多少天空闲 session 归档 |
 | `AGENTDESK_ARCHIVE_HARD_DELETE_DAYS` | 0（关） | 归档多少天后物理删除 |

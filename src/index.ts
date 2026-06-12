@@ -14,6 +14,7 @@ import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
+import { checkBaseImage } from './container-runner.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
   // 2. Container runtime
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  checkBaseImage();
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
@@ -196,8 +198,8 @@ async function shutdown(signal: string): Promise<void> {
     // via SIGTERM/SIGINT, not a crash, so the next start shouldn't be counted
     // as one.
     resetCircuitBreaker();
-  await shutdownObservability();
-  process.exit(0);
+    await shutdownObservability();
+    process.exit(0);
   }
 }
 

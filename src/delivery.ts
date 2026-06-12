@@ -16,13 +16,25 @@ import { getDb, hasTable } from './db/connection.js';
 import { getMessagingGroupByPlatform } from './db/messaging-groups.js';
 import {
   getDueOutboundMessages,
-  getDeliveredIds,
+  getUndeliverableIds,
+  getDeliveryAttempts,
   markDelivered,
   markDeliveryFailed,
   migrateDeliveredTable,
 } from './db/session-db.js';
+import {
+  DELIVERY_BACKOFF_SCHEDULE_SEC,
+  DELIVERY_CONCURRENCY,
+  DELIVERY_MAX_ATTEMPTS,
+  DELIVERY_TIMEOUT_MS,
+} from './config.js';
 import { log } from './log.js';
-import { classificationBypassTotal } from './metrics.js';
+import {
+  classificationBypassTotal,
+  deliveryFailuresTotal,
+  deliveryPermanentFailuresTotal,
+  deliveryRetriesTotal,
+} from './metrics.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { markProgressStatusCompleted, markProgressStatusFailed } from './modules/progress-status/index.js';
@@ -37,10 +49,36 @@ import { setSpanContextWithActive, context } from './observability/trace-context
 
 const ACTIVE_POLL_MS = 1000;
 const SWEEP_POLL_MS = 60_000;
-const MAX_DELIVERY_ATTEMPTS = 3;
 
-/** Track delivery attempt counts. Resets on process restart (gives failed messages a fresh chance). */
-const deliveryAttempts = new Map<string, number>();
+class DeliveryTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`channel deliver() timed out after ${ms}ms`);
+    this.name = 'DeliveryTimeoutError';
+  }
+}
+
+/**
+ * Bound a channel-adapter call. Rejecting here does NOT cancel the
+ * underlying call — if it later succeeds anyway, the scheduled retry
+ * re-sends and the user may see a duplicate. At-least-once is the
+ * deliberate choice (ADR-0016): the alternative (assume delivered on
+ * timeout) silently drops messages.
+ */
+function withDeliveryTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new DeliveryTimeoutError(ms)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /**
  * Sessions whose outbound queue is currently being drained.
@@ -49,8 +87,8 @@ const deliveryAttempts = new Map<string, number>();
  * active sessions) both call deliverSessionMessages, and a running session
  * is in *both* result sets. Without this guard, the two timer chains can
  * race on the same outbound row: both read it as undelivered, both call
- * the channel adapter, both markDelivered (idempotent in the DB via
- * INSERT OR IGNORE — but the user has already seen the message twice).
+ * the channel adapter, both markDelivered (idempotent in the DB via the
+ * status-gated upsert — but the user has already seen the message twice).
  *
  * Skipping (vs. queueing) is correct: any message left over when the
  * second caller skips will be picked up on the next poll tick (~1s).
@@ -126,14 +164,35 @@ export function startSweepDeliveryPoll(): void {
   pollSweep();
 }
 
+/**
+ * Drain a list of sessions through a bounded worker pool. The previous
+ * serial loop had cross-session head-of-line blocking: one slow channel
+ * call stalled delivery for every other session for its full duration.
+ * Per-session ordering is unaffected — inflightDeliveries still rejects
+ * concurrent drains of the same session, and one poll's session list never
+ * contains duplicates.
+ */
+async function drainSessionsBounded(sessions: Session[], limit: number): Promise<void> {
+  const queue = [...sessions];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    for (let session = queue.shift(); session !== undefined; session = queue.shift()) {
+      try {
+        await deliverSessionMessages(session);
+      } catch (err) {
+        // Per-session isolation: one session's drain error must not abort
+        // the remaining queue for this tick.
+        log.error('Session delivery drain error', { sessionId: session.id, err });
+      }
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function pollActive(): Promise<void> {
   if (!activePolling) return;
 
   try {
-    const sessions = getRunningSessions();
-    for (const session of sessions) {
-      await deliverSessionMessages(session);
-    }
+    await drainSessionsBounded(getRunningSessions(), DELIVERY_CONCURRENCY);
   } catch (err) {
     log.error('Active delivery poll error', { err });
   }
@@ -145,10 +204,7 @@ async function pollSweep(): Promise<void> {
   if (!sweepPolling) return;
 
   try {
-    const sessions = getActiveSessions();
-    for (const session of sessions) {
-      await deliverSessionMessages(session);
-    }
+    await drainSessionsBounded(getActiveSessions(), DELIVERY_CONCURRENCY);
   } catch (err) {
     log.error('Sweep delivery poll error', { err });
   }
@@ -190,8 +246,13 @@ async function drainSession(session: Session): Promise<void> {
     return;
   }
 
-  const delivered = getDeliveredIds(inDb);
-  const undelivered = allDue.filter((m) => !delivered.has(m.id));
+  // Bring the delivered table up to schema BEFORE querying it — the
+  // undeliverable filter reads the attempts / next_retry_at columns, which
+  // pre-existing session DBs don't have yet.
+  migrateDeliveredTable(inDb);
+
+  const undeliverable = getUndeliverableIds(inDb, DELIVERY_MAX_ATTEMPTS);
+  const undelivered = allDue.filter((m) => !undeliverable.has(m.id));
   if (undelivered.length === 0) {
     outDb.close();
     inDb.close();
@@ -203,9 +264,6 @@ async function drainSession(session: Session): Promise<void> {
     let lastDeliveredText: string | undefined;
 
     try {
-      // Ensure platform_message_id column exists (migration for existing sessions)
-      migrateDeliveredTable(inDb);
-
       for (const msg of undelivered) {
         try {
           if (msg.kind === 'llm-usage') {
@@ -213,13 +271,11 @@ async function drainSession(session: Session): Promise<void> {
             drainSpan?.addEvent('llm-usage.skipped', { 'msg.id': msg.id });
             markDelivered(inDb, msg.id, null);
             handledOutbound = true;
-            deliveryAttempts.delete(msg.id);
             continue;
           }
           const platformMsgId = await deliverMessage(msg, session, inDb);
           markDelivered(inDb, msg.id, platformMsgId ?? null);
           handledOutbound = true;
-          deliveryAttempts.delete(msg.id);
 
           if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
             try {
@@ -237,30 +293,43 @@ async function drainSession(session: Session): Promise<void> {
             pauseTypingRefreshAfterDelivery(session.id);
           }
         } catch (err) {
-          const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
-          deliveryAttempts.set(msg.id, attempts);
-          if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-            log.error('Message delivery failed permanently, giving up', {
+          // Attempt counts are persisted in the delivered table (ADR-0016)
+          // so retry state survives host restarts.
+          const attempts = getDeliveryAttempts(inDb, msg.id) + 1;
+          deliveryFailuresTotal.labels(err instanceof DeliveryTimeoutError ? 'timeout' : 'error').inc();
+          if (attempts >= DELIVERY_MAX_ATTEMPTS) {
+            markDeliveryFailed(inDb, msg.id, attempts, null);
+            deliveryPermanentFailuresTotal.inc();
+            log.error('Message delivery failed permanently, automatic retries exhausted', {
               messageId: msg.id,
               sessionId: session.id,
               attempts,
               err,
             });
-            markDeliveryFailed(inDb, msg.id);
             handledOutbound = true;
-            deliveryAttempts.delete(msg.id);
             if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
               await markProgressStatusFailed(session.id, deliveryAdapter);
             }
           } else {
-            log.warn('Message delivery failed, will retry', {
+            const backoffSec =
+              DELIVERY_BACKOFF_SCHEDULE_SEC[Math.min(attempts - 1, DELIVERY_BACKOFF_SCHEDULE_SEC.length - 1)];
+            markDeliveryFailed(inDb, msg.id, attempts, backoffSec);
+            deliveryRetriesTotal.inc();
+            log.warn('Message delivery failed, retry scheduled', {
               messageId: msg.id,
               sessionId: session.id,
               attempt: attempts,
-              maxAttempts: MAX_DELIVERY_ATTEMPTS,
+              maxAttempts: DELIVERY_MAX_ATTEMPTS,
+              backoffSec,
               err,
             });
           }
+          // Stop draining this session for this tick — delivering msg N+1
+          // right after msg N failed would reorder the user-visible stream.
+          // Once msg N enters its backoff window, later ticks let the queue
+          // move past it (eventual overtake is the accepted trade-off, see
+          // ADR-0016).
+          break;
         }
       }
     } finally {
@@ -315,10 +384,7 @@ async function deliverMessage(
   session: Session,
   inDb: Database.Database,
 ): Promise<string | undefined> {
-  return withSpan(
-    'delivery.message.deliver',
-    chainAttrs({ 'msg.id': msg.id, 'message.kind': msg.kind }),
-    async () => {
+  return withSpan('delivery.message.deliver', chainAttrs({ 'msg.id': msg.id, 'message.kind': msg.kind }), async () => {
     if (!deliveryAdapter) {
       log.warn('No delivery adapter configured, dropping message', { id: msg.id });
       return;
@@ -471,16 +537,21 @@ async function deliverMessage(
       chainAttrs({
         'channel.type': msg.channel_type,
         'platform.id': msg.platform_id,
-        ...outputAttrs(typeof content === 'object' && typeof content.text === 'string' ? content.text : outboundContent),
+        ...outputAttrs(
+          typeof content === 'object' && typeof content.text === 'string' ? content.text : outboundContent,
+        ),
       }),
       async () => {
-        return await deliveryAdapter!.deliver(
-          msg.channel_type!,
-          msg.platform_id!,
-          msg.thread_id,
-          msg.kind,
-          outboundContent,
-          files,
+        return await withDeliveryTimeout(
+          deliveryAdapter!.deliver(
+            msg.channel_type!,
+            msg.platform_id!,
+            msg.thread_id,
+            msg.kind,
+            outboundContent,
+            files,
+          ),
+          DELIVERY_TIMEOUT_MS,
         );
       },
     );
@@ -495,8 +566,7 @@ async function deliverMessage(
     clearOutbox(session.agent_group_id, session.id, msg.id);
 
     return platformMsgId;
-    },
-  );
+  });
 }
 
 /**

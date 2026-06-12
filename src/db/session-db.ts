@@ -301,24 +301,125 @@ export function getDueOutboundMessages(db: Database.Database): OutboundMessage[]
 // delivered
 // ---------------------------------------------------------------------------
 
-export function getDeliveredIds(db: Database.Database): Set<string> {
+/**
+ * Message-out ids that must NOT be (re)delivered right now (ADR-0016):
+ *
+ *   - status='delivered' rows — already on the user's screen.
+ *   - status='failed' rows that are exhausted (attempts >= maxAttempts),
+ *     have no scheduled retry (next_retry_at NULL — pre-migration rows and
+ *     dlq-parked rows), or whose retry window hasn't opened yet.
+ *
+ * A failed row whose next_retry_at has passed is deliberately absent from
+ * the set: the regular poll/sweep drain then re-attempts it exactly like an
+ * undelivered row, which is what makes failed deliveries recoverable across
+ * host restarts without a separate retry queue.
+ *
+ * Caller must run migrateDeliveredTable() first on DBs that may predate the
+ * attempts / next_retry_at columns.
+ */
+export function getUndeliverableIds(db: Database.Database, maxAttempts: number): Set<string> {
   return new Set(
-    (db.prepare('SELECT message_out_id FROM delivered').all() as Array<{ message_out_id: string }>).map(
-      (r) => r.message_out_id,
-    ),
+    (
+      db
+        .prepare(
+          `SELECT message_out_id FROM delivered
+            WHERE status = 'delivered'
+               OR (status = 'failed' AND (
+                     attempts >= ?
+                     OR next_retry_at IS NULL
+                     OR datetime(next_retry_at) > datetime('now')
+                  ))`,
+        )
+        .all(maxAttempts) as Array<{ message_out_id: string }>
+    ).map((r) => r.message_out_id),
   );
 }
 
 export function markDelivered(db: Database.Database, messageOutId: string, platformMessageId: string | null): void {
+  // INSERT path: first-time success (the active/sweep poll race stays
+  // idempotent — the second writer's conflict-update is gated on
+  // status='failed', so it no-ops against an existing delivered row).
+  // UPDATE path: a previously failed row finally delivered on retry —
+  // flip it to delivered so it leaves the retry queue. attempts is kept
+  // as a historical record of how many failures preceded success.
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, ?, 'delivered', datetime('now'))",
+    `INSERT INTO delivered (message_out_id, platform_message_id, status, delivered_at)
+     VALUES (?, ?, 'delivered', datetime('now'))
+     ON CONFLICT(message_out_id) DO UPDATE SET
+       platform_message_id = excluded.platform_message_id,
+       status              = 'delivered',
+       delivered_at        = excluded.delivered_at
+     WHERE delivered.status = 'failed'`,
   ).run(messageOutId, platformMessageId ?? null);
 }
 
-export function markDeliveryFailed(db: Database.Database, messageOutId: string): void {
+/** Persisted failed-attempt count for a message. 0 when never failed. */
+export function getDeliveryAttempts(db: Database.Database, messageOutId: string): number {
+  const row = db
+    .prepare("SELECT attempts FROM delivered WHERE message_out_id = ? AND status = 'failed'")
+    .get(messageOutId) as { attempts: number } | undefined;
+  return row?.attempts ?? 0;
+}
+
+/**
+ * Record a failed delivery attempt with a persisted attempt count and (when
+ * backoffSec is non-null) a scheduled retry at now + backoffSec. backoffSec
+ * null means automatic retries are exhausted: the row stays 'failed' for
+ * audit / DLQ inspection and getUndeliverableIds excludes it permanently
+ * until an operator requeues it via scripts/dlq.ts.
+ *
+ * The conflict-update is gated on status='failed' so a concurrent success
+ * can never be downgraded back to failed.
+ */
+export function markDeliveryFailed(
+  db: Database.Database,
+  messageOutId: string,
+  attempts: number,
+  backoffSec: number | null,
+): void {
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, NULL, 'failed', datetime('now'))",
-  ).run(messageOutId);
+    `INSERT INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_retry_at)
+     VALUES (@id, NULL, 'failed', datetime('now'), @attempts,
+             CASE WHEN @backoffSec IS NULL THEN NULL
+                  ELSE datetime('now', '+' || @backoffSec || ' seconds') END)
+     ON CONFLICT(message_out_id) DO UPDATE SET
+       attempts      = excluded.attempts,
+       delivered_at  = excluded.delivered_at,
+       next_retry_at = excluded.next_retry_at
+     WHERE delivered.status = 'failed'`,
+  ).run({ id: messageOutId, attempts, backoffSec });
+}
+
+export interface FailedDeliveryRow {
+  message_out_id: string;
+  attempts: number;
+  next_retry_at: string | null;
+  delivered_at: string;
+}
+
+/** All failed delivery rows for a session, oldest first. Used by scripts/dlq.ts. */
+export function listFailedDeliveries(db: Database.Database): FailedDeliveryRow[] {
+  return db
+    .prepare(
+      `SELECT message_out_id, attempts, next_retry_at, delivered_at
+         FROM delivered WHERE status = 'failed' ORDER BY delivered_at ASC`,
+    )
+    .all() as FailedDeliveryRow[];
+}
+
+/**
+ * Reset a failed row so the next poll/sweep re-attempts it immediately:
+ * attempts back to 0, next_retry_at to now. Returns true when a failed row
+ * was actually reset. Used by scripts/dlq.ts — never by the host runtime.
+ */
+export function requeueFailedDelivery(db: Database.Database, messageOutId: string): boolean {
+  return (
+    db
+      .prepare(
+        "UPDATE delivered SET attempts = 0, next_retry_at = datetime('now') WHERE message_out_id = ? AND status = 'failed'",
+      )
+      .run(messageOutId).changes > 0
+  );
 }
 
 /** Ensure the delivered table has columns added after initial schema. */
@@ -331,6 +432,16 @@ export function migrateDeliveredTable(db: Database.Database): void {
   }
   if (!cols.has('status')) {
     db.prepare("ALTER TABLE delivered ADD COLUMN status TEXT NOT NULL DEFAULT 'delivered'").run();
+  }
+  if (!cols.has('attempts')) {
+    // Persistent retry state (ADR-0016). Pre-migration failed rows keep
+    // attempts=0 / next_retry_at NULL, which getUndeliverableIds treats as
+    // "no scheduled retry" — they stay parked until scripts/dlq.ts requeues
+    // them, instead of resurrecting arbitrarily stale messages on upgrade.
+    db.prepare('ALTER TABLE delivered ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0').run();
+  }
+  if (!cols.has('next_retry_at')) {
+    db.prepare('ALTER TABLE delivered ADD COLUMN next_retry_at TEXT').run();
   }
 }
 

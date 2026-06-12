@@ -8,8 +8,11 @@ import os from 'os';
 import { CONTAINER_INSTALL_LABEL } from './config.js';
 import { log } from './log.js';
 
-/** The container runtime binary name. */
-export const CONTAINER_RUNTIME_BIN = 'docker';
+/**
+ * The container runtime binary name. Respects the same `CONTAINER_RUNTIME`
+ * env var as `container/build.sh` so build and wake target one runtime.
+ */
+export const CONTAINER_RUNTIME_BIN = process.env.CONTAINER_RUNTIME || 'docker';
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
