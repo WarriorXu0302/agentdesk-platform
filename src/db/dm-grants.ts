@@ -200,6 +200,11 @@ export function checkGrantLive(scopeId: string, slotLabel: string, now: Date = n
  * Returns the post-increment row. Called only AFTER a roster DM is actually
  * accepted for delivery. Single statement so the increment + auto-revoke can't
  * interleave with a concurrent drain.
+ *
+ * Now wrapped by reserveRosterSend (the reserve-before-send path, ADR-0023
+ * concurrency fix). Kept exported for the conditional/atomic increment used
+ * there and because callers/tests reference its shape; do NOT call it on the
+ * post-success path anymore — accounting is now a pre-send reservation.
  */
 export function incrementSends(grantId: string, now: Date = new Date()): DmGrantRow | undefined {
   const nowIso = now.toISOString();
@@ -452,5 +457,235 @@ export function recordRateConsumption(
 /** Prune ledger rows older than `keepSec` (housekeeping; safe to call any time). */
 export function pruneRateLedger(keepSec = 3600, now: Date = new Date()): number {
   const cutoff = new Date(now.getTime() - keepSec * 1000).toISOString();
-  return getDb().prepare('DELETE FROM dm_rate_ledger WHERE window_start < ?').run(cutoff).changes;
+  // Reservation markers (sentinel window) and tumbling daily buckets must NOT be
+  // pruned by the short-window housekeeping pass — a live reservation is the
+  // idempotency key for an in-flight/timed-out message and the daily bucket is a
+  // rolling-24h ceiling. Their window_start sorts above any real short-window
+  // start (RESERVE_SENTINEL_WINDOW = a far-future ISO string), so the cutoff
+  // comparison already excludes them; the explicit guard documents the intent.
+  return getDb().prepare("DELETE FROM dm_rate_ledger WHERE window_start < ? AND key NOT LIKE 'reserve:%'").run(cutoff)
+    .changes;
+}
+
+// ---------------------------------------------------------------------------
+// Reserve-before-send accounting (ADR-0023 concurrency + at-least-once fix)
+// ---------------------------------------------------------------------------
+//
+// Background. The original roster-DM gate did "read-only check → await deliver()
+// → record". Two independent bugs lived in that gap:
+//
+//   (#1 TOCTOU) await deliver() yields the event loop. ADR-0016's bounded
+//     delivery pool (DELIVERY_CONCURRENCY) drains several sessions at once, and
+//     a root+worker pair shares one host scope (hostScopeForSession). Two
+//     drains could both pass the read-only max_sends / rate / deploy-daily
+//     checks before EITHER recorded — overshooting every cap by up to
+//     (concurrency-1), and letting max_sends=1 deliver two DMs to one
+//     participant.
+//
+//   (#4 timeout double-count) withDeliveryTimeout is at-least-once: a timeout
+//     may have already been delivered downstream. Recording only on success
+//     meant a timed-out-but-delivered message counted 0 and got re-sent next
+//     tick — the participant could receive N copies while sends_used < N.
+//
+// Fix: reserve budget ATOMICALLY before the adapter call. A single SQLite
+// transaction conditionally decrements max_sends, every rate-limit key, and the
+// daily deploy bucket; if any is over its limit the whole transaction rolls
+// back and nothing is consumed (no overshoot under concurrency — SQLite's
+// write lock serializes the reservations). On success a reservation MARKER row
+// keyed by message_out_id is written, making the reservation idempotent across
+// retries: a redelivery of the same message reuses its existing reservation
+// instead of double-charging.
+//
+// The marker lives in dm_rate_ledger (host-single-writer, restart-stable, no
+// new migration) under key `reserve:<message_out_id>` at a fixed sentinel
+// window so it never collides with a real rate window and survives ledger
+// pruning. Send outcomes:
+//   - success            → keep the reservation (already charged).
+//   - timeout            → keep the reservation (#4: may have been delivered;
+//                           do NOT roll back — the next tick sees the marker and
+//                           will not re-charge, and the message is not re-sent
+//                           because the host marks it delivered).
+//   - explicit failure   → roll back the reservation so ADR-0016's retry loop
+//                           re-reserves cleanly on a later tick.
+
+/** Fixed window_start for reservation marker rows. Sorts above any real
+ *  short-window start so pruneRateLedger never collects a live reservation. */
+const RESERVE_SENTINEL_WINDOW = '9999-01-01T00:00:00.000Z';
+
+function reserveKey(messageOutId: string): string {
+  return `reserve:${messageOutId}`;
+}
+
+/** Has budget already been reserved for this message (a prior tick / retry)? */
+export function hasRosterReservation(messageOutId: string): boolean {
+  const row = getDb()
+    .prepare('SELECT 1 FROM dm_rate_ledger WHERE key = ? AND window_start = ?')
+    .get(reserveKey(messageOutId), RESERVE_SENTINEL_WINDOW) as { '1': number } | undefined;
+  return row !== undefined;
+}
+
+export type RateKeys = { grant: string; scope: string; participant: string; deploy: string };
+
+export type ReserveResult =
+  | { ok: true; fresh: boolean }
+  | { ok: false; reason: 'max_sends' | 'rate_limited' | 'deploy_daily_cap'; blockedKey?: string };
+
+/**
+ * Atomically reserve one unit of every budget (per-grant max_sends, each
+ * sliding-window rate key, the daily deploy cap) for a roster send, BEFORE the
+ * adapter call. Idempotent per messageOutId: if a reservation already exists
+ * (prior tick / retry), returns { ok: true, fresh: false } WITHOUT charging
+ * again. A fresh reservation charges every budget in one transaction; if any is
+ * over its limit the transaction rolls back and nothing is consumed.
+ *
+ * The grant decrement reuses the conditional UPDATE shape (changes===1 only
+ * when max_sends<=0 OR sends_used<max_sends) and auto-revokes at the cap, so a
+ * concurrent reservation can never push sends_used past max_sends.
+ */
+export function reserveRosterSend(
+  messageOutId: string,
+  grantId: string,
+  rateKeys: RateKeys,
+  windows: typeof DEFAULT_RATE_WINDOWS,
+  deploy: DeployQuotaConfig,
+  now: Date = new Date(),
+): ReserveResult {
+  const db = getDb();
+  const nowIso = now.toISOString();
+  const tx = db.transaction((): ReserveResult => {
+    // Idempotent: a reservation already standing for this message means a prior
+    // tick charged it (e.g. a timed-out send we deliberately did not roll back).
+    // Do NOT charge again — this is exactly what stops #4 from over-counting.
+    if (hasRosterReservation(messageOutId)) return { ok: true, fresh: false };
+
+    // 1. Per-grant max_sends — conditional atomic increment + auto-revoke.
+    const changed = db
+      .prepare(
+        `UPDATE dm_grants
+           SET sends_used = sends_used + 1,
+               revoked_at = CASE
+                 WHEN max_sends > 0 AND sends_used + 1 >= max_sends THEN COALESCE(revoked_at, ?)
+                 ELSE revoked_at
+               END
+         WHERE id = ? AND (max_sends <= 0 OR sends_used < max_sends)`,
+      )
+      .run(nowIso, grantId).changes;
+    if (changed !== 1) {
+      // Over the cap (or grant vanished) → abort; rollback discards any partial.
+      throw new ReserveAbort('max_sends');
+    }
+
+    // 2. Every sliding-window rate key (AND semantics) — check-under-limit then bump.
+    for (const k of ['grant', 'participant', 'scope', 'deploy'] as const) {
+      const win = windows[k];
+      const ledgerKey = `${k}:${rateKeys[k]}`;
+      const ws = windowStartIso(now, win.windowSec);
+      if (currentCount(ledgerKey, ws) >= win.limit) throw new ReserveAbort('rate_limited', ledgerKey);
+      bumpLedger(ledgerKey, ws);
+    }
+
+    // 3. Daily deploy blast-radius cap (tumbling window). Off when dailyCap<=0.
+    if (deploy.dailyCap > 0) {
+      const ledgerKey = `deploy-daily:${deploy.key}`;
+      const ws = windowStartIso(now, deploy.dailyWindowSec);
+      if (currentCount(ledgerKey, ws) >= deploy.dailyCap) throw new ReserveAbort('deploy_daily_cap', ledgerKey);
+      bumpLedger(ledgerKey, ws);
+    }
+
+    // 4. Persist the idempotency marker so retries reuse this reservation.
+    bumpLedger(reserveKey(messageOutId), RESERVE_SENTINEL_WINDOW);
+    return { ok: true, fresh: true };
+  });
+
+  try {
+    return tx();
+  } catch (err) {
+    if (err instanceof ReserveAbort) return { ok: false, reason: err.reason, blockedKey: err.blockedKey };
+    throw err;
+  }
+}
+
+class ReserveAbort extends Error {
+  constructor(
+    readonly reason: 'max_sends' | 'rate_limited' | 'deploy_daily_cap',
+    readonly blockedKey?: string,
+  ) {
+    super(reason);
+  }
+}
+
+/**
+ * Roll back a reservation when the send FAILED for a non-at-least-once reason
+ * (explicit error, not a timeout). Decrements every budget the reservation
+ * charged, un-revokes the grant if THIS reservation auto-revoked it at the cap,
+ * and deletes the idempotency marker so ADR-0016's retry re-reserves cleanly.
+ * Floors counts at 0. No-op (returns false) when no reservation exists — so a
+ * double rollback, or a rollback after a kept (timed-out) reservation, is safe.
+ */
+export function rollbackRosterReservation(
+  messageOutId: string,
+  grantId: string,
+  rateKeys: RateKeys,
+  windows: typeof DEFAULT_RATE_WINDOWS,
+  deploy: DeployQuotaConfig,
+  now: Date = new Date(),
+): boolean {
+  const db = getDb();
+  const tx = db.transaction((): boolean => {
+    if (!hasRosterReservation(messageOutId)) return false;
+
+    // Reverse the grant decrement. Un-revoke ONLY when the row is at/above the
+    // cap (i.e. this reservation drove the auto-revoke) — an independently
+    // revoked grant (opt-out / leave / scope finish) keeps its revoked_at.
+    db.prepare(
+      `UPDATE dm_grants
+         SET sends_used = MAX(sends_used - 1, 0),
+             revoked_at = CASE
+               WHEN max_sends > 0 AND sends_used >= max_sends THEN NULL
+               ELSE revoked_at
+             END
+         WHERE id = ?`,
+    ).run(grantId);
+
+    for (const k of ['grant', 'participant', 'scope', 'deploy'] as const) {
+      const ws = windowStartIso(now, windows[k].windowSec);
+      decLedger(`${k}:${rateKeys[k]}`, ws);
+    }
+    if (deploy.dailyCap > 0) {
+      decLedger(`deploy-daily:${deploy.key}`, windowStartIso(now, deploy.dailyWindowSec));
+    }
+
+    db.prepare('DELETE FROM dm_rate_ledger WHERE key = ? AND window_start = ?').run(
+      reserveKey(messageOutId),
+      RESERVE_SENTINEL_WINDOW,
+    );
+    return true;
+  });
+  return tx();
+}
+
+/** Drop a reservation marker without reversing budget (kept-but-no-longer-tracked).
+ *  Currently unused on the hot path; exported for housekeeping / DLQ tooling. */
+export function clearRosterReservationMarker(messageOutId: string): void {
+  getDb()
+    .prepare('DELETE FROM dm_rate_ledger WHERE key = ? AND window_start = ?')
+    .run(reserveKey(messageOutId), RESERVE_SENTINEL_WINDOW);
+}
+
+function bumpLedger(key: string, windowStart: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO dm_rate_ledger (key, window_start, count)
+         VALUES (?, ?, 1)
+         ON CONFLICT(key, window_start) DO UPDATE SET count = count + 1`,
+    )
+    .run(key, windowStart);
+}
+
+function decLedger(key: string, windowStart: string): void {
+  // Floor at 0 so an over-rollback (shouldn't happen, but defensive) can't drive
+  // a counter negative and silently widen the budget.
+  getDb()
+    .prepare('UPDATE dm_rate_ledger SET count = MAX(count - 1, 0) WHERE key = ? AND window_start = ?')
+    .run(key, windowStart);
 }

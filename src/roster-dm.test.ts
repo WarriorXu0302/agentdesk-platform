@@ -57,7 +57,8 @@ const TEST_DIR = '/tmp/nanoclaw-test-roster';
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { getDb } from './db/connection.js';
-import { resolveSession, outboundDbPath, inboundDbPath } from './session-manager.js';
+import { createSession } from './db/sessions.js';
+import { resolveSession, initSessionFolder, outboundDbPath, inboundDbPath } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter, __clearMembershipCacheForTests } from './delivery.js';
 import {
   insertDmGrant,
@@ -68,6 +69,11 @@ import {
   revokeGrantsForLeaver,
   checkRateKeys,
   recordRateConsumption,
+  reserveRosterSend,
+  rollbackRosterReservation,
+  hasRosterReservation,
+  resolveDeployQuota,
+  DEFAULT_RATE_WINDOWS,
 } from './db/dm-grants.js';
 import {
   assertRootSessionForRosterDm,
@@ -949,7 +955,9 @@ describe('item 13 — gateway authority', () => {
 
   it('delivery gate: gateway DENY rejects even with a valid local grant', async () => {
     process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
-    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    // Authority path requires a signing key (#7): an unsigned gateway is rejected
+    // before any call. A correctly-configured authority gateway signs.
+    mockBackendGateway = { baseUrl: 'https://gw.example', signingKey: 'k' };
     // Force the gateway to deny by pointing it at a fetch that returns deny.
     vi.stubGlobal(
       'fetch',
@@ -979,7 +987,7 @@ describe('item 13 — gateway authority', () => {
 
   it('delivery gate: gateway unreachable → fail-closed reject', async () => {
     process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
-    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    mockBackendGateway = { baseUrl: 'https://gw.example', signingKey: 'k' };
     vi.stubGlobal('fetch', (async () => {
       throw new Error('ECONNREFUSED');
     }) as unknown as typeof fetch);
@@ -1001,7 +1009,7 @@ describe('item 13 — gateway authority', () => {
 
   it('delivery gate: gateway ALLOW delivers', async () => {
     process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
-    mockBackendGateway = { baseUrl: 'https://gw.example' };
+    mockBackendGateway = { baseUrl: 'https://gw.example', signingKey: 'k' };
     vi.stubGlobal(
       'fetch',
       (async () =>
@@ -1044,6 +1052,35 @@ describe('item 13 — gateway authority', () => {
     expect(calls).toEqual([DM_PLATFORM]);
     expect(readDelivered(session.id, 'out-roster')?.status).toBe('delivered');
   });
+
+  // #7: authority path with an UNSIGNED gateway is a forgeable-allow bypass.
+  it('#7: authority=true but gateway has no signingKey → fail-closed reject, gateway never called', async () => {
+    process.env.ROSTER_GATEWAY_AUTHORITY = 'true';
+    mockBackendGateway = { baseUrl: 'https://gw.example' }; // NO signingKey
+    let fetched = 0;
+    vi.stubGlobal('fetch', (async () => {
+      // An attacker controlling baseUrl would answer allow. It must never even
+      // be asked: the host rejects before any request goes out.
+      fetched++;
+      return { ok: true, status: 200, text: async () => JSON.stringify({ decision: 'allow' }) } as Response;
+    }) as unknown as typeof fetch);
+    const session = rootSession2();
+    mintGrant2(session.id);
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+    vi.unstubAllGlobals();
+    expect(fetched).toBe(0); // unsigned authority is rejected before the call
+    expect(calls).toBe(0);
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('gateway_unsigned_authority');
+  });
 });
 
 // --- item 14: deployment-level blast-radius daily cap --------------------
@@ -1084,5 +1121,225 @@ describe('item 14 — deploy daily cap', () => {
     await deliverSessionMessages(session);
     expect(readDelivered(session.id, 'out-1')?.status).toBe('delivered');
     expect(readDelivered(session.id, 'out-2')?.status).toBe('delivered');
+  });
+});
+
+// --- reserve-before-send: concurrency (#1) + timeout (#4) correctness -----
+
+/**
+ * A worker session that shares the SAME host scope (root_session_id) as `root`.
+ * hostScopeForSession = root_session_id ?? id, so root + this worker resolve to
+ * one scope_id — they share the grant, the per-scope/participant rate keys, AND
+ * the grant's max_sends. This is the cross-session pair the TOCTOU bug (#1)
+ * over-delivered to.
+ */
+function workerSessionSharingScope(root: Session): Session {
+  const id = `${root.id}-worker`;
+  const worker: Session = {
+    id,
+    agent_group_id: root.agent_group_id,
+    messaging_group_id: null,
+    thread_id: null,
+    owner_user_id: null,
+    root_session_id: root.id,
+    agent_provider: null,
+    status: 'active',
+    container_status: 'stopped',
+    last_active: null,
+    spawn_depth: 1,
+    created_at: now(),
+  };
+  createSession(worker);
+  initSessionFolder(root.agent_group_id, id);
+  return worker;
+}
+
+describe('reserve-before-send (#1 concurrency, #4 timeout)', () => {
+  it('#1: two sessions sharing one scope + a barrier in deliver() respect max_sends=1 (only one delivers)', async () => {
+    const root = rootSession2();
+    // max_sends=1 on the shared scope grant. Both sessions resolve to this grant.
+    mintGrant2(root.id, { maxSends: 1 });
+    const worker = workerSessionSharingScope(root);
+
+    insertRosterOutbound(root.id, 'out-root', { slot: 'reviewer' });
+    insertRosterOutbound(worker.id, 'out-worker', { slot: 'reviewer' });
+
+    // Barrier: hold BOTH deliver() calls in flight simultaneously so, under the
+    // OLD read-only-check-then-send code, both would have passed the cap check
+    // before either recorded. With reserve-before-send the reservation happens
+    // BEFORE deliver(), so only one call ever reaches the adapter.
+    let inFlight = 0;
+    let release!: () => void;
+    const bothInFlight = new Promise<void>((r) => {
+      release = () => r();
+    });
+    const delivered: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, platformId) {
+        inFlight++;
+        // If a second call ever arrives, unblock the first; otherwise the single
+        // admitted call releases itself after a microtask so the test doesn't hang.
+        if (inFlight >= 2) release();
+        else void Promise.resolve().then(() => release());
+        await bothInFlight;
+        delivered.push(platformId);
+        return 'plat-1';
+      },
+    });
+
+    await Promise.all([deliverSessionMessages(root), deliverSessionMessages(worker)]);
+
+    // Exactly ONE send reached the adapter — the cap was not breached by the race.
+    expect(delivered).toHaveLength(1);
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(1);
+    // The grant auto-revoked at the cap; the loser was rejected before deliver().
+    expect(getBySlot(root.id, 'reviewer')?.revoked_at).not.toBeNull();
+    const statuses = [readDelivered(root.id, 'out-root')?.status, readDelivered(worker.id, 'out-worker')?.status];
+    expect(statuses.filter((s) => s === 'delivered')).toHaveLength(1);
+    expect(statuses.filter((s) => s === 'failed')).toHaveLength(1);
+  });
+
+  /** A second, INDEPENDENT root scope (its own root_session_id → its own scope). */
+  function independentRoot(template: Session, suffix: string): Session {
+    const id = `${template.id}-${suffix}`;
+    const s: Session = {
+      id,
+      agent_group_id: template.agent_group_id,
+      messaging_group_id: null,
+      thread_id: null,
+      owner_user_id: null,
+      root_session_id: id,
+      agent_provider: null,
+      status: 'active',
+      container_status: 'stopped',
+      last_active: null,
+      spawn_depth: 0,
+      created_at: now(),
+    };
+    createSession(s);
+    initSessionFolder(template.agent_group_id, id);
+    return s;
+  }
+
+  it('#1: deploy daily cap=1 holds GLOBALLY across two concurrently-draining scopes', async () => {
+    process.env.ROSTER_DEPLOY_DAILY_CAP = '1';
+    // Two INDEPENDENT scopes (different grants, no shared max_sends) — only the
+    // deployment-wide daily cap should bound them.
+    const rootA = rootSession2();
+    mintGrant2(rootA.id, { slot: 'reviewer' });
+    const rootB = independentRoot(rootA, 'B');
+    mintGrant2(rootB.id, { slot: 'reviewer' });
+
+    insertRosterOutbound(rootA.id, 'out-A', { slot: 'reviewer' });
+    insertRosterOutbound(rootB.id, 'out-B', { slot: 'reviewer' });
+
+    let inFlight = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = () => r()));
+    const delivered: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct, platformId) {
+        inFlight++;
+        if (inFlight >= 2) release();
+        else void Promise.resolve().then(() => release());
+        await gate;
+        delivered.push(platformId);
+        return 'plat-1';
+      },
+    });
+
+    await Promise.all([deliverSessionMessages(rootA), deliverSessionMessages(rootB)]);
+
+    // The global daily cap=1 admits exactly one send despite two scopes racing.
+    expect(delivered).toHaveLength(1);
+    const statuses = [readDelivered(rootA.id, 'out-A')?.status, readDelivered(rootB.id, 'out-B')?.status];
+    expect(statuses.filter((s) => s === 'delivered')).toHaveLength(1);
+    expect(statuses.filter((s) => s === 'failed')).toHaveLength(1);
+  });
+
+  it('#4: a timeout (possibly delivered downstream) KEEPS the reservation — no rollback, no re-charge on retry', async () => {
+    const root = rootSession2();
+    mintGrant2(root.id, { maxSends: 3 });
+    insertRosterOutbound(root.id, 'out-roster', { slot: 'reviewer' });
+
+    // deliver() never resolves before DELIVERY_TIMEOUT_MS (300ms in test config),
+    // so withDeliveryTimeout throws DeliveryTimeoutError — but the underlying call
+    // may have ALREADY delivered. The reservation must NOT be rolled back.
+    setDeliveryAdapter({
+      async deliver() {
+        await new Promise((r) => setTimeout(r, 5_000)); // outlives the 300ms timeout
+        return 'plat-1';
+      },
+    });
+
+    await deliverSessionMessages(root);
+
+    // Row went to retry (at-least-once), but budget stays charged at 1.
+    expect(readDelivered(root.id, 'out-roster')?.status).toBe('failed');
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(1);
+    expect(hasRosterReservation('out-roster')).toBe(true);
+
+    // The retry reuses the standing reservation — re-reserving the SAME message
+    // id does not charge a second time (this is what stops #4 from delivering N
+    // copies while sends_used < N).
+    const deploy = resolveDeployQuota();
+    const grantId = getBySlot(root.id, 'reviewer')!.id;
+    const keys = { grant: grantId, scope: root.id, participant: PARTICIPANT, deploy: deploy.key };
+    const again = reserveRosterSend('out-roster', grantId, keys, DEFAULT_RATE_WINDOWS, deploy);
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.fresh).toBe(false);
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(1); // still 1, not 2
+  });
+
+  it('explicit (non-timeout) failure rolls the reservation back so the retry re-reserves cleanly', async () => {
+    const root = rootSession2();
+    mintGrant2(root.id, { maxSends: 3 });
+    insertRosterOutbound(root.id, 'out-roster', { slot: 'reviewer' });
+    setDeliveryAdapter({
+      async deliver() {
+        throw new Error('channel boom'); // explicit, definitely-not-delivered failure
+      },
+    });
+    await deliverSessionMessages(root);
+    expect(readDelivered(root.id, 'out-roster')?.status).toBe('failed');
+    // Rolled back: budget and the marker are both released.
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(0);
+    expect(hasRosterReservation('out-roster')).toBe(false);
+  });
+
+  it('reserveRosterSend is atomic: an over-cap reservation consumes NO rate budget (rolls back)', () => {
+    const grantId = mintGrant2('scope-Z', { maxSends: 1 }) as string;
+    const deploy = resolveDeployQuota();
+    const keys = { grant: grantId, scope: 'scope-Z', participant: PARTICIPANT, deploy: deploy.key };
+    // First reservation succeeds and hits the cap.
+    const first = reserveRosterSend('m-1', grantId, keys, DEFAULT_RATE_WINDOWS, deploy);
+    expect(first.ok).toBe(true);
+    // Rate ledger charged exactly once for the grant key.
+    expect(checkRateKeys(keys).allowed).toBe(true); // grant window limit is 3
+    // Second reservation (different message) is over max_sends → must NOT have
+    // charged any rate key (full transaction rollback).
+    const before = checkRateKeys(keys);
+    const second = reserveRosterSend('m-2', grantId, keys, DEFAULT_RATE_WINDOWS, deploy);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe('max_sends');
+    // No partial charge: the grant rate key count is unchanged by the failed reserve.
+    expect(checkRateKeys(keys).allowed).toBe(before.allowed);
+    expect(hasRosterReservation('m-2')).toBe(false);
+  });
+
+  it('rollbackRosterReservation un-revokes a grant that THIS reservation auto-revoked', () => {
+    const grantId = mintGrant2('scope-Y', { maxSends: 1 }) as string;
+    const deploy = resolveDeployQuota();
+    const keys = { grant: grantId, scope: 'scope-Y', participant: PARTICIPANT, deploy: deploy.key };
+    const r = reserveRosterSend('m-rev', grantId, keys, DEFAULT_RATE_WINDOWS, deploy);
+    expect(r.ok).toBe(true);
+    // Reservation drove sends_used to the cap → auto-revoked.
+    expect(getBySlot('scope-Y', 'reviewer')?.revoked_at).not.toBeNull();
+    expect(getBySlot('scope-Y', 'reviewer')?.sends_used).toBe(1);
+    // Rolling back (explicit failure path) restores it to live + un-charged.
+    expect(rollbackRosterReservation('m-rev', grantId, keys, DEFAULT_RATE_WINDOWS, deploy)).toBe(true);
+    expect(getBySlot('scope-Y', 'reviewer')?.sends_used).toBe(0);
+    expect(getBySlot('scope-Y', 'reviewer')?.revoked_at ?? null).toBeNull();
+    expect(checkGrantLive('scope-Y', 'reviewer').ok).toBe(true);
   });
 });

@@ -206,4 +206,87 @@ describe('configure-enterprise-gateway', () => {
       else process.env.GATEWAY_SIGNING_KEY = prev;
     }
   });
+
+  describe('rejects a known-weak signing key (ADR-0025)', () => {
+    // fatal() calls process.exit(2); make it throw so the test can assert and
+    // so it never aborts the test runner.
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+    let errSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code}`);
+      }) as never);
+      errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+    });
+
+    it('fatals on a placeholder --signing-key and never writes it', async () => {
+      await expect(
+        run([
+          '--base-url',
+          'https://gateway.internal/api/agent',
+          '--folders',
+          FRONTDESK_FOLDER,
+          '--signing-key',
+          'replace-me-openssl-rand-hex-32',
+        ]),
+      ).rejects.toThrow('process.exit:2');
+
+      const printed = errSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(printed).toContain('--signing-key');
+      expect(printed).toMatch(/placeholder\/weak/);
+
+      // The weak key must not have been persisted.
+      const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+      expect(frontdesk.backendGateway?.signingKey).toBeUndefined();
+    });
+
+    it('fatals on a lazy --signing-key (changeme)', async () => {
+      await expect(
+        run([
+          '--base-url',
+          'https://gateway.internal/api/agent',
+          '--folders',
+          FRONTDESK_FOLDER,
+          '--signing-key',
+          'changeme',
+        ]),
+      ).rejects.toThrow('process.exit:2');
+    });
+
+    it('fatals on a known-weak GATEWAY_SIGNING_KEY from the environment', async () => {
+      const prev = process.env.GATEWAY_SIGNING_KEY;
+      process.env.GATEWAY_SIGNING_KEY = 'replace-me-openssl-rand-hex-32';
+      try {
+        await expect(
+          run(['--base-url', 'https://gateway.internal/api/agent', '--folders', FRONTDESK_FOLDER]),
+        ).rejects.toThrow('process.exit:2');
+        const printed = errSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+        expect(printed).toContain('GATEWAY_SIGNING_KEY');
+      } finally {
+        if (prev === undefined) delete process.env.GATEWAY_SIGNING_KEY;
+        else process.env.GATEWAY_SIGNING_KEY = prev;
+      }
+    });
+
+    it('accepts a real random --signing-key', async () => {
+      await run([
+        '--base-url',
+        'https://gateway.internal/api/agent',
+        '--folders',
+        FRONTDESK_FOLDER,
+        '--signing-key',
+        '3f9a1c0b7e2d4a8f6c5b9e1d2a7f4c8b3e6d9a0c1f2b4e7d8a9c0b1e2f3a4d5c',
+      ]);
+      const frontdesk = readContainerConfig(FRONTDESK_FOLDER);
+      expect(frontdesk.backendGateway?.signingKey).toBe(
+        '3f9a1c0b7e2d4a8f6c5b9e1d2a7f4c8b3e6d9a0c1f2b4e7d8a9c0b1e2f3a4d5c',
+      );
+    });
+  });
 });

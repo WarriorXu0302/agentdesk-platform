@@ -54,6 +54,20 @@ export function computeGatewaySignature(key: string, timestamp: string, nonce: s
   return crypto.createHmac('sha256', key).update(`${timestamp}.${nonce}.${body}`).digest('hex');
 }
 
+/**
+ * Does this gateway carry a usable HMAC signing key? The authority path
+ * (ROSTER_GATEWAY_AUTHORITY=true) treats an `allow` from the gateway as the
+ * final say on whether a DM may proceed — so the request and its response MUST
+ * be authenticated. Without a signing key, authorizeDm posts an UNSIGNED body
+ * and unconditionally trusts the reply, which means any entity that can reach
+ * `baseUrl` could forge an `allow` and drive a roster DM (a trivial authority
+ * bypass). The delivery gate calls this before honoring the authority path and
+ * fail-closed rejects (`gateway_unsigned_authority`) when it returns false.
+ */
+export function gatewayHasSigningKey(gateway: BackendGatewayConfig): boolean {
+  return !!gateway.signingKey?.trim();
+}
+
 export interface AuthorizeDmRequest {
   scopeId: string;
   slotLabel: string;

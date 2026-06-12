@@ -695,7 +695,15 @@ async function runQuery(
         const destinations = getAllDestinations();
         if (destinations.length > 1) {
           const names = destinations.map((d) => d.name).join(', ');
-          query.push(
+          // Use pushSystemReminder, NOT push: this is a stream-reanchor
+          // reminder, not new user input. With Claude, push injects into the
+          // live stream (no extra round trip), but OpenAI models a follow-up
+          // push as a brand-new turn (a full extra LLM call + extra
+          // provider.request span + possible re-compaction). pushSystemReminder
+          // folds the reminder into the next real turn's transcript instead, so
+          // routing still re-anchors without an empty extra call. See ADR-0024
+          // and qwibitai/nanoclaw#2325.
+          query.pushSystemReminder(
             `[system] Context was just compacted. Reminder: you have ${destinations.length} destinations (${names}). ` +
               `Use <message to="name"> blocks to address them. Bare text goes to the scratchpad fallback only.`,
           );

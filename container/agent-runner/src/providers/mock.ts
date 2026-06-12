@@ -20,6 +20,10 @@ export class MockProvider implements AgentProvider {
 
   query(input: QueryInput): AgentQuery {
     const pending: string[] = [];
+    // Stream-reanchor reminders are buffered and folded into the NEXT real
+    // pushed message so they reach the next turn without producing their own
+    // result event (mirrors the OpenAI provider's no-extra-turn semantics).
+    const pendingReminders: string[] = [];
     let waiting: (() => void) | null = null;
     let ended = false;
     let aborted = false;
@@ -58,8 +62,14 @@ export class MockProvider implements AgentProvider {
 
     return {
       push(message: string) {
-        pending.push(message);
+        const prefix = pendingReminders.length > 0 ? `${pendingReminders.join('\n')}\n` : '';
+        pendingReminders.length = 0;
+        pending.push(`${prefix}${message}`);
         waiting?.();
+      },
+      pushSystemReminder(text: string) {
+        // Buffer only — no result is produced for a reminder on its own.
+        pendingReminders.push(text);
       },
       end() {
         ended = true;

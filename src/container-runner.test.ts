@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildRunnerTracingEnvArgs, checkBaseImage, resolveProviderName } from './container-runner.js';
+import {
+  appendImageAndCommand,
+  buildRunnerTracingEnvArgs,
+  checkBaseImage,
+  resolveProviderName,
+} from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over group and container.json', () => {
@@ -122,5 +127,81 @@ describe('buildRunnerTracingEnvArgs (ADR-0026 endpoint injection)', () => {
   it('does NOT inject OTEL_CAPTURE_CONTENT when the host left it unset (default-off)', () => {
     const env = envArgsToMap(buildRunnerTracingEnvArgs({ traceparent: TRACEPARENT }, {}));
     expect(env.OTEL_CAPTURE_CONTENT).toBeUndefined();
+  });
+
+  // Regression for the cross-batch integration bug: the OTEL `-e` vars were
+  // being pushed AFTER the image tag, where docker hands them to the entrypoint
+  // as positional args instead of setting them as container env. The unit tests
+  // above prove buildRunnerTracingEnvArgs emits the right `-e` flags, but they
+  // never proved those flags land in the docker-flag region. These do.
+  describe('argv ordering — OTEL env must precede the image tag', () => {
+    const IMAGE = 'agentdesk-agent-v2-deadbeef:latest';
+
+    // Build a realistic docker-flag prefix the way buildContainerArgs does:
+    // base flags, the brand env, then the tracing env, then seal with the image
+    // + command tail via the same helper buildContainerArgs uses.
+    function buildArgs(envArgs: string[]): { args: string[]; imageIndex: number } {
+      const args = [
+        'run',
+        '--rm',
+        '--name',
+        'agentdesk-v2-grp-123',
+        '-e',
+        'TZ=UTC',
+        '-e',
+        'BRAND_NAMESPACE=agentdesk',
+        ...envArgs,
+      ];
+      appendImageAndCommand(args, IMAGE);
+      return { args, imageIndex: args.indexOf(IMAGE) };
+    }
+
+    function otelEnvIndices(args: string[]): number[] {
+      const indices: number[] = [];
+      for (let i = 0; i < args.length; i += 1) {
+        if (args[i] === '-e' && args[i + 1]?.startsWith('OTEL_')) {
+          // The flag itself (`-e`) is what docker must parse; assert on its index.
+          indices.push(i);
+        }
+      }
+      return indices;
+    }
+
+    it('places every OTEL `-e` flag before the image tag when a trace is active', () => {
+      const envArgs = buildRunnerTracingEnvArgs(
+        { traceparent: TRACEPARENT },
+        { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://localhost:6006/v1/traces', OTEL_CAPTURE_CONTENT: 'true' },
+      );
+      const { args, imageIndex } = buildArgs(envArgs);
+
+      expect(imageIndex).toBeGreaterThan(-1);
+      const otelIndices = otelEnvIndices(args);
+      // Sanity: traceparent + endpoint + capture-content => 3 OTEL `-e` flags.
+      expect(otelIndices).toHaveLength(3);
+      for (const idx of otelIndices) {
+        expect(idx).toBeLessThan(imageIndex);
+      }
+    });
+
+    it('emits all three OTEL env classes (traceparent, endpoint, capture-content) as `-e` pairs', () => {
+      const envArgs = buildRunnerTracingEnvArgs(
+        { traceparent: TRACEPARENT },
+        { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://localhost:6006/v1/traces', OTEL_CAPTURE_CONTENT: 'true' },
+      );
+      const keys = envArgsToMap(envArgs);
+      expect(keys.OTEL_TRACEPARENT).toBe(TRACEPARENT);
+      expect(keys.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe('http://host.docker.internal:6006/v1/traces');
+      expect(keys.OTEL_CAPTURE_CONTENT).toBe('true');
+    });
+
+    it('still seals the image + command tail when no trace is active (no OTEL flags leak past the image)', () => {
+      const { args, imageIndex } = buildArgs(buildRunnerTracingEnvArgs({}, {}));
+      expect(otelEnvIndices(args)).toHaveLength(0);
+      // Tail invariant: image is followed by the bash `-c` command, nothing else
+      // sneaks between flags and image.
+      expect(args[imageIndex - 2]).toBe('--entrypoint');
+      expect(args[imageIndex - 1]).toBe('bash');
+      expect(args.slice(imageIndex + 1)).toEqual(['-c', 'exec bun run /app/src/index.ts']);
+    });
   });
 });

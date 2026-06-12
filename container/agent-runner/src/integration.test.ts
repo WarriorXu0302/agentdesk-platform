@@ -321,13 +321,17 @@ describe('poll loop integration', () => {
     await waitFor(() => getUndeliveredMessages().length > 0, 2500);
     controller.abort();
 
-    expect(provider.pushes.length).toBeGreaterThanOrEqual(1);
-    const reminder = provider.pushes.find((p) => p.includes('Context was just compacted'));
+    // The reminder must arrive via pushSystemReminder (stream-reanchor), NOT
+    // via push (which OpenAI would re-run as a brand-new turn / LLM call).
+    expect(provider.reminders.length).toBeGreaterThanOrEqual(1);
+    const reminder = provider.reminders.find((p) => p.includes('Context was just compacted'));
     expect(reminder).toBeDefined();
     expect(reminder).toContain('2 destinations');
     expect(reminder).toContain('discord-test');
     expect(reminder).toContain('discord-second');
     expect(reminder).toContain('<message to="name">');
+    // Crucially, the reminder did NOT go through the new-turn push path.
+    expect(provider.pushes.some((p) => p.includes('Context was just compacted'))).toBe(false);
 
     await loopPromise.catch(() => {});
   });
@@ -342,10 +346,11 @@ describe('poll loop integration', () => {
     await waitFor(() => getUndeliveredMessages().length > 0, 2500);
     controller.abort();
 
-    // Only the original prompt push (if any) — no reminder, since beforeEach
-    // seeds exactly one destination.
-    const reminders = provider.pushes.filter((p) => p.includes('Context was just compacted'));
+    // No reminder on either path, since beforeEach seeds exactly one
+    // destination (single-destination groups have a fallback path).
+    const reminders = provider.reminders.filter((p) => p.includes('Context was just compacted'));
     expect(reminders).toHaveLength(0);
+    expect(provider.pushes.filter((p) => p.includes('Context was just compacted'))).toHaveLength(0);
 
     await loopPromise.catch(() => {});
   });
@@ -353,12 +358,15 @@ describe('poll loop integration', () => {
 
 /**
  * Provider that emits a single compacted event mid-stream, then returns a
- * result. Captures every push() call so tests can assert on the injected
- * reminder content.
+ * result. Captures every push() and pushSystemReminder() call so tests can
+ * assert on the injected reminder content. The post-compaction destination
+ * reminder must arrive via pushSystemReminder (a stream-reanchor that must NOT
+ * spawn a new turn), never via push (new user input).
  */
 class CompactingProvider {
   readonly supportsNativeSlashCommands = false;
   readonly pushes: string[] = [];
+  readonly reminders: string[] = [];
 
   isSessionInvalid(): boolean {
     return false;
@@ -366,6 +374,7 @@ class CompactingProvider {
 
   query(_input: { prompt: string; cwd: string }) {
     const pushes = this.pushes;
+    const reminders = this.reminders;
     let ended = false;
     let aborted = false;
     let resolveWaiter: (() => void) | null = null;
@@ -396,6 +405,10 @@ class CompactingProvider {
     return {
       push(message: string) {
         pushes.push(message);
+        resolveWaiter?.();
+      },
+      pushSystemReminder(text: string) {
+        reminders.push(text);
         resolveWaiter?.();
       },
       end() {

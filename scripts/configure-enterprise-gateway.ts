@@ -35,6 +35,7 @@ import { fileURLToPath } from 'url';
 import { DEFAULT_FRONTDESK_FOLDER } from '../src/branding.js';
 import { GROUPS_DIR } from '../src/config.js';
 import { updateContainerConfig } from '../src/container-config.js';
+import { isKnownWeakSecret } from '../src/security/known-weak-secrets.js';
 
 const DEFAULT_FOLDERS = [DEFAULT_FRONTDESK_FOLDER];
 
@@ -102,6 +103,17 @@ function parseArgs(argv: string[]): Args {
       case '--signing-key': {
         const raw = val?.trim() || '';
         if (!raw) fatal('Invalid --signing-key: empty value');
+        // ADR-0025 known-weak defense, runtime parity (ADR-0018/0023): the live
+        // HMAC key is the one written into each group's container.json, not just
+        // env. A placeholder/lazy key here would silently leave the trust chain
+        // forgeable, so reject it at write time the same way host startup rejects
+        // a weak env GATEWAY_SIGNING_KEY.
+        if (isKnownWeakSecret(raw)) {
+          fatal(
+            '--signing-key is a known placeholder/weak value — writing it into container.json would ' +
+              'leave gateway requests forgeable. Generate a real key with: openssl rand -hex 32',
+          );
+        }
         signingKey = raw;
         i++;
         break;
@@ -138,7 +150,17 @@ function parseArgs(argv: string[]): Args {
 
   if (!signingKey) {
     const fromEnv = process.env.GATEWAY_SIGNING_KEY?.trim();
-    if (fromEnv) signingKey = fromEnv;
+    if (fromEnv) {
+      // Same known-weak defense as the --signing-key path: never write a
+      // placeholder env key into container.json.
+      if (isKnownWeakSecret(fromEnv)) {
+        fatal(
+          'GATEWAY_SIGNING_KEY (from the environment) is a known placeholder/weak value — refusing to ' +
+            'write it into container.json. Generate a real key with: openssl rand -hex 32',
+        );
+      }
+      signingKey = fromEnv;
+    }
   }
   if (signingHeaders && !signingKey) {
     fatal('--signing-headers requires --signing-key (or GATEWAY_SIGNING_KEY).');

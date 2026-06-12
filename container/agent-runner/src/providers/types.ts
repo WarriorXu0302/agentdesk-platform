@@ -59,6 +59,29 @@ export interface AgentQuery {
   /** Push a follow-up message into the active query. */
   push(message: string): void;
 
+  /**
+   * Inject a stream-reanchor system reminder that must reach the NEXT real
+   * LLM turn's transcript WITHOUT itself triggering a fresh turn / LLM call.
+   *
+   * This exists to distinguish "in-stream reanchor" from "new user turn".
+   * `push` is for genuine new user input — providers that model turns as
+   * discrete stateless requests (OpenAI) re-run a full `runTurn` (a real LLM
+   * call) when pushed. The post-compaction destination reminder
+   * (poll-loop.ts, `compacted` event) is NOT new user input — it must not
+   * cost an extra round trip. `pushSystemReminder` lets such providers fold
+   * the reminder into the next real turn's input instead of spending a turn
+   * on it now.
+   *
+   * Contract:
+   *   - The reminder MUST be visible to the model on the next real turn
+   *     (so destination routing re-anchors after compaction).
+   *   - The call MUST NOT trigger an additional LLM call by itself.
+   *
+   * Providers whose `push` already injects into a live streamed turn without
+   * a wasted round trip (Claude) MAY implement this as an alias of `push`.
+   */
+  pushSystemReminder(text: string): void;
+
   /** Signal that no more input will be sent. */
   end(): void;
 

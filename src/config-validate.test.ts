@@ -44,6 +44,7 @@ const INSPECTED_KEYS = [
   'OPENAI_REASONING_EFFORT',
   'OPENAI_TIMEOUT_MS',
   'OPENAI_COMPACT_MODEL',
+  'OTEL_CAPTURE_CONTENT',
 ];
 
 const savedProcessEnv: Record<string, string | undefined> = {};
@@ -203,5 +204,42 @@ describe('validateStartupConfig — OpenAI provider', () => {
       OPENAI_API_KEY: 'sk-your-openai-api-key',
     });
     expect(() => validateStartupConfig()).toThrow(/OPENAI_API_KEY/);
+  });
+});
+
+describe('validateStartupConfig — OTEL_CAPTURE_CONTENT privacy warning (ADR-0027)', () => {
+  function warnedAboutCapture(): boolean {
+    return (log.warn as ReturnType<typeof vi.fn>).mock.calls.some(
+      (args) => typeof args[0] === 'string' && args[0].includes('OTEL_CAPTURE_CONTENT'),
+    );
+  }
+
+  it('warns (does not throw) when OTEL_CAPTURE_CONTENT=true', () => {
+    setEnv({ OTEL_CAPTURE_CONTENT: 'true' });
+    expect(() => validateStartupConfig()).not.toThrow();
+    expect(warnedAboutCapture()).toBe(true);
+  });
+
+  it('warns case-insensitively (TRUE)', () => {
+    setEnv({ OTEL_CAPTURE_CONTENT: 'TRUE' });
+    validateStartupConfig();
+    expect(warnedAboutCapture()).toBe(true);
+  });
+
+  it('does not warn when OTEL_CAPTURE_CONTENT is unset', () => {
+    validateStartupConfig();
+    expect(warnedAboutCapture()).toBe(false);
+  });
+
+  it('does not warn when OTEL_CAPTURE_CONTENT=false', () => {
+    setEnv({ OTEL_CAPTURE_CONTENT: 'false' });
+    validateStartupConfig();
+    expect(warnedAboutCapture()).toBe(false);
+  });
+
+  it('does not warn for a non-true value (e.g. 0)', () => {
+    setEnv({ OTEL_CAPTURE_CONTENT: '0' });
+    validateStartupConfig();
+    expect(warnedAboutCapture()).toBe(false);
   });
 });

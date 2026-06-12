@@ -38,14 +38,12 @@ import {
 import { normalizeOptions } from './channels/ask-question.js';
 import {
   checkGrantLive,
-  checkRateKeys,
-  incrementSends,
-  recordRateConsumption,
+  reserveRosterSend,
+  rollbackRosterReservation,
   resolveDeployQuota,
-  checkDeployDailyCap,
-  recordDeployDailyConsumption,
   revokeParticipantInScope,
   DEFAULT_RATE_WINDOWS,
+  type RateKeys,
 } from './db/dm-grants.js';
 import { recordDmAudit } from './db/dm-audit.js';
 import {
@@ -56,7 +54,7 @@ import {
   rosterVerifyMembershipEnabled,
   originGroupPlatformIdForGrant,
 } from './roster-dm.js';
-import { rosterGatewayAuthorityEnabled, authorizeDm } from './roster-gateway.js';
+import { rosterGatewayAuthorityEnabled, authorizeDm, gatewayHasSigningKey } from './roster-gateway.js';
 import { readContainerConfig } from './container-config.js';
 import { rosterDmRejectedTotal } from './metrics.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
@@ -821,6 +819,13 @@ async function deliverRosterMessage(
     const group = getAgentGroup(session.agent_group_id);
     const gateway = group ? readContainerConfig(group.folder).backendGateway : undefined;
     if (gateway?.baseUrl) {
+      // #7 fail-closed: the authority path treats the gateway's `allow` as the
+      // final say, so the call MUST be HMAC-signed. A gateway with no signingKey
+      // would post an unsigned body and unconditionally trust the reply, letting
+      // anything that can reach baseUrl forge an `allow`. Reject before calling.
+      if (!gatewayHasSigningKey(gateway)) {
+        return reject('gateway_unsigned_authority', { slotLabel });
+      }
       const decision = await authorizeDm(gateway, {
         scopeId,
         slotLabel,
@@ -862,11 +867,11 @@ async function deliverRosterMessage(
     // a gateway simply has nothing to delegate to). Documented in the ADR.
   }
 
-  // 7. multi-key rate limit (read-only — does not burn quota on rejection).
+  // 7. Build the rate-limit keys + windows (consumed by the reservation below).
   // The deploy bucket window/key are operator-tunable (item 14); build the
   // windows object so the deploy short-window matches resolveDeployQuota.
   const deployQuota = resolveDeployQuota();
-  const rateKeys = {
+  const rateKeys: RateKeys = {
     grant: grant.id,
     scope: scopeId,
     participant: grant.participant_open_id,
@@ -878,32 +883,9 @@ async function deliverRosterMessage(
     scope: DEFAULT_RATE_WINDOWS.scope,
     deploy: deployQuota.window,
   };
-  const rate = checkRateKeys(rateKeys, rateWindows);
-  if (!rate.allowed) {
-    return reject('rate_limited', {
-      slotLabel,
-      grantId: grant.id,
-      participantOpenId: grant.participant_open_id,
-      dmPlatformId: grant.dm_platform_id,
-    });
-  }
-  // 7b. Deployment-level rolling-24h blast-radius cap (item 14). Separate from
-  // the short deploy window so a compromised agent can't drip-send under the
-  // per-minute limit indefinitely. Off (no rejection) when ROSTER_DEPLOY_DAILY_CAP<=0.
-  const dailyCap = checkDeployDailyCap(deployQuota);
-  if (!dailyCap.allowed) {
-    return reject('deploy_daily_cap', {
-      slotLabel,
-      grantId: grant.id,
-      participantOpenId: grant.participant_open_id,
-      dmPlatformId: grant.dm_platform_id,
-    });
-  }
 
   // All gates passed. Deliver with grant-authoritative routing (OVERWRITES the
-  // container-written channel_type/platform_id entirely — R3). Accounting
-  // (incrementSends / recordRateConsumption) happens AFTER a successful send,
-  // below — see the note there (R5 review finding).
+  // container-written channel_type/platform_id entirely — R3).
   if (!deliveryAdapter) {
     return reject('no_adapter', {
       slotLabel,
@@ -946,6 +928,25 @@ async function deliverRosterMessage(
     }
   }
 
+  // RESERVE-BEFORE-SEND (#1 + #4). Atomically charge max_sends + every rate key
+  // + the daily deploy cap in ONE transaction, BEFORE the adapter call. This
+  // closes the TOCTOU window (#1): SQLite's write lock serializes concurrent
+  // drains of two sessions sharing one host scope, so two reservations cannot
+  // both pass — max_sends=1 admits exactly one, the deploy daily cap holds
+  // globally, etc. The reservation is idempotent per message_out_id: a retry of
+  // the same message reuses its standing reservation rather than charging again
+  // (#4). On over-limit the transaction rolls back and nothing is consumed, so a
+  // rejected attempt never burns quota.
+  const reservation = reserveRosterSend(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+  if (!reservation.ok) {
+    return reject(reservation.reason, {
+      slotLabel,
+      grantId: grant.id,
+      participantOpenId: grant.participant_open_id,
+      dmPlatformId: grant.dm_platform_id,
+    });
+  }
+
   // Scrub model reasoning tags from user-facing text, same as the channel path.
   let outboundContent = msg.content;
   if (typeof content.text === 'string') {
@@ -955,40 +956,49 @@ async function deliverRosterMessage(
     }
   }
 
-  const platformMsgId = await withSpan(
-    'delivery.roster.send',
-    chainAttrs({
-      'channel.type': deliverChannelType,
-      'platform.id': deliverPlatformId,
-      'roster.scope_id': scopeId,
-      'roster.slot_label': slotLabel as string,
-      ...outputAttrs(typeof content.text === 'string' ? content.text : outboundContent),
-    }),
-    async () => {
-      return await withDeliveryTimeout(
-        deliveryAdapter!.deliver(
-          deliverChannelType,
-          deliverPlatformId,
-          null, // directed DMs are never threaded into a group
-          msg.kind,
-          outboundContent,
-          undefined,
-        ),
-        DELIVERY_TIMEOUT_MS,
-      );
-    },
-  );
-
-  // Count the send only AFTER it succeeded (R5 review finding). A failed/
-  // timed-out deliver throws above and is retried by the delivery loop;
-  // counting before would let each retry burn the grant's max_sends and rate
-  // budget, prematurely revoking a grant on a flaky channel and mis-counting
-  // attempts as sends. Trade-off: a crash between deliver-success and these
-  // writes under-counts by one — acceptable and consistent with ADR-0016's
-  // at-least-once stance. incrementSends auto-revokes the grant at max_sends.
-  incrementSends(grant.id);
-  recordRateConsumption(rateKeys, rateWindows);
-  recordDeployDailyConsumption(deployQuota);
+  let platformMsgId: string | undefined;
+  try {
+    platformMsgId = await withSpan(
+      'delivery.roster.send',
+      chainAttrs({
+        'channel.type': deliverChannelType,
+        'platform.id': deliverPlatformId,
+        'roster.scope_id': scopeId,
+        'roster.slot_label': slotLabel as string,
+        ...outputAttrs(typeof content.text === 'string' ? content.text : outboundContent),
+      }),
+      async () => {
+        return await withDeliveryTimeout(
+          deliveryAdapter!.deliver(
+            deliverChannelType,
+            deliverPlatformId,
+            null, // directed DMs are never threaded into a group
+            msg.kind,
+            outboundContent,
+            undefined,
+          ),
+          DELIVERY_TIMEOUT_MS,
+        );
+      },
+    );
+  } catch (err) {
+    if (err instanceof DeliveryTimeoutError) {
+      // #4: a timeout is at-least-once — the adapter may have ALREADY delivered
+      // downstream even though it threw. KEEP the reservation: it is the
+      // idempotency key, so the inevitable retry (ADR-0016) reuses it instead of
+      // charging a second time, and the participant cannot be counted < the
+      // copies they may receive. We still rethrow so the delivery loop schedules
+      // the retry / marks failed exactly as before.
+      throw err;
+    }
+    // An EXPLICIT (non-timeout) failure means the send definitively did not
+    // land. Roll the reservation back (sends_used-1, rate/deploy un-bump,
+    // un-revoke if THIS reservation auto-revoked the grant, drop the marker) so
+    // ADR-0016's retry re-reserves cleanly on a later tick and a flaky channel
+    // never prematurely exhausts max_sends.
+    rollbackRosterReservation(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+    throw err;
+  }
 
   recordDmAudit({
     ...auditBase,

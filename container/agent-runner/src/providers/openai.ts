@@ -490,6 +490,28 @@ function serializeContinuationState(state: OpenAIContinuationState): string {
   });
 }
 
+/**
+ * Fold a stream-reanchor system reminder into a persisted continuation so the
+ * NEXT real turn replays it — without spending an LLM call now. The reminder
+ * is appended to the stored transcript as a plain user `message` item (which
+ * survives stripStaleToolCallTranscript and serializes safely). Returns the
+ * re-serialized continuation. When the continuation can't be parsed we fall
+ * back to a fresh stateless state carrying just the reminder, so it is never
+ * silently dropped.
+ *
+ * Why a transcript item (not a queued prompt that re-runs runTurn): runTurn is
+ * a discrete stateless request for OpenAI; pushing the reminder as a follow-up
+ * would abort+rerun the turn (an extra real LLM call + extra provider.request
+ * span + possible re-compaction). Appending to the transcript means the model
+ * sees the reminder on the next genuine user turn at zero extra cost.
+ */
+function appendSystemReminderToContinuation(continuation: string | undefined, text: string): string {
+  const state = parseContinuationState(continuation);
+  const reminderItem = userMessageInput(text);
+  const transcript = trimTranscriptForPersist([...state.transcript, reminderItem]);
+  return serializeContinuationState({ ...state, transcript });
+}
+
 function persistAliasedContinuation(value: string): void {
   // `codex` is an alias of the OpenAI-compatible provider; persist both so
   // mid-turn recovery keeps working even if the configured provider name flips.
@@ -1004,6 +1026,21 @@ export class OpenAIProvider implements AgentProvider {
       push(message: string) {
         pendingFollowUp = message;
         activeAbort?.abort();
+      },
+      pushSystemReminder(text: string) {
+        // Fold the reanchor reminder into the persisted continuation so the
+        // NEXT real turn replays it — NOT a pendingFollowUp (that would abort
+        // the current turn and re-run runTurn: an extra real LLM call + extra
+        // provider.request span + possible re-compaction). We do NOT abort or
+        // set pendingFollowUp here, so the in-flight turn finishes untouched
+        // and no spurious turn is spawned.
+        //
+        // Update both the closure `continuation` (so a same-query follow-up
+        // push restores the reminder) and the persisted store (so the next
+        // poll-loop iteration's fresh query() restore replays it).
+        const next = appendSystemReminderToContinuation(continuation, text);
+        continuation = next;
+        persistAliasedContinuation(next);
       },
       end() {
         // OpenAI responses are discrete turns; nothing to flush here.

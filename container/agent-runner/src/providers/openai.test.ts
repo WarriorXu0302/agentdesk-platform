@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { initTestSessionDb } from '../db/connection.js';
+import { getContinuation } from '../db/session-state.js';
 import type { ProviderEvent } from './types.js';
 import { OpenAIProvider } from './openai.js';
 
@@ -716,6 +717,127 @@ describe('OpenAIProvider', () => {
     // Summary attempted (and failed), then the main turn ran anyway.
     expect(calls.some((c) => c.url.endsWith('/chat/completions'))).toBe(true);
     expect(calls.some((c) => c.url.endsWith('/responses'))).toBe(true);
+  });
+
+  // ── Stream-reanchor reminder after compaction (task C) ──
+  //
+  // When OpenAI compacts and the session has >1 destination, the poll-loop
+  // reacts to the `compacted` event by injecting a destination reminder. That
+  // reminder MUST NOT re-run runTurn (a full extra LLM call + extra
+  // provider.request span + possible re-compaction). pushSystemReminder folds
+  // it into the NEXT real turn's transcript instead.
+  it('pushSystemReminder after compaction does not trigger an extra LLM call and rides into the next real turn', async () => {
+    const stored = bigMessageTranscript(30, 6_000);
+
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push({ url, body });
+
+      if (url.endsWith('/chat/completions')) {
+        return jsonResponse({
+          id: 'chatcmpl_summary',
+          choices: [{ message: { role: 'assistant', content: 'SUMMARY OF OLD WINDOW' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1000, completion_tokens: 50, total_tokens: 1050 },
+        });
+      }
+      if (url.endsWith('/responses')) {
+        return jsonResponse({
+          id: `resp_${calls.length}`,
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after compaction' }] }],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      env: { OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: 'https://example.com' },
+    });
+
+    // Drive the stream the way the poll-loop does: when a `compacted` event
+    // arrives mid-stream, synchronously call pushSystemReminder on the live
+    // query handle. The reminder must NOT add another LLM call.
+    const query = provider.query({ prompt: 'newest message', continuation: statelessContinuation(stored), cwd: '/tmp' });
+    const events: ProviderEvent[] = [];
+    let sawCompacted = false;
+    for await (const event of query.events) {
+      events.push(event);
+      if (event.type === 'compacted') {
+        sawCompacted = true;
+        query.pushSystemReminder(
+          '[system] Context was just compacted. Reminder: you have 2 destinations (alpha, beta). ' +
+            'Use <message to="name"> blocks to address them. Bare text goes to the scratchpad fallback only.',
+        );
+      }
+    }
+
+    expect(sawCompacted).toBe(true);
+    // Compaction fired exactly two LLM calls this turn: the summary
+    // (chat/completions) and the compacted main turn (responses). The reminder
+    // injected mid-stream added NO third call.
+    const callCountAfterFirstTurn = calls.length;
+    expect(callCountAfterFirstTurn).toBe(2);
+    expect(calls[0].url).toContain('/chat/completions');
+    expect(calls[1].url).toContain('/responses');
+    expect(events.find((e) => e.type === 'result')).toEqual({ type: 'result', text: 'after compaction' });
+
+    // The reminder is durable: pushSystemReminder re-persists the continuation
+    // (per-provider) with the reminder folded in. The next poll-loop iteration
+    // restores from exactly this persisted continuation — read it back the same
+    // way the runner would.
+    const nextContinuation = getContinuation('openai');
+    expect(nextContinuation).toBeDefined();
+
+    // Now run the NEXT real turn restoring from that continuation. The reminder
+    // must appear verbatim in the replayed input the model actually sees.
+    calls.length = 0;
+    const secondEvents = await runQuery(provider, 'next real user message', nextContinuation);
+    expect(secondEvents.find((e) => e.type === 'result')).toBeDefined();
+
+    // The next real turn made its own LLM call(s); find the one carrying the
+    // replayed transcript and assert the reminder rode along.
+    const replayCall = calls.find((c) => c.url.endsWith('/responses') || c.url.endsWith('/chat/completions'));
+    expect(replayCall).toBeDefined();
+    const serialized = JSON.stringify(replayCall!.body);
+    expect(serialized).toContain('Context was just compacted');
+    expect(serialized).toContain('2 destinations');
+    // ...and the new real user message is also present.
+    expect(serialized).toContain('next real user message');
+  });
+
+  it('pushSystemReminder is idempotent-safe and never aborts an in-flight turn', async () => {
+    // A small (non-compacting) turn. Even outside compaction, calling
+    // pushSystemReminder must not abort the running turn or add an LLM call.
+    const calls: Array<{ url: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url });
+      JSON.parse(String(init?.body));
+      return jsonResponse({
+        id: 'resp_small',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] }],
+      });
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      env: { OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: 'https://example.com' },
+    });
+
+    const query = provider.query({ prompt: 'hello', cwd: '/tmp' });
+    const events: ProviderEvent[] = [];
+    for await (const event of query.events) {
+      events.push(event);
+      if (event.type === 'init') {
+        // Inject a reminder mid-stream — must be a no-op for LLM traffic.
+        query.pushSystemReminder('[system] reanchor reminder');
+      }
+    }
+
+    expect(events.find((e) => e.type === 'result')).toEqual({ type: 'result', text: 'ok' });
+    // Exactly one LLM call — the reminder added none and did not spawn a turn.
+    expect(calls).toHaveLength(1);
   });
 
   it('emits a usage event for the summary call using the compact model', async () => {

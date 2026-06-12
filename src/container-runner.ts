@@ -267,6 +267,9 @@ async function spawnContainer(session: Session): Promise<void> {
       // OneCLI agent identifier is always the agent group id — stable across
       // sessions and reversible via getAgentGroup() for approval routing.
       const agentIdentifier = agentGroup.id;
+      // buildContainerArgs injects the OTEL tracing env vars in-line (before
+      // the image tag) — see the trace-context block there. They must precede
+      // the image name or docker drops them, so they are NOT appended here.
       const args = await buildContainerArgs(
         mounts,
         containerName,
@@ -276,12 +279,6 @@ async function spawnContainer(session: Session): Promise<void> {
         contribution,
         agentIdentifier,
       );
-
-      // Inject OTEL_TRACEPARENT (+ endpoint) so the container can continue the
-      // host trace context. See buildRunnerTracingEnvArgs for the rewrite rule.
-      const carrier: Record<string, string> = {};
-      injectTraceContext(carrier);
-      args.push(...buildRunnerTracingEnvArgs(carrier, process.env));
 
       log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 
@@ -609,6 +606,19 @@ async function buildContainerArgs(
   // runner if unset.
   args.push('-e', `BRAND_NAMESPACE=${PLATFORM_PROTOCOL_NAMESPACE}`);
 
+  // Tracing context (ADR-0026/0027) — inject OTEL_TRACEPARENT (+ endpoint,
+  // tracestate, capture-content) so the runner continues the host trace.
+  // MUST be pushed here, with the other `-e` vars and BEFORE the image tag:
+  // docker treats every token after the image name as arguments to the
+  // entrypoint, so a `-e` appended past `imageTag` is silently dropped from
+  // the container env and handed to bash as positional junk instead. The
+  // carrier is populated from the currently-active host span; when there is
+  // no active trace, injectTraceContext + buildRunnerTracingEnvArgs both
+  // no-op and nothing trace-related is added.
+  const traceCarrier: Record<string, string> = {};
+  injectTraceContext(traceCarrier);
+  args.push(...buildRunnerTracingEnvArgs(traceCarrier, process.env));
+
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
@@ -662,16 +672,33 @@ async function buildContainerArgs(
     }
   }
 
-  // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).
-  args.push('--entrypoint', 'bash');
-
-  // Use per-agent-group image if one has been built, otherwise base image
+  // Override entrypoint + image + command. Done via a pure helper so the
+  // load-bearing ordering invariant (all `-e` env vars precede the image tag)
+  // is unit-testable without spinning the full builder. Everything pushed to
+  // `args` above — including the OTEL tracing env — is the docker-flag region;
+  // the image tag and everything after it are entrypoint arguments.
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
-  args.push(imageTag);
-
-  args.push('-c', 'exec bun run /app/src/index.ts');
+  appendImageAndCommand(args, imageTag);
 
   return args;
+}
+
+/**
+ * Append the entrypoint override, image tag, and launch command to an
+ * already-assembled docker-flag list. Pure + exported for unit testing.
+ *
+ * Docker arg grammar: `docker run [flags] IMAGE [cmd...]`. Every token after
+ * IMAGE is passed to the container's entrypoint, NOT parsed as a docker flag.
+ * So any `-e KEY=VALUE` must live in `flagArgs` (before this call). This helper
+ * exists to lock that boundary: callers build all `-e`/`-v`/`--*` flags first,
+ * then call this exactly once to seal the image + command tail.
+ */
+export function appendImageAndCommand(flagArgs: string[], imageTag: string): string[] {
+  // Run the v2 entry point directly via Bun (no tsc, no stdin).
+  flagArgs.push('--entrypoint', 'bash');
+  flagArgs.push(imageTag);
+  flagArgs.push('-c', 'exec bun run /app/src/index.ts');
+  return flagArgs;
 }
 
 /** Build a per-agent-group Docker image with custom packages. */

@@ -340,6 +340,11 @@ export class ClaudeProvider implements AgentProvider {
 
     return {
       push: (msg) => stream.push(msg),
+      // Claude's push already injects into the live SDK stream without
+      // re-spawning a turn, so a stream-reanchor reminder is just a push.
+      // The next iteration of the already-running turn picks it up; no extra
+      // LLM round trip is spent on the reminder itself.
+      pushSystemReminder: (text) => stream.push(text),
       end: () => stream.end(),
       events: translateEvents(),
       abort: () => {

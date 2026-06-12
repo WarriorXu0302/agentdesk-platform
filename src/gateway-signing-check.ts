@@ -20,16 +20,42 @@ import { GROUPS_DIR } from './config.js';
 import { readContainerConfig } from './container-config.js';
 import { log } from './log.js';
 import { gatewayUnsignedGroups } from './metrics.js';
+import { isKnownWeakSecret } from './security/known-weak-secrets.js';
 
 /**
- * Scan every agent group with a configured backend gateway and report how
- * many have a baseUrl but no signingKey. Always sets the gauge (0 when all
- * gateways are signed, so dashboards can tell "all signed" apart from "metric
- * never emitted"); warns with the offending folders when the count is
- * non-zero. Returns the unsigned folder list for callers/tests.
+ * Result of the gateway signing coverage scan.
+ *
+ * - `unsigned`    — groups with a gateway baseUrl but no signing key at all
+ *                   (requests go out UNSIGNED).
+ * - `weakSigned`  — groups whose configured signingKey is a known
+ *                   placeholder/lazy value (ADR-0025). The request is "signed",
+ *                   but with a key anyone reading `.env.example` knows, so it is
+ *                   effectively forgeable — strictly worse than visibly
+ *                   unsigned because it looks protected.
+ *
+ * Both count against signing coverage; they are reported separately so an
+ * operator can tell "never configured" apart from "configured with a
+ * placeholder".
  */
-export function checkGatewaySigningCoverage(): string[] {
+export interface GatewaySigningCoverage {
+  unsigned: string[];
+  weakSigned: string[];
+}
+
+/**
+ * Scan every agent group with a configured backend gateway and report which
+ * have a baseUrl but no signingKey (unsigned) and which carry a known-weak /
+ * placeholder signingKey (weak-signed, ADR-0025 — runtime uses the per-group
+ * container.json key, ADR-0018/0023, so a placeholder written there is the real
+ * exposure, not just env). Always sets the gauge to the total number of groups
+ * whose gateway is not safely signed (0 when all are properly signed, so
+ * dashboards can tell "all good" apart from "metric never emitted"); warns with
+ * the offending folders when either bucket is non-empty. Returns both lists for
+ * callers/tests.
+ */
+export function checkGatewaySigningCoverage(): GatewaySigningCoverage {
   const unsigned: string[] = [];
+  const weakSigned: string[] = [];
 
   // Never throw — this runs in the startup sequence alongside checkBaseImage(),
   // which is deliberately never-throw. A readdir failure (EACCES/EIO) must not
@@ -55,7 +81,12 @@ export function checkGatewaySigningCoverage(): string[] {
     try {
       const gateway = readContainerConfig(entry.name).backendGateway;
       if (!gateway?.baseUrl) continue;
-      if (!gateway.signingKey?.trim()) unsigned.push(entry.name);
+      const key = gateway.signingKey?.trim();
+      if (!key) {
+        unsigned.push(entry.name);
+      } else if (isKnownWeakSecret(key)) {
+        weakSigned.push(entry.name);
+      }
     } catch (err) {
       // A malformed container.json must not abort the scan or startup.
       log.warn('Gateway signing coverage — skipped unreadable group config', {
@@ -65,7 +96,9 @@ export function checkGatewaySigningCoverage(): string[] {
     }
   }
 
-  gatewayUnsignedGroups.set(unsigned.length);
+  // Both buckets are gaps in signing coverage — count them together so the
+  // existing gauge reflects total exposure, not just the never-configured case.
+  gatewayUnsignedGroups.set(unsigned.length + weakSigned.length);
 
   if (unsigned.length > 0) {
     log.warn('Backend gateway requests are UNSIGNED for some agent groups', {
@@ -75,5 +108,14 @@ export function checkGatewaySigningCoverage(): string[] {
     });
   }
 
-  return unsigned;
+  if (weakSigned.length > 0) {
+    log.warn('Backend gateway signing key is a known placeholder/weak value for some agent groups', {
+      count: weakSigned.length,
+      folders: weakSigned,
+      remediation:
+        'pnpm exec tsx scripts/configure-enterprise-gateway.ts --folders <folder> --signing-key "$(openssl rand -hex 32)"',
+    });
+  }
+
+  return { unsigned, weakSigned };
 }

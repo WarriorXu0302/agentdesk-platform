@@ -59,6 +59,7 @@ const INSPECTED_KEYS = [
   'OPENAI_REASONING_EFFORT',
   'OPENAI_TIMEOUT_MS',
   'OPENAI_COMPACT_MODEL',
+  'OTEL_CAPTURE_CONTENT',
 ] as const;
 
 /**
@@ -152,6 +153,22 @@ export function validateStartupConfig(): void {
   if (!get('METRICS_AUTH_TOKEN')) {
     log.warn(
       'METRICS_AUTH_TOKEN is not set — /metrics is publicly readable. Set it or isolate /metrics behind a proxy.',
+    );
+  }
+
+  // OTEL_CAPTURE_CONTENT=true puts FULL PLAINTEXT (chat bodies, LLM messages,
+  // tool args + gateway/ERP result text) into traces (ADR-0027). The container
+  // only enables capture on the literal value 'true' (agent-runner tracer.ts),
+  // so we warn on exactly that — loud enough that an operator who flipped it on
+  // (or copied a stale .env) is reminded the open-source default is OFF and the
+  // compliance burden is theirs. Observability stays read-only; this is purely
+  // a heads-up, never a block.
+  if (get('OTEL_CAPTURE_CONTENT')?.toLowerCase() === 'true') {
+    log.warn(
+      'OTEL_CAPTURE_CONTENT=true — full plaintext content capture is ENABLED: chat bodies, ' +
+        'LLM input/output, and tool/gateway payloads are written to your traces UNREDACTED (ADR-0027). ' +
+        'Confirm Phoenix runs on a controlled internal network and that you accept the data-compliance responsibility. ' +
+        'The open-source baseline keeps this OFF.',
     );
   }
 
