@@ -11,12 +11,18 @@ import {
 } from '../request-context.js';
 import {
   computeGatewaySignature,
+  erpAuthorize,
+  erpDescribe,
+  erpExecute,
+  erpMemoryGet,
+  erpMemoryUpsert,
   handleGatewayAuthorize,
   handleGatewayDescribe,
   handleGatewayExecute,
   handleGatewayMemoryGet,
   handleGatewayMemoryUpsert,
 } from './gateway.js';
+import { CONTRACT_VERSION, classifyHttpError } from './gateway-contract.js';
 
 const runtime = {
   assistantName: 'Frontdesk',
@@ -80,6 +86,7 @@ describe('erp gateway mcp tools', () => {
 
     expect(result.isError).toBeUndefined();
     expect(body).toEqual({
+      contractVersion: CONTRACT_VERSION,
       agent: {
         agentGroupId: 'ag-frontdesk',
         groupName: 'AgentDesk Frontdesk',
@@ -412,5 +419,166 @@ describe('erp gateway mcp tools', () => {
 
     expect(capturedHeaders['x-custom-sig']).toMatch(/^[0-9a-f]{64}$/);
     expect(capturedHeaders['x-agentdesk-signature']).toBeUndefined();
+  });
+});
+
+describe('gateway contract hardening', () => {
+  it('stamps contractVersion onto every outbound request body', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayDescribe(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {});
+    expect(body?.contractVersion).toBe(CONTRACT_VERSION);
+  });
+
+  it('auto-generates an idempotencyKey on execute when the agent omits one', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'sales.order.create',
+      input: { customerId: 'C-1' },
+    });
+
+    expect(typeof body?.idempotencyKey).toBe('string');
+    expect((body?.idempotencyKey as string).length).toBeGreaterThan(0);
+    expect(body?.dryRun).toBe(false);
+  });
+
+  it('passes through an agent-supplied idempotencyKey unchanged', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'sales.order.create',
+      input: {},
+      idempotencyKey: 'agent-supplied-key',
+    });
+
+    expect(body?.idempotencyKey).toBe('agent-supplied-key');
+  });
+
+  it('leaves idempotencyKey null on a dryRun execute', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'sales.order.create',
+      input: {},
+      dryRun: true,
+    });
+
+    expect(body?.idempotencyKey).toBeNull();
+  });
+
+  it('parses a structured error response into code/retryable for the agent', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ code: 'BACKEND_UNAVAILABLE', message: 'db down', retryable: true, retryAfterMs: 2000 }),
+        { status: 503 },
+      )) as typeof fetch;
+
+    const result = await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'sales.order.create',
+      input: {},
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('BACKEND_UNAVAILABLE');
+    expect(text).toContain('retryable=true');
+    expect(text).toContain('retry after 2000ms');
+  });
+
+  it('classifyHttpError maps HTTP statuses onto the closed enum', () => {
+    expect(classifyHttpError(401, '')).toBe('BACKEND_UNAUTHORIZED');
+    expect(classifyHttpError(403, '')).toBe('BACKEND_UNAUTHORIZED');
+    expect(classifyHttpError(404, '')).toBe('OPERATION_NOT_FOUND');
+    expect(classifyHttpError(400, '')).toBe('VALIDATION_FAILED');
+    expect(classifyHttpError(422, '')).toBe('VALIDATION_FAILED');
+    expect(classifyHttpError(500, '')).toBe('BACKEND_UNAVAILABLE');
+    expect(classifyHttpError(502, '')).toBe('BACKEND_UNAVAILABLE');
+    expect(classifyHttpError(418, '')).toBe('UNKNOWN');
+    // A structured error body wins over the HTTP status.
+    expect(classifyHttpError(500, JSON.stringify({ code: 'VALIDATION_FAILED', message: 'bad' }))).toBe(
+      'VALIDATION_FAILED',
+    );
+  });
+
+  it('classifies an unstructured 5xx error as BACKEND_UNAVAILABLE and retryable', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    globalThis.fetch = (async () =>
+      new Response('upstream exploded', { status: 503, statusText: 'Service Unavailable' })) as typeof fetch;
+
+    const result = await handleGatewayDescribe(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {});
+    expect(result.isError).toBe(true);
+    const text = result.content[0]?.text ?? '';
+    expect(text).toContain('BACKEND_UNAVAILABLE');
+    expect(text).toContain('retryable=true');
+  });
+
+  it('does not reject a success response that fails the schema (warn-only default)', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    // `allowed` should be a boolean per the recommended /authorize shape; a
+    // string violates it. Default behavior: warn, still return ok.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ allowed: 'definitely-not-a-boolean' }), { status: 200 })) as typeof fetch;
+
+    const result = await handleGatewayAuthorize(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'finance.invoice.approve',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain('definitely-not-a-boolean');
+  });
+
+  it('rejects a non-conforming success response when GATEWAY_STRICT_RESPONSES=true', async () => {
+    setRequestIdentity(sessionIdentity());
+    const prev = process.env.GATEWAY_STRICT_RESPONSES;
+    process.env.GATEWAY_STRICT_RESPONSES = 'true';
+    try {
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ allowed: 'definitely-not-a-boolean' }), { status: 200 })) as typeof fetch;
+
+      const result = await handleGatewayAuthorize(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+        operation: 'finance.invoice.approve',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('VALIDATION_FAILED');
+    } finally {
+      if (prev === undefined) delete process.env.GATEWAY_STRICT_RESPONSES;
+      else process.env.GATEWAY_STRICT_RESPONSES = prev;
+    }
+  });
+
+  it('declares additionalProperties:false on every gateway tool inputSchema', () => {
+    for (const def of [erpDescribe, erpAuthorize, erpExecute, erpMemoryGet, erpMemoryUpsert]) {
+      expect((def.tool.inputSchema as Record<string, unknown>).additionalProperties).toBe(false);
+    }
   });
 });

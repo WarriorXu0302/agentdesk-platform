@@ -56,12 +56,33 @@ The built-in tools call these paths on the configured `baseUrl`:
 - `POST /memory/get`
 - `POST /memory/upsert`
 
+## The contract is machine-verifiable
+
+This document is the human-readable view of the contract; the **single source
+of truth** is the zod schema at
+`container/agent-runner/src/mcp-tools/gateway-contract.ts`. The runtime and the
+conformance runner (see [Conformance runner](#conformance-runner)) both consume
+those schemas, so the wire shape can't drift from this doc. See ADR-0028 for the
+hardening rationale.
+
+The platform applies an **asymmetric** stance (ADR-0028):
+
+- What the platform **emits** is tightened freely — the envelope carries a
+  `contractVersion`, write operations always carry an `idempotencyKey`, and the
+  agent's tool inputs are whitelisted (`additionalProperties: false`). These are
+  platform-produced, so tightening them can never break an existing backend.
+- What the backend **returns** is validated **leniently**. You still control the
+  payload shape; a response that doesn't match the recommended schema is, by
+  default, only a warning — never a rejection. Opt into hard rejection with
+  `GATEWAY_STRICT_RESPONSES=true` (see [Strict response mode](#strict-response-mode)).
+
 ## Request envelope
 
 Each request includes:
 
 ```json
 {
+  "contractVersion": 1,
   "agent": {
     "agentGroupId": "ag-...",
     "groupName": "AgentDesk Frontdesk",
@@ -78,11 +99,29 @@ Each request includes:
   "input": {},
   "context": {},
   "dryRun": false,
-  "idempotencyKey": null
+  "idempotencyKey": "b1a7c0de-..."
 }
 ```
 
-`/describe` only needs `agent`, `requester`, and `requesterSource`.
+`/describe` only needs `contractVersion`, `agent`, `requester`, and
+`requesterSource`.
+
+### `contractVersion`
+
+The platform stamps the integer wire-contract version onto every request
+(currently `1`). Bump only happens on a backward-incompatible change to the
+envelope or the closed error shape. Your backend MAY echo `contractVersion` in
+its response; if the value differs from what the platform sent, the platform
+**warns** (a backend may legitimately lag a platform upgrade) — it never rejects
+on a version mismatch.
+
+### `idempotencyKey` (write operations)
+
+For `/execute`, the platform guarantees a non-null `idempotencyKey` on every
+**committing** call: if the agent supplies one it is passed through unchanged;
+if the agent omits it, the runtime auto-generates a UUID. A `dryRun=true`
+execute touches no committed state, so its `idempotencyKey` stays `null`. Use
+this key to dedupe retried writes on your side.
 
 ### `requesterSource` is how the gateway decides how much to trust the `requester` block
 
@@ -196,7 +235,12 @@ Recorded fields:
 - `http_status`, `duration_ms`, `idempotency_key`
 - `input_hash` — SHA256 of the business payload, scoped by path so
   `/memory/*` and `/execute` calls don't collapse to the same digest
-- `error_msg` on failure
+- `error_msg` on failure — prefixed with the closed `[ERROR_CODE]` (see
+  [Error responses](#error-responses)); also used to carry warn-only markers
+  like `[RESPONSE_SCHEMA_MISMATCH]` / `[CONTRACT_VERSION_MISMATCH]` on
+  otherwise-`ok` calls. The container-emitted audit message also carries a
+  dedicated `errorCode` field; the `gateway_audit` table keeps the code inside
+  `error_msg` rather than adding a column (ADR-0028).
 
 Typical queries:
 
@@ -212,6 +256,83 @@ The audit write is best-effort (container → host → DB); if the DB write
 itself fails, the row is dropped. For environments where the gateway side
 needs to reconcile the full trail even when that happens, run audit on
 the gateway as well and match by `idempotencyKey` / returned audit id.
+
+## Error responses
+
+On any non-2xx response, the platform classifies the failure onto a **closed
+error-code enum** and surfaces `{code, retryable, retryAfterMs?}` back to the
+agent so it can decide whether to retry. Two ways your backend can drive this:
+
+1. **Structured error body (preferred)** — return a JSON body matching the
+   error shape (either top-level or nested under an `error` key):
+
+   ```json
+   { "code": "BACKEND_UNAVAILABLE", "message": "primary db unreachable", "retryable": true, "retryAfterMs": 2000 }
+   ```
+
+   When present, your `code` / `retryable` / `retryAfterMs` win.
+
+2. **HTTP status only** — if the body isn't a structured error, the platform
+   maps the status code:
+
+| HTTP status | error code | retryable (default) |
+|-------------|-----------|---------------------|
+| 401, 403 | `BACKEND_UNAUTHORIZED` | no |
+| 404 | `OPERATION_NOT_FOUND` | no |
+| 400, 422 | `VALIDATION_FAILED` | no |
+| 5xx | `BACKEND_UNAVAILABLE` | yes |
+| other | `UNKNOWN` | no |
+
+Additional codes the platform itself can emit (not from your HTTP status):
+
+| code | when |
+|------|------|
+| `TIMEOUT` | request exceeded `backendGateway.timeoutMs` (retryable) |
+| `GATEWAY_NOT_CONFIGURED` | the agent group has no `baseUrl` |
+| `CONTRACT_VERSION_MISMATCH` | backend echoed a different `contractVersion` (warn-only, not a hard error) |
+
+The code is also folded into the `gateway_audit` row (see below) as an
+`[CODE]`-prefixed `error_msg`, and as a dedicated `errorCode` field in the
+container-emitted audit message.
+
+## Strict response mode
+
+By default, a successful (2xx) response that doesn't match the recommended
+response schema is **allowed** — the platform logs a warning, records an
+`errorCode: RESPONSE_SCHEMA_MISMATCH` audit marker, and still returns the
+payload to the agent. This preserves the "you control the payload shape"
+promise.
+
+Set the runner environment variable `GATEWAY_STRICT_RESPONSES=true` to turn a
+schema mismatch into a hard error (`VALIDATION_FAILED`) instead. Use this once
+your backend is fully aligned with the recommended response shapes and you want
+the platform to enforce them. Note: `contractVersion` drift stays a warning even
+in strict mode.
+
+## Conformance runner
+
+Before bringing a backend online (or after upgrading one), self-test it against
+the same schemas the runtime uses:
+
+```bash
+cd container/agent-runner && bun scripts/gateway-conformance.ts https://gateway.internal/api/agent
+```
+
+It POSTs a contract-compliant sample request to each of the five endpoints and
+validates each response. Exit code `0` = every endpoint conformant; non-zero =
+at least one failure (or, under `GATEWAY_STRICT_RESPONSES=true`, at least one
+schema mismatch).
+
+Optional environment:
+
+- `GATEWAY_SIGNING_KEY` — signs each request exactly as the runtime does.
+- `GATEWAY_HEADERS` — extra headers as JSON, e.g. `'{"x-tenant":"tenant-a"}'`.
+- `GATEWAY_STRICT_RESPONSES=true` — fail on a response-schema mismatch.
+- `GATEWAY_TEST_USER_ID` — the sample `requester.userId`.
+
+The runner sends dummy payloads with `requesterSource='agent-asserted'` and sets
+`dryRun=true` on `/execute` — point it at a staging backend, not one that would
+commit real writes.
 
 ## Response guidance
 

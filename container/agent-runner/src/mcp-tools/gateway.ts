@@ -26,6 +26,15 @@ import { getRequestIdentity } from '../request-context.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import {
+  CONTRACT_VERSION,
+  classifyHttpError,
+  defaultRetryable,
+  parseGatewayError,
+  RESPONSE_SCHEMAS,
+  type GatewayErrorCode,
+  type GatewayPath,
+} from './gateway-contract.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_TIMESTAMP_HEADER = SIGNING_TIMESTAMP_HEADER;
@@ -67,6 +76,17 @@ function ok(text: string): CallToolResult {
 }
 
 function err(text: string): CallToolResult {
+  return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
+}
+
+/**
+ * Render a failed gateway call back to the agent with its closed-enum error
+ * code and a `retryable` hint, so the agent can decide whether to retry
+ * (e.g. on BACKEND_UNAVAILABLE / TIMEOUT) rather than only seeing free text.
+ */
+function gatewayErr(result: GatewayCallError): CallToolResult {
+  const retryHint = result.retryAfterMs != null ? ` (retry after ${result.retryAfterMs}ms)` : '';
+  const text = `[${result.code}] retryable=${result.retryable}${retryHint}: ${result.message}`;
   return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
 }
 
@@ -261,10 +281,23 @@ function emitAuditMessage(params: {
   httpStatus?: number;
   durationMs: number;
   errorMsg?: string;
+  /**
+   * Closed-enum error code (errors) or a response-validation marker
+   * (RESPONSE_SCHEMA_MISMATCH / CONTRACT_VERSION_MISMATCH on otherwise-ok
+   * calls). The host `gateway_audit` table has no dedicated column, so we
+   * prefix it onto errorMsg rather than widening the schema.
+   */
+  errorCode?: string;
 }): void {
   try {
     const body = params.body;
     const requester = (body.requester as { userId?: string } | undefined) ?? undefined;
+    const errorMsg =
+      params.errorCode && params.errorMsg
+        ? `[${params.errorCode}] ${params.errorMsg}`
+        : params.errorCode
+          ? `[${params.errorCode}]`
+          : (params.errorMsg ?? null);
     const content = {
       action: 'gateway_audit',
       path: params.path,
@@ -276,7 +309,8 @@ function emitAuditMessage(params: {
       durationMs: params.durationMs,
       idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null,
       inputHash: hashBody(params.path, body),
-      errorMsg: params.errorMsg ?? null,
+      errorCode: params.errorCode ?? null,
+      errorMsg,
     };
     writeMessageOut({
       id: `gateway-audit-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
@@ -288,13 +322,114 @@ function emitAuditMessage(params: {
   }
 }
 
+interface GatewayCallError {
+  ok: false;
+  message: string;
+  code: GatewayErrorCode;
+  retryable: boolean;
+  retryAfterMs?: number;
+}
+
+type GatewayCallResult = { ok: true; text: string } | GatewayCallError;
+
+/**
+ * Is the backend allowed to return a payload that doesn't match the recommended
+ * response schema? Default yes (warn-only) — the prose contract promised
+ * "you control the payload shape". Set GATEWAY_STRICT_RESPONSES=true to make a
+ * mismatch a hard error instead.
+ */
+function strictResponses(): boolean {
+  return process.env.GATEWAY_STRICT_RESPONSES === 'true';
+}
+
+/**
+ * Validate a successful (2xx) response body against the recommended schema for
+ * its path. Default behavior is warn-only (returns the original text); strict
+ * mode turns a mismatch into an error. Also warns (never rejects) when the
+ * backend echoes a contractVersion that doesn't match what we sent.
+ */
+function checkResponse(
+  pathname: GatewayPath,
+  body: Record<string, unknown>,
+  text: string,
+  startedAt: number,
+  httpStatus: number,
+): GatewayCallResult {
+  const normalized = normalizeResponseText(text);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(normalized);
+  } catch {
+    parsed = undefined;
+  }
+
+  const schema = RESPONSE_SCHEMAS[pathname];
+  const result = schema.safeParse(parsed);
+
+  if (!result.success) {
+    const detail = truncate(result.error.issues.map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`).join('; '));
+    if (strictResponses()) {
+      const msg = `ERP gateway ${pathname} response failed contract validation: ${detail}`;
+      log(`error: ${msg}`);
+      emitAuditMessage({
+        path: pathname,
+        body,
+        status: 'error',
+        httpStatus,
+        durationMs: Date.now() - startedAt,
+        errorCode: 'VALIDATION_FAILED',
+        errorMsg: msg,
+      });
+      return { ok: false, message: msg, code: 'VALIDATION_FAILED', retryable: false };
+    }
+    log(`warn: ${pathname} response does not match contract (allowed; set GATEWAY_STRICT_RESPONSES=true to reject): ${detail}`);
+    emitAuditMessage({
+      path: pathname,
+      body,
+      status: 'ok',
+      httpStatus,
+      durationMs: Date.now() - startedAt,
+      errorCode: 'RESPONSE_SCHEMA_MISMATCH',
+    });
+    return { ok: true, text: normalized };
+  }
+
+  const echoed = result.data.contractVersion;
+  if (typeof echoed === 'number' && echoed !== CONTRACT_VERSION) {
+    // Version drift is a warning, never a reject: a backend may legitimately
+    // lag a platform upgrade. Strict mode does not change this.
+    log(`warn: ${pathname} backend echoed contractVersion ${echoed}, platform sent ${CONTRACT_VERSION}`);
+    emitAuditMessage({
+      path: pathname,
+      body,
+      status: 'ok',
+      httpStatus,
+      durationMs: Date.now() - startedAt,
+      errorCode: 'CONTRACT_VERSION_MISMATCH',
+    });
+    return { ok: true, text: normalized };
+  }
+
+  emitAuditMessage({
+    path: pathname,
+    body,
+    status: 'ok',
+    httpStatus,
+    durationMs: Date.now() - startedAt,
+  });
+  return { ok: true, text: normalized };
+}
+
 async function callGateway(
   runtime: ToolRuntimeConfig,
-  pathname: string,
+  pathname: GatewayPath,
   body: Record<string, unknown>,
-): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
+): Promise<GatewayCallResult> {
   const gateway = runtime.backendGateway;
   const startedAt = Date.now();
+  // Stamp the wire-contract version onto every outbound request. This is
+  // platform-produced, so always-on is safe.
+  body.contractVersion = CONTRACT_VERSION;
   if (!gateway?.baseUrl) {
     const msg = 'ERP gateway is not configured for this agent group.';
     emitAuditMessage({
@@ -302,9 +437,10 @@ async function callGateway(
       body,
       status: 'error',
       durationMs: Date.now() - startedAt,
+      errorCode: 'GATEWAY_NOT_CONFIGURED',
       errorMsg: msg,
     });
-    return { ok: false, message: msg };
+    return { ok: false, message: msg, code: 'GATEWAY_NOT_CONFIGURED', retryable: false };
   }
 
   const controller = new AbortController();
@@ -328,27 +464,28 @@ async function callGateway(
 
     const text = await response.text();
     if (!response.ok) {
-      const msg = `ERP gateway ${pathname} failed with ${response.status} ${response.statusText}: ${truncate(text)}`;
+      // Prefer the backend's own structured error code/retryable; otherwise
+      // classify the HTTP status onto the closed enum.
+      const structured = parseGatewayError(text);
+      const code = structured?.code ?? classifyHttpError(response.status, text);
+      const retryable = structured?.retryable ?? defaultRetryable(code);
+      const detail = structured?.message ?? truncate(text);
+      const msg = `ERP gateway ${pathname} failed with ${response.status} ${response.statusText}: ${detail}`;
       emitAuditMessage({
         path: pathname,
         body,
         status: 'error',
         httpStatus: response.status,
         durationMs: Date.now() - startedAt,
+        errorCode: code,
         errorMsg: msg,
       });
-      return { ok: false, message: msg };
+      return { ok: false, message: msg, code, retryable, retryAfterMs: structured?.retryAfterMs };
     }
-    emitAuditMessage({
-      path: pathname,
-      body,
-      status: 'ok',
-      httpStatus: response.status,
-      durationMs: Date.now() - startedAt,
-    });
-    return { ok: true, text: normalizeResponseText(text) };
+    return checkResponse(pathname, body, text, startedAt, response.status);
   } catch (error) {
     const aborted = error instanceof Error && error.name === 'AbortError';
+    const code: GatewayErrorCode = aborted ? 'TIMEOUT' : 'BACKEND_UNAVAILABLE';
     const msg = aborted
       ? `ERP gateway ${pathname} timed out after ${timeoutMs}ms.`
       : `ERP gateway ${pathname} request failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -357,9 +494,10 @@ async function callGateway(
       body,
       status: 'error',
       durationMs: Date.now() - startedAt,
+      errorCode: code,
       errorMsg: msg,
     });
-    return { ok: false, message: msg };
+    return { ok: false, message: msg, code, retryable: defaultRetryable(code) };
   } finally {
     clearTimeout(timeout);
   }
@@ -396,7 +534,7 @@ export async function handleGatewayDescribe(
     requester,
     requesterSource,
   });
-  if (!result.ok) return err(result.message);
+  if (!result.ok) return gatewayErr(result);
   log(`gateway_describe: ${requester.userId ?? 'anonymous'} (${requesterSource})`);
   return ok(result.text);
 }
@@ -417,7 +555,7 @@ export async function handleGatewayAuthorize(
     input: getRecord(args, 'input') ?? {},
     context: getRecord(args, 'context') ?? {},
   });
-  if (!result.ok) return err(result.message);
+  if (!result.ok) return gatewayErr(result);
   log(`gateway_authorize: ${operation} for ${requester.userId ?? 'anonymous'} (${requesterSource})`);
   return ok(result.text);
 }
@@ -430,6 +568,11 @@ export async function handleGatewayExecute(
   if (!operation) return err('operation is required');
 
   const { context: requester, source: requesterSource } = resolveRequester(args);
+  const dryRun = getBoolean(args, 'dryRun') ?? false;
+  // Write operations must always carry an idempotency key so a backend can
+  // dedupe a retried write. If the agent omits one we generate it here. A
+  // dryRun touches no committed state, so it stays null.
+  const idempotencyKey = getString(args, 'idempotencyKey') ?? (dryRun ? null : crypto.randomUUID());
   const result = await callGateway(runtime, '/execute', {
     agent: agentBlock(runtime),
     requester,
@@ -437,10 +580,10 @@ export async function handleGatewayExecute(
     operation,
     input: getRecord(args, 'input') ?? {},
     context: getRecord(args, 'context') ?? {},
-    dryRun: getBoolean(args, 'dryRun') ?? false,
-    idempotencyKey: getString(args, 'idempotencyKey') ?? null,
+    dryRun,
+    idempotencyKey,
   });
-  if (!result.ok) return err(result.message);
+  if (!result.ok) return gatewayErr(result);
   log(`gateway_execute: ${operation} for ${requester.userId ?? 'anonymous'} (${requesterSource})`);
   return ok(result.text);
 }
@@ -465,7 +608,7 @@ export async function handleGatewayMemoryGet(
     query: getRecord(args, 'query') ?? {},
     context: getRecord(args, 'context') ?? {},
   });
-  if (!result.ok) return err(result.message);
+  if (!result.ok) return gatewayErr(result);
   log(`gateway_memory_get: ${namespace} for ${subject.subject.type}:${subject.subject.id} (${requesterSource})`);
   return ok(result.text);
 }
@@ -494,7 +637,7 @@ export async function handleGatewayMemoryUpsert(
     merge: getBoolean(args, 'merge') ?? true,
     context: getRecord(args, 'context') ?? {},
   });
-  if (!result.ok) return err(result.message);
+  if (!result.ok) return gatewayErr(result);
   log(`gateway_memory_upsert: ${namespace} for ${subject.subject.type}:${subject.subject.id} (${requesterSource})`);
   return ok(result.text);
 }
@@ -508,6 +651,7 @@ export const erpDescribe: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {},
+      additionalProperties: false,
     },
   },
   async handler(args) {
@@ -529,6 +673,7 @@ export const erpAuthorize: McpToolDefinition = {
         context: { type: 'object', description: 'Optional extra authorization context.' },
       },
       required: ['operation'],
+      additionalProperties: false,
     },
   },
   async handler(args) {
@@ -549,9 +694,14 @@ export const erpExecute: McpToolDefinition = {
         input: { type: 'object', description: 'Operation payload.' },
         context: { type: 'object', description: 'Optional backend context.' },
         dryRun: { type: 'boolean', description: 'Validate or preview without committing state.' },
-        idempotencyKey: { type: 'string', description: 'Optional idempotency key for write operations.' },
+        idempotencyKey: {
+          type: 'string',
+          description:
+            'Optional idempotency key for write operations. If omitted, the runtime auto-generates one (unless dryRun=true).',
+        },
       },
       required: ['operation'],
+      additionalProperties: false,
     },
   },
   async handler(args) {
@@ -578,6 +728,7 @@ export const erpMemoryGet: McpToolDefinition = {
         context: { type: 'object', description: 'Optional extra backend context.' },
       },
       required: ['namespace'],
+      additionalProperties: false,
     },
   },
   async handler(args) {
@@ -608,6 +759,7 @@ export const erpMemoryUpsert: McpToolDefinition = {
         context: { type: 'object', description: 'Optional extra backend context.' },
       },
       required: ['namespace', 'value'],
+      additionalProperties: false,
     },
   },
   async handler(args) {
