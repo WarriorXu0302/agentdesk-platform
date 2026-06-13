@@ -286,6 +286,26 @@ itself fails, the row is dropped. For environments where the gateway side
 needs to reconcile the full trail even when that happens, run audit on
 the gateway as well and match by `idempotencyKey` / returned audit id.
 
+### Execution attestation (user-visible trust signal)
+
+A user (or auditor) reading "Done — I created the order" has no way to tell a
+real backend write from a hallucinated one. Close that gap with the `auditId`
+the gateway already returns: when the agent reports a state-changing action, it
+should **cite the proof** in its reply — the operation, the `auditId`, and the
+result — e.g. _"Created order ORD-5512 ✓ (operation `demo.order.create`, audit
+`a1b2c3…`)"_. That `auditId` resolves to the central `gateway_audit` row above,
+so the claim is verifiable against the audit trail rather than taken on trust.
+This matters in regulated settings (finance, healthcare) where a user-checkable
+action record is a compliance requirement.
+
+This is an **agent-side, opt-in** pattern — the platform passes reply content
+through verbatim (`src/delivery.ts`) and never blocks or rewrites it, and a
+channel may render the citation as a collapsible "Details" block. The
+agent-facing rule lives in
+[`gateway.instructions.md`](../container/agent-runner/src/mcp-tools/gateway.instructions.md)
+("Attest state-changing actions"): cite an `auditId` only for an action that
+actually committed — never for a `dryRun` `preview` or a failed call.
+
 ### Signing-proxy audit rows (ADR-0034)
 
 When the host signing proxy is enabled, the proxy writes its own **authoritative**

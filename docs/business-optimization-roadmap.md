@@ -349,10 +349,15 @@
   - 顺带修了 `interactive.ts` 一处日志 cosmetic bug(options 现为对象,`join` 原会打印 `[object Object]`,改为 `.map(o=>o.value)`)。
 - **工作量 S · 价值 中**
 
-### 6.9 回复无 citation / "我执行了 X" 信任信号
+### 6.9 回复无 citation / "我执行了 X" 信任信号 — ✅ 已落地(d01746a)
 - **现状**:`delivery.ts:458-550` 原样投递内容,无内置 attestation/执行轨迹包装,无时间戳页脚。但 agent **可**在内容里塞 executionTrace,渠道**可**渲染。缺的是平台提供的 attestation 机制和文档化模式。
 - **业务影响**:中等。用户无法验证 agent 真执行了还是只声称成功,受监管环境(金融/医疗)需用户可见审计轨迹,有合规风险。
 - **建议**:(1) 文档化 agent 在出站内容含 executionTrace(动作/时间戳/HTTP 状态);(2) 渠道渲染为可折叠 "Details" 区;(3) 可选系统消息加 ISO 时间戳页脚。agent 层 opt-in,平台不阻止。
+- **关键发现**:平台**已有现成的可验证锚点**——`gateway_execute` 响应携带 `auditId`,宿主在中央 `gateway_audit` 表写一行对应记录(load-bearing)。核查 `gateway.ts` 的 execute 返回 `ok(result.text)`(原始 JSON,含 `auditId`),所以 agent 现在就读得到。比起让 agent 自造 executionTrace,直接引用这个 auditId 是**更强的信任信号**(用户/审计员能拿 auditId 去 `gateway_audit` 核对)。
+- **已实现**(沿用 6.8 的保守路线:**不**碰 `delivery.ts`/只读投递路径,纯 agent 侧 opt-in 模式 + 文档):
+  - `gateway.instructions.md` 加 "Attest state-changing actions" 实践:改状态的动作要在回复里引用 操作名 + `auditId` + 结果(范例 "Created order ORD-5512 ✓ (operation `demo.order.create`, audit `a1b2c3…`)");明确区分真实 result 与 dryRun preview,绝不为只预览/失败的动作谎报 auditId。
+  - `docs/enterprise-erp-gateway.md` 的 gateway_audit 段补 "Execution attestation (user-visible trust signal)" 小节:讲清这是 agent 侧 opt-in、平台 verbatim 透传不阻止、渠道可渲染为可折叠 Details、合规场景价值。
+- **有意未做**:建议(3)"平台在系统消息加 ISO 时间戳页脚"会碰投递/渲染路径,与"observability/delivery 只读、不改写消息流"取向相悖且价值边际;auditId 引用已给出可验证锚点,故不做。
 - **工作量 S · 价值 中**
 
 ### 6.10 Roster DM 配额耗尽对用户无反馈
