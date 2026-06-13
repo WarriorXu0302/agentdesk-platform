@@ -21,7 +21,7 @@
  * slow. Run locally: `pnpm container:build && pnpm exec tsx scripts/e2e-container-roundtrip.ts`.
  * Exit 0 on a delivered mock reply, non-zero otherwise.
  */
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -80,13 +80,43 @@ async function main(): Promise<void> {
   fs.writeFileSync(
     path.join(agentDir, 'container.json'),
     JSON.stringify(
-      { provider: 'mock', agentGroupId: 'e2e-group', groupName: 'E2E', assistantName: 'E2E', skills: [], mcpServers: {} },
+      {
+        provider: 'mock',
+        agentGroupId: 'e2e-group',
+        groupName: 'E2E',
+        assistantName: 'E2E',
+        skills: [],
+        mcpServers: {},
+      },
       null,
       2,
     ),
   );
 
+  // Preflight: the image must already exist (CI's image-smoke job builds it
+  // first; locally run `pnpm container:build`). Fail fast with the resolved tag
+  // so a tag/slug-derivation mismatch is obvious instead of surfacing as a 90s
+  // poll timeout. Use `images -q` (lists by reference), NOT `image inspect`:
+  // with Docker Desktop's containerd image store, `image inspect <repo:tag>`
+  // gives false negatives even when `docker images`/`docker run` resolve it.
+  const imgQuery = spawnSync(CONTAINER_RUNTIME_BIN, ['images', '-q', CONTAINER_IMAGE], { encoding: 'utf8' });
+  if (imgQuery.status !== 0 || !imgQuery.stdout.trim()) {
+    fail(
+      `image not found: ${CONTAINER_IMAGE} — build it first (pnpm container:build). ` +
+        `If CI built a different tag, the install-slug/brand derivation diverged from src/config.ts.`,
+    );
+  }
+
   const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-e2e-roundtrip-${process.pid}`;
+  // Mirror container-runner.ts buildContainerArgs: run as the host uid so the
+  // container can WRITE outbound.db into the host-owned bind mount. On native
+  // Linux Docker (CI) the image's default `node` uid (1000) cannot write a mount
+  // owned by a different host uid (the CI runner user); Docker Desktop on macOS
+  // transparently remaps ownership, which is why omitting this only bit in CI.
+  // Same guard as the real runner: skip when root (0) or already the image's uid.
+  const hostUid = process.getuid?.();
+  const hostGid = process.getgid?.();
+  const userArgs = hostUid != null && hostUid !== 0 && hostUid !== 1000 ? ['--user', `${hostUid}:${hostGid}`] : [];
   // Mirror the essential mounts buildMounts produces (the mock path needs the
   // session dir for the DBs + the agent-runner source; node_modules is baked in
   // the image). container.json sits inside the session dir's agent/ so it lands
@@ -96,6 +126,7 @@ async function main(): Promise<void> {
     '--rm',
     '--name',
     containerName,
+    ...userArgs,
     '-e',
     `TZ=${TIMEZONE}`,
     '-e',
@@ -113,14 +144,24 @@ async function main(): Promise<void> {
 
   console.log(`▶ docker ${args.join(' ')}`);
   const child = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderrTail = '';
+  let childExit: number | null = null;
   child.stdout.on('data', (d) => process.stdout.write(`[container] ${d}`));
-  child.stderr.on('data', (d) => process.stderr.write(`[container] ${d}`));
+  child.stderr.on('data', (d) => {
+    stderrTail = (stderrTail + d).slice(-2000);
+    process.stderr.write(`[container] ${d}`);
+  });
+  child.on('exit', (code) => {
+    childExit = code ?? 0;
+  });
 
   // Poll the cross-mounted outbound.db for the mock reply.
   const deadline = Date.now() + WAIT_MS;
   let replied = false;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_MS));
+    // Check for the reply FIRST — the container idle-exits (code 0) shortly
+    // after writing, and a reply-then-exit must still count as success.
     try {
       const outDb = new Database(outboundPath, { readonly: true });
       const row = outDb.prepare("SELECT id, content FROM messages_out WHERE kind != 'llm-usage' LIMIT 1").get() as
@@ -128,12 +169,22 @@ async function main(): Promise<void> {
         | undefined;
       outDb.close();
       if (row) {
-        console.log(`✓ container wrote a reply to the cross-mounted outbound.db: ${row.id} → ${row.content.slice(0, 120)}`);
+        console.log(
+          `✓ container wrote a reply to the cross-mounted outbound.db: ${row.id} → ${row.content.slice(0, 120)}`,
+        );
         replied = true;
         break;
       }
     } catch {
       /* outbound.db may be momentarily locked by the container writer; retry */
+    }
+    // No reply yet: if the container already died with a non-zero code, fail
+    // fast with its stderr rather than waiting out the full poll deadline (a
+    // crash, an unwritable mount, or a missing dep manifests here).
+    if (childExit != null && childExit !== 0) {
+      fail(
+        `container exited with code ${childExit} before writing a reply.\n--- container stderr (tail) ---\n${stderrTail}`,
+      );
     }
   }
 
