@@ -393,6 +393,32 @@ async function drainSession(session: Session): Promise<void> {
             handledOutbound = true;
             if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
               await markProgressStatusFailed(session.id, deliveryAdapter);
+              // Tell the user their reply couldn't be delivered, instead of
+              // leaving them with a vanished "thinking" indicator and silence.
+              // Best-effort + loop-safe: a DIRECT adapter call (not re-queued, so
+              // it can never re-enter this permanent-failure path) using the same
+              // adapter that just failed. If the channel is fully down this also
+              // fails — but for message-specific failures (too long / bad format)
+              // a short text note still gets through. Never throws. (roadmap 6.1)
+              if (deliveryAdapter && msg.channel_type && msg.platform_id) {
+                try {
+                  await deliveryAdapter.deliver(
+                    msg.channel_type,
+                    msg.platform_id,
+                    msg.thread_id,
+                    'chat',
+                    JSON.stringify({
+                      text: "⚠️ I couldn't deliver my last reply — it kept failing, so I stopped retrying. Please ask again.",
+                    }),
+                    undefined,
+                  );
+                } catch (notifyErr) {
+                  log.warn('Failed to notify user of permanent delivery failure', {
+                    messageId: msg.id,
+                    err: notifyErr,
+                  });
+                }
+              }
             }
           } else {
             const backoffSec =

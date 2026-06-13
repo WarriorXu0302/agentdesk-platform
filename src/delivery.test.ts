@@ -311,6 +311,40 @@ describe('delivery resilience — timeout, ordering, persisted backoff (ADR-0016
     expect(readDeliveredRow('ag-1', session.id, 'out-b')).toBeUndefined();
   });
 
+  it('notifies the user with a plain-text notice when delivery permanently fails (roadmap 6.1)', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-doomed');
+
+    // Seed one attempt below the cap with an overdue retry window, so the next
+    // failed attempt crosses DELIVERY_MAX_ATTEMPTS → permanent-failure branch.
+    const seedDb = new Database(inboundDbPath('ag-1', session.id));
+    migrateDeliveredTable(seedDb);
+    seedDb
+      .prepare(
+        `INSERT INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_retry_at)
+         VALUES (?, NULL, 'failed', datetime('now'), 9, datetime('now', '-1 hour'))`,
+      )
+      .run('out-doomed');
+    seedDb.close();
+
+    const sent: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_ct: string, _pid: string, _tid: string | null, _kind: string, content: string) {
+        sent.push(content);
+        throw new Error('channel down');
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    // The message is permanently failed AND a best-effort user-facing notice was
+    // attempted (it also fails here since the mock always throws, but the
+    // attempt — with the human-readable text — is observable).
+    expect(readDeliveredRow('ag-1', session.id, 'out-doomed')?.status).toBe('failed');
+    expect(sent.some((c) => c.includes("couldn't deliver my last reply"))).toBe(true);
+  });
+
   it('respects next_retry_at backoff and redelivers once the window opens', async () => {
     seedAgentAndChannel();
     const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');

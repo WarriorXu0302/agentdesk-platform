@@ -274,6 +274,7 @@
 > 这是面向真实使用者的体验层,多为 host 侧改动、不破坏渠道无关设计。
 
 ### 6.1 投递永久失败后对用户静默无反馈 ⭐
+> ✅ **已实现**(渠道体验 batch):重试耗尽的永久失败分支(`src/delivery.ts`)在 `markProgressStatusFailed` 后,**直接**(非重新入队,loop-safe)用同一 adapter 给用户发一条「⚠️ I couldn't deliver my last reply … Please ask again」纯文本;best-effort——若整个渠道挂了这条也会失败(仅 log.warn),但消息特异性失败(太长/格式坏)时短文本能发出。delivery.test.ts 加了测试(种 attempts=9+逾期重试窗 → 跨过 cap 触发永久分支 → 断言通知被尝试)。
 - **现状**:`src/delivery.ts:385-396` 重试耗尽时只记日志 + 调 `markProgressStatusFailed()`(`progress-status/index.ts:210-215` **仅移除 reaction emoji**),**不向用户发任何失败说明**。用户看到"思考中"emoji 消失却无解释。`delivery.ts:474-476` 若无 adapter 还会静默丢消息。
 - **业务影响**:**高**。用户经历静默失败,困惑("我消息发出去了吗")、焦虑、重复发送,增加支持负担。
 - **建议**:永久失败时(L385 markProgressStatusFailed 前)构造人类可读错误("因网络问题未完成,请重试")作为出站消息发回用户。host 侧责任,不破坏渠道无关设计。
@@ -393,7 +394,7 @@
 | ✅ **4.3 namespace 可发现性** | S | 记忆(小 schema) |
 | ✅ **6.4 交互卡失败 fallback** | S | 渠道体验 |
 | **1.1 quickstart.sh** | S | 上手速度 |
-| **6.1 投递失败用户反馈** | M | 渠道体验 |
+| ✅ **6.1 投递失败用户反馈** | M | 渠道体验 |
 | 🟡 **6.2 审批卡过期通知**(核心已做;过期窗口可配/倒计时未做) | M | 渠道体验 |
 | **2.1 误路由反馈机制** | M | 对话质量 |
 | **2.2 conversation_thread_id** | M | 对话质量(追踪基石) |
