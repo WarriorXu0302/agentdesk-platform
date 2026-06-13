@@ -293,10 +293,12 @@
   - 测试:`response-handler.test.ts` 加 apply_failed→error 详情、registry flush→overwrite 标记两个用例(全套 735 绿)。
 - **工作量 S · 价值 低**
 
-### 5.11 角色/成员变更不触发会话重评估(留给运营者网关,补文档)
+### 5.11 角色/成员变更不触发会话重评估(留给运营者网关,补文档)— ✅ 已落地(1bb400e,文档 + 纠正)
 - **现状**:`revokeRole()` 后该用户的活跃 session 仍开着;router(`src/router.ts`)只在**会话创建时**查 `canAccessAgentGroup`,不 per-message 重查。但 `docs/enterprise-multi-user.md` 明确把实时策略执行定位在运营者网关——这是**架构设计,非 bug**。
 - **业务影响**:中等。离职员工的开放 session 续到 timeout,但这**有意为之**,执行点是运营者网关。
 - **建议**:在 `RBAC.md` 文档化:"访问控制在会话创建时评估一次;实时撤销需运营者在后端网关做 per-message 授权"。若特定客户需平台内撤销,加可选 `revoked_at` 列 + per-message 重查,但**仅在显式开启**(`AGENTDESK_RUNTIME_ACCESS_RECHECK=true`)并文档化性能影响。
+- **⚠️ 纠正了 finding 的"现状"**:核查 `router.ts:419-420` `routeInbound`——access gate(`canAccessAgentGroup`)其实**每条入站消息都查**(在 agent 解析后、session 写入前),**不是**"只在会话创建时查"。所以撤销角色会**挡住该用户下一条消息**,入站准入层面撤销已近实时。真正缺的更窄:(a) 不主动 teardown 已在跑的 session(in-flight turn 跑完、容器续到 idle-exit/TTL),(b) `public` 群不按成员门控(有意),(c) 业务动作授权点在网关 per-call。
+- **已实现**(纯文档,且纠正而非照抄错误前提):无 `RBAC.md`,故写进 `enterprise-multi-user.md` 新增 "Access evaluation & revocation timing" 段(与既有 Responsibilities/网关执行点同处):讲清三段式真相(入站每条重查→撤销挡下一条;不主动拆 in-flight session;public 群不门控),并指明业务动作的实时执行点是 `gateway_authorize`/`gateway_execute`(per-call,live 后端状态)。可选的平台内硬停(`revoked_at` + teardown)标注为显式 opt-in、默认不做(因 per-action 网关 authz 已覆盖安全关键面)。
 - **工作量 M · 价值 中(优先文档)**
 
 ---

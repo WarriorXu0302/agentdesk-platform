@@ -31,6 +31,42 @@ Your backend should own:
 - approval rules
 - business-side audit
 
+## Access evaluation & revocation timing
+
+When does revoking a role actually take effect? The honest answer has three
+parts — important for offboarding and incident response:
+
+- **Inbound admission is re-checked on every message.** The router evaluates the
+  access gate (`canAccessAgentGroup` — owner / admin / group member) per inbound
+  event, *before* it resolves or creates the session (`src/router.ts`
+  `routeInbound` → access gate → session write). So on a role-gated group,
+  **`revokeRole()` blocks that user's very next message** — revocation is
+  effectively real-time for *getting in*. It is not a "checked once at session
+  creation" model.
+- **But the platform does not proactively tear down a running session.** No push
+  revocation: a turn already in flight completes, and the user's container
+  lingers until idle-exit / `AGENTDESK_SESSION_TTL_DAYS`. The revoked user simply
+  can't feed it new input. If you need hard mid-turn termination, that's an
+  operator action (kill the container / archive the session).
+- **A `public` messaging group does not gate on membership at all** (by design —
+  `unknown_sender_policy='public'` admits anyone). Role revocation has no effect
+  on who can *message* a public group; gate sensitive behaviour behind the
+  backend gateway there, not group membership.
+
+For **business-action authorization** (not just message admission), the
+enforcement point is your backend gateway: `gateway_authorize` / `gateway_execute`
+are evaluated per call against live backend state, so a revocation reflected in
+your backend takes effect on the **next sensitive action**, independent of
+session lifecycle. Real-time policy belongs there (see
+[enterprise-erp-gateway.md](enterprise-erp-gateway.md)); the platform's
+session-level gate is admission control, not a substitute for per-action authz.
+
+> Optional, off by default: if a deployment needs the platform itself to hard-stop
+> in-flight sessions on revocation, that would be an explicit opt-in
+> (`revoked_at` column + active-session teardown) with a documented cost — it is
+> deliberately not the default, because per-action gateway authz already covers
+> the security-critical case.
+
 ## Session modes for shared bots
 
 - `shared`: one session per chat surface. Best for 1:1 DMs where each user already has a distinct messaging group.
