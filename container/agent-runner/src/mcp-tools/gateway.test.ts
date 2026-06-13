@@ -24,7 +24,12 @@ import {
   handleGatewayMemorySearch,
   handleGatewayMemoryUpsert,
 } from './gateway.js';
-import { CONTRACT_VERSION, classifyHttpError, describeResponseSchema } from './gateway-contract.js';
+import {
+  CONTRACT_VERSION,
+  classifyHttpError,
+  describeResponseSchema,
+  memorySearchResponseSchema,
+} from './gateway-contract.js';
 
 const runtime = {
   assistantName: 'Frontdesk',
@@ -876,5 +881,23 @@ describe('describe response: namespace catalog + freshness (roadmap 4.2/4.3)', (
 
   it('rejects a namespace entry missing the required name', () => {
     expect(describeResponseSchema.safeParse({ ok: true, namespaces: [{ scope: 'user' }] }).success).toBe(false);
+  });
+});
+
+describe('memory search: optional conflict metadata (roadmap 4.4)', () => {
+  it('accepts conflictsWith + resolved on a result and preserves them', () => {
+    const parsed = memorySearchResponseSchema.parse({
+      ok: true,
+      results: [
+        { value: { tier: 'gold' }, source: { recordId: 'r1' }, conflictsWith: ['r2'], resolved: false },
+        { value: { tier: 'silver' }, source: { recordId: 'r2' } },
+      ],
+    });
+    expect(parsed.results?.[0]).toMatchObject({ conflictsWith: ['r2'], resolved: false });
+    expect(parsed.results?.[1].conflictsWith).toBeUndefined();
+  });
+
+  it('stays backward-compatible: results without conflict fields are valid', () => {
+    expect(memorySearchResponseSchema.safeParse({ ok: true, results: [{ value: 1 }] }).success).toBe(true);
   });
 });

@@ -176,6 +176,7 @@
 - **工作量 S · 价值 中**
 
 ### 4.4 冲突事实无检测/调和
+> 🟡 **已实现核心**(记忆契约 batch 2):`memorySearchResultSchema` 新增可选 `conflictsWith: string[]`(冲突 recordIds)+ `resolved: boolean`(passthrough + 全可选,向后兼容);`gateway.instructions.md` 指引 agent「result 带 conflictsWith 且 resolved 非 true 时,别默默用第一条,向用户暴露分歧或按 updatedAt/provenance 取舍」;gateway.test.ts 加了 2 个 schema 测试。**未做(留运营者)**:reference-gateway 的冲突检测示例(naive keyword 后端造假冲突会误导)、后端版本向量/LWW 实现指南 → 属运营者后端文档。
 - **现状**:工具齐全(`gateway_memory_get/upsert(merge)/search`),后端可实现 merge 语义,但响应契约**无冲突检测元数据**。search 返回多条冲突 `value` 时 agent 都看到却无"它们冲突"的信号。`merge` flag 定义为"后端语义",无版本/冲突标记/调和工具指引。
 - **业务影响**:多 agent/多同步场景下高——冲突事实可静默存活,agent 可能基于 search 返回的第一条行动而不知有其他值。
 - **建议**:扩 memory 响应 schema(可选)含 `conflictsWith: recordId[]` 和 `resolved` flag;给运营者一个检测冲突的后端示例(版本向量或 LWW);文档化 per-namespace 冲突策略。
@@ -406,7 +407,7 @@
 | **5.4 合规审计导出 + 保留** | M | 治理 |
 | **5.3 审批过期 sweep + 多审批人** | M | 治理 |
 | ✅ **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
-| **4.4 记忆冲突检测** | M | 记忆 |
+| 🟡 **4.4 记忆冲突检测**(契约+指引已做;后端示例留运营者) | M | 记忆 |
 | **3.1 bulk 操作契约** | M | 网关契约 |
 | **3.3 /describe schema 发现** | M | 网关契约 |
 | **1.4 网关生产模板 + kickstart** | M | 上手速度 |

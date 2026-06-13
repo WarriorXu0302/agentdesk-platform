@@ -61,6 +61,11 @@ capability layer.
   fast-changing domain like pricing, org structure, or permissions), re-fetch
   it or tell the user the value may be out of date — do not act on a stale fact
   as if it were current.
+- Watch for conflicting facts. If a `gateway_memory_search` result carries
+  `conflictsWith` (recordIds it disagrees with) and `resolved` is not true, the
+  recalled values contradict each other — do NOT silently act on the first one.
+  Surface the disagreement to the user (or pick using `source.updatedAt` /
+  provenance) instead of guessing.
 - If `gateway_execute` returns a backend-directed approval or confirmation
   step, do not improvise around it. Surface the requirement back to the user.
 

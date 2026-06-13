@@ -277,6 +277,13 @@ export const memorySearchResultSchema = z
     // Backend-defined relevance score. Semantics (range, direction) are the
     // backend's — the platform never ranks or interprets it.
     score: z.number().optional(),
+    // Optional conflict metadata (roadmap 4.4). `conflictsWith` lists recordIds
+    // this value disagrees with (same subject/key, divergent values); `resolved`
+    // is whether the backend considers the conflict settled. Lets the agent
+    // surface "these facts disagree" instead of silently acting on the first
+    // result. Both optional + passthrough → a backend adopts this incrementally.
+    conflictsWith: z.array(z.string()).optional(),
+    resolved: z.boolean().optional(),
   })
   .passthrough();
 
