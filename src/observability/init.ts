@@ -10,6 +10,16 @@ import {
 import { log } from '../log.js';
 import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 
+// OTEL 0.219+ NodeSDK auto-enables OTLP metrics + logs exporters when these env
+// vars are unset (the 0.55 train did not). This platform exports ONLY traces —
+// metrics are served via prom-client (src/metrics.ts), not OTEL. Left on, the SDK
+// spins up a PeriodicExportingMetricReader that fails against the traces-only
+// Phoenix endpoint and hangs graceful shutdown for the full 5s timeout. Default
+// them off (an operator can still opt in by exporting the env vars). Caught by
+// the post-upgrade Phoenix runtime trace check; tests + headless init smoke miss it.
+process.env.OTEL_METRICS_EXPORTER ??= 'none';
+process.env.OTEL_LOGS_EXPORTER ??= 'none';
+
 const DEFAULT_TRACES_ENDPOINT = 'http://localhost:6006/v1/traces';
 const DEFAULT_SERVICE_NAME = `${PLATFORM_PROTOCOL_NAMESPACE}-host`;
 const DEFAULT_SERVICE_VERSION = '2.0.44';
