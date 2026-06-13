@@ -15,7 +15,7 @@
 # image current as of 2026-06. To refresh after an intentional base bump:
 #   docker buildx imagetools inspect node:22-slim   # copy the "Digest:" value
 # and update the @sha256:... below in the same commit.
-FROM node:22-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+FROM node:26-slim@sha256:95a34da32a840bd9b3b09a5b773591c16923e350174b1c50e1200c75bf15eaa9
 
 # ---- Build-time arguments ----------------------------------------------------
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.
