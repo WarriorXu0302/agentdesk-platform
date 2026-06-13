@@ -281,6 +281,18 @@ export const engagePatternInvalidTotal = new client.Counter({
   registers: [registry],
 });
 
+export const policyCheckFailedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_policy_check_failed_total`,
+  help: 'Fail-closed policy decisions (ADR-0019), so operators can see whether a guard fires constantly (misconfig) or never (dead policy)',
+  // `policy`: which fail-closed guard rejected —
+  //   - `command_gate`              : an admin slash-command was denied
+  //   - `engage_pattern`            : an agent engage_pattern regex failed to compile
+  //   - `approval_operator_identity`: a card action came from an unverified/mismatched operator
+  // `reason`: a short machine code for why (e.g. admin_denied, invalid_regex, mismatch, absent).
+  labelNames: ['policy', 'reason'] as const,
+  registers: [registry],
+});
+
 export const inboundIngressFailedTotal = new client.Counter({
   name: `${METRIC_PREFIX}_inbound_ingress_failed_total`,
   help: 'Inbound envelopes that threw in routeInbound after being persisted to the ingress recovery ledger (ADR-0022)',

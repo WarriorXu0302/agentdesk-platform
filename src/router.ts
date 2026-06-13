@@ -36,7 +36,13 @@ import {
 import { findSessionByAgentGroup, findSessionForAgent, findSessionForAgentOwner, getSession } from './db/sessions.js';
 import { maybeAutowireEnterpriseFrontdesk } from './enterprise-autowire.js';
 import { readEnvFile } from './env.js';
-import { engagePatternInvalidTotal, inboundIngressFailedTotal, inboundTotal, startTimer } from './metrics.js';
+import {
+  engagePatternInvalidTotal,
+  inboundIngressFailedTotal,
+  inboundTotal,
+  policyCheckFailedTotal,
+  startTimer,
+} from './metrics.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { maybeStartProgressStatus, markProgressStatusFailed } from './modules/progress-status/index.js';
 import { log } from './log.js';
@@ -531,6 +537,7 @@ function evaluateEngage(
         // hijack every message in the channel. The agent goes silent and the
         // metric/log surfaces the misconfiguration for an operator to fix.
         engagePatternInvalidTotal.inc({ agent_group: agent.agent_group_id });
+        policyCheckFailedTotal.inc({ policy: 'engage_pattern', reason: 'invalid_regex' });
         log.warn('engage_pattern failed to compile; agent is silent until fixed', {
           agentGroupId: agent.agent_group_id,
           pattern: pat,
@@ -635,6 +642,7 @@ async function deliverToAgent(
                 actor: userId,
                 details: { command: gate.command },
               });
+              policyCheckFailedTotal.inc({ policy: 'command_gate', reason: 'admin_denied' });
               const ok = writeOutboundDirect(session.agent_group_id, session.id, {
                 id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 kind: 'chat',

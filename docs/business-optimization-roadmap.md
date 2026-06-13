@@ -267,10 +267,12 @@
 - **建议**:insertDmGrant 时 emit `roster_grant_created`,revoke 时 emit `roster_grant_revoked`,平台 leave/disband 事件 emit `roster_grant_revoked_by_platform_event`。更新 ADR-0023 实现注记。
 - **工作量 S · 价值 中**
 
-### 5.8 fail-closed 决策无可查 metric/告警
+### 5.8 fail-closed 决策无可查 metric/告警 — ✅ 已落地(81cd293)
 - **现状**:ADR-0019 的 fail-closed 默认正确(命令闸拒绝、非法 engage_pattern regex 拒绝、审批卡运营者身份校验),但拒绝时运营者**只收 log.warn,无 metric/告警**。坏 regex 可能因不 emit metric 而几天无人察觉。
 - **业务影响**:低(价值标低)。运营者不知 fail-closed 策略是频繁触发(配置错)还是从不触发(策略错)。
 - **建议**:每个 fail-closed 决策 emit `policy_check_failed_total{policy,reason}`;Prometheus 告警阈值(`AGENTDESK_POLICY_VIOLATION_THRESHOLD`);RUNBOOK.md 文档化。
+- **已实现**:新增统一 counter `agentdesk_policy_check_failed_total{policy,reason}`(`metrics.ts`),在三处 fail-closed 决策点 emit——`command_gate`/`admin_denied`(router.ts deny 分支,与 5.6 的 `command_gate_deny` 审计并排)、`engage_pattern`/`invalid_regex`(router.ts,与既有专用指标 `engage_pattern_invalid_total` 并存)、`approval_operator_identity`/`mismatch`|`absent`(feishu.ts 卡动作身份校验)。给出一个**收敛的可查面**(`sum by(policy,reason) rate(...)`)区分"频繁触发 vs 从不触发"。告警只为安全相关且非日常噪声的一项加:`AgentDeskApprovalIdentityRejections`(approval_operator_identity 持续非 0 → 可能卡受众配错或有人点别人审批卡);command_gate/engage_pattern 属日常或已有专用告警,不另发以免噪声。RUNBOOK §3.11 + 快查表行 + alerts.yml 规则。`metrics.test.ts` 锚定指标名/labels 契约(被告警与 RUNBOOK 逐字引用)。
+- **未采纳**:可配阈值 env `AGENTDESK_POLICY_VIOLATION_THRESHOLD`——与既有告警风格(静态 `for:` + rate 阈值)不一致且对低价值项过度工程,改阈值直接改 alerts.yml 即可。
 - **工作量 S · 价值 低**
 
 ### 5.9 审批无角色路由(所有审批人同一两按钮 UI)
@@ -311,10 +313,11 @@
 - **建议**:(1) 过期返 null 时带元数据让 handleCardAction 能区分过期 vs 其他不支持;(2) 发用户可见错误("审批链接已过期,请让 agent 重发");(3) 过期窗口可配(`FEISHU_APPROVAL_EXPIRY_MINUTES`);(4) 卡体显示倒计时。
 - **工作量 M · 价值 高**
 
-### 6.3 Feishu 无能力发现(help)入口
+### 6.3 Feishu 无能力发现(help)入口 — ⏭️ 已三角(归运营者,核心不实现)
 - **现状**:`feishu.ts:479-481` 解析文本但**无 help 关键词检测**;能力说明完全靠 agent prompt(`examples/lab-frontdesk/CLAUDE.local.md`)。这是**有意的业务无关设计**,但从终端用户看是真实摩擦。
 - **业务影响**:高(价值标高)。新员工无可发现的方式了解 bot 能做什么,首次使用门槛高,增支持负担。
 - **建议**:这**恰当地属运营者/网关责任**——运营者定义能力注册表,在网关层拦截 `/help`/'help'/'你能做什么' 返结构化卡。**平台核心不阻止此模式,纯运营者侧实现**。
+- **三角结论**:确认**不在平台核心实现**。在核心 feishu.ts 里硬编码 help 关键词检测会把业务行为烤进平台,违反 CLAUDE.md "Business-specific … live in `examples/` or an operator's own deployment — not hardcoded into the core"。平台已不阻止此模式;运营者实现路径有二:(a) agent prompt 里写能力清单(已是现状,见 `examples/`),(b) 网关加 `help`/`capabilities` 操作或在网关/agent 层拦截 `/help` 返结构化卡。价值虽高但归属正确——保持核心通用。
 - **工作量 M · 价值 高(归运营者)**
 
 ### 6.4 交互卡渲染失败无降级 fallback ⭐

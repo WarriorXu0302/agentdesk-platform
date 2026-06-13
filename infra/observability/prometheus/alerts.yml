@@ -253,6 +253,27 @@ groups:
             engage_pattern did not compile; that agent is fail-closed and
             dropping all inbound until the regex is fixed. See RUNBOOK §3.9.
 
+      # Repeated approval-card rejections on operator identity (ADR-0019
+      # fail-closed). A trickle is normal (a stale card, the wrong person
+      # clicking); a sustained rate means a misconfigured card audience or
+      # someone repeatedly trying to action another user's approval card.
+      # Other fail-closed policies share agentdesk_policy_check_failed_total
+      # (command_gate, engage_pattern) but are routine, so are not alerted here.
+      - alert: AgentDeskApprovalIdentityRejections
+        expr: rate(agentdesk_policy_check_failed_total{policy="approval_operator_identity"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Approval-card actions repeatedly rejected on operator identity
+          description: >-
+            agentdesk_policy_check_failed_total{policy="approval_operator_identity"}
+            has been non-zero for 15m. Card actions are being fail-closed because
+            the operator is unverified (reason="absent") or doesn't match the
+            card's intended user (reason="mismatch"). Check for a wrong card
+            audience or an attempt to action someone else's approval. See
+            RUNBOOK §3.11.
+
       # Unhandled promise rejection: a promise error escaped its call site. The
       # host logs but does not crash on these — a non-zero rate means it may be
       # running in a half-completed state. Investigate the offending async path.

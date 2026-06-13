@@ -18,7 +18,7 @@ import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import { chainAttrs, runInDetachedRoot } from '../observability/openinference.js';
 import { withSpan } from '../observability/with-span.js';
-import { inboundTotal } from '../metrics.js';
+import { inboundTotal, policyCheckFailedTotal } from '../metrics.js';
 import { registerWebhookHandler } from '../webhook-server.js';
 import type { ChannelAdapter, ChannelSetup, OutboundMessage } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -676,6 +676,10 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
       // matching operator. A missing/empty operatorUserId means we cannot
       // verify who acted, so we reject rather than let an unknown caller
       // answer another user's approval card.
+      policyCheckFailedTotal.inc({
+        policy: 'approval_operator_identity',
+        reason: operatorUserId ? 'mismatch' : 'absent',
+      });
       log.warn('Feishu card action rejected: operator identity unconfirmed or mismatched', {
         token,
         expectedUserId: action.expectedUserId,
