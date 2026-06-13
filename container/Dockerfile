@@ -9,7 +9,13 @@
 # bind mount at runtime (see src/container-runner.ts). Source-only changes
 # never require an image rebuild.
 
-FROM node:22-slim
+# Supply-chain hardening (ADR-0029): pin the base image by content digest, not
+# just the `node:22-slim` tag. A tag can be silently re-pointed upstream to a
+# different image; a digest cannot. The digest below is the `node:22-slim`
+# image current as of 2026-06. To refresh after an intentional base bump:
+#   docker buildx imagetools inspect node:22-slim   # copy the "Digest:" value
+# and update the @sha256:... below in the same commit.
+FROM node:22-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
 
 # ---- Build-time arguments ----------------------------------------------------
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.

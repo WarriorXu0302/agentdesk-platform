@@ -663,6 +663,11 @@ async function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  // Least-privilege hardening (ADR-0029). Kept next to the --user mapping
+  // because it's the same "the agent runs deprivileged" concern. Pure helper
+  // so the flag shape is unit-testable without spinning the full builder.
+  args.push(...buildSecurityArgs(process.env));
+
   // Volume mounts
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -679,6 +684,47 @@ async function buildContainerArgs(
   // the image tag and everything after it are entrypoint arguments.
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
   appendImageAndCommand(args, imageTag);
+
+  return args;
+}
+
+/**
+ * Build the least-privilege docker security flags for the agent container
+ * (ADR-0029). Pure + exported so the conservative defaults are unit-testable.
+ *
+ * Two layers, deliberately asymmetric in default:
+ *
+ *  1. `--security-opt=no-new-privileges:true` — ALWAYS on. This only blocks
+ *     `execve` from gaining privileges via setuid/setgid binaries or file
+ *     capabilities. The agent already runs deprivileged (Dockerfile `USER
+ *     node`, runtime `--user hostUid:hostGid`), so it has no privileges to
+ *     escalate to in the first place; chromium in a non-root container does
+ *     not use its setuid sandbox helper (it falls back to the userns/seccomp
+ *     sandbox), and agent-browser/Playwright, bun, git, curl and outbound
+ *     HTTP all run as the unprivileged user — none of them rely on a setuid
+ *     transition. So this flag costs us nothing and shrinks the escalation
+ *     surface. See the browsing-path review in ADR-0029.
+ *
+ *  2. `--cap-drop` — OPT-IN ONLY, default off. Dropping Linux capabilities is
+ *     higher risk: a wrong drop could silently break the browser or network
+ *     in ways that only surface at runtime, and this batch's hard rule is
+ *     "never break the running chromium browsing path". So we leave the
+ *     kernel/Docker default capability set untouched unless an operator
+ *     explicitly sets `AGENT_DROP_CAPS`. The value is a comma/space-separated
+ *     list of capabilities to drop (e.g. `NET_RAW,NET_ADMIN`), each emitted as
+ *     its own `--cap-drop=<CAP>`. Operators who have validated their workload
+ *     can tighten this; the platform ships zero-risk.
+ */
+export function buildSecurityArgs(env: NodeJS.ProcessEnv): string[] {
+  const args: string[] = ['--security-opt=no-new-privileges:true'];
+
+  const dropCaps = (env.AGENT_DROP_CAPS ?? '')
+    .split(/[,\s]+/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  for (const cap of dropCaps) {
+    args.push(`--cap-drop=${cap}`);
+  }
 
   return args;
 }

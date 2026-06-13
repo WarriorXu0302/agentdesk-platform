@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   appendImageAndCommand,
   buildRunnerTracingEnvArgs,
+  buildSecurityArgs,
   checkBaseImage,
   resolveProviderName,
 } from './container-runner.js';
@@ -53,6 +54,38 @@ describe('checkBaseImage', () => {
 
   it('returns false without throwing when the image is missing (non-fatal precheck)', () => {
     expect(checkBaseImage(() => false)).toBe(false);
+  });
+});
+
+describe('buildSecurityArgs (ADR-0029 least-privilege)', () => {
+  it('always emits --security-opt=no-new-privileges:true', () => {
+    expect(buildSecurityArgs({})).toContain('--security-opt=no-new-privileges:true');
+  });
+
+  it('does NOT drop any capabilities by default (zero-risk for browsing/network)', () => {
+    const args = buildSecurityArgs({});
+    expect(args.some((a) => a.startsWith('--cap-drop'))).toBe(false);
+    // The only flag should be no-new-privileges.
+    expect(args).toEqual(['--security-opt=no-new-privileges:true']);
+  });
+
+  it('emits one --cap-drop per capability when AGENT_DROP_CAPS is set', () => {
+    const args = buildSecurityArgs({ AGENT_DROP_CAPS: 'NET_RAW,NET_ADMIN' });
+    expect(args).toContain('--cap-drop=NET_RAW');
+    expect(args).toContain('--cap-drop=NET_ADMIN');
+    // no-new-privileges is still present alongside the opt-in drops.
+    expect(args).toContain('--security-opt=no-new-privileges:true');
+  });
+
+  it('tolerates spaces, extra commas, and surrounding whitespace in AGENT_DROP_CAPS', () => {
+    const args = buildSecurityArgs({ AGENT_DROP_CAPS: ' NET_RAW ,, NET_ADMIN  CHOWN ' });
+    const drops = args.filter((a) => a.startsWith('--cap-drop'));
+    expect(drops).toEqual(['--cap-drop=NET_RAW', '--cap-drop=NET_ADMIN', '--cap-drop=CHOWN']);
+  });
+
+  it('treats an empty AGENT_DROP_CAPS as no drops', () => {
+    expect(buildSecurityArgs({ AGENT_DROP_CAPS: '' })).toEqual(['--security-opt=no-new-privileges:true']);
+    expect(buildSecurityArgs({ AGENT_DROP_CAPS: '   ' })).toEqual(['--security-opt=no-new-privileges:true']);
   });
 });
 

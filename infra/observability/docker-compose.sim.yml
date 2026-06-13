@@ -1,6 +1,13 @@
+# Least-privilege hardening (ADR-0029): mirrors docker-compose.prod.yml —
+# cap_drop: [ALL] + no-new-privileges on every service, plus readiness
+# healthchecks where the image ships a usable probe binary.
 services:
   phoenix:
     image: arizephoenix/phoenix:version-8.0.0
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     ports:
       - "6006:6006"
       - "4317:4317"
@@ -11,6 +18,8 @@ services:
       PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
     volumes:
       - agentdesk_phoenix_sim_data:/mnt/data
+    # No healthcheck: the phoenix image ships no probe binary we can rely on
+    # across versions (same rationale as prod).
 
   # Same Prometheus + Alertmanager as prod, reusing the same config files, so
   # the metrics→alert loop can be smoke-tested without standing up Postgres or
@@ -18,6 +27,10 @@ services:
   # the same machine to exercise it.
   prometheus:
     image: prom/prometheus:v2.54.1
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     depends_on:
       - alertmanager
     ports:
@@ -31,9 +44,18 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - agentdesk_prometheus_sim_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     ports:
       - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
     command:
@@ -41,6 +63,11 @@ services:
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - agentdesk_alertmanager_sim_data:/alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 volumes:
   agentdesk_phoenix_sim_data:

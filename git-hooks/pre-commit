@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# AgentDesk pre-commit hook (ADR-0029, supply-chain / least-privilege batch).
+#
+# Committed hook — no Python pre-commit framework, no new runtime deps. Install
+# once per clone with:  pnpm hooks:install   (sets core.hooksPath=git-hooks)
+#
+# Gates, in order (any failure aborts the commit with a non-zero exit):
+#   1. Secret scan over the STAGED diff (private keys, AWS keys, known-weak
+#      placeholders) — see scripts/scan-secrets.ts.
+#   2. pnpm format:check (prettier).
+#   3. pnpm lint (eslint).
+#
+# Assumes pnpm + node are on PATH (true in any dev environment that can build
+# this repo). Passes silently — emitting nothing — when there's nothing wrong,
+# so it never gets in the way of a clean commit.
+#
+# Escape hatch for a genuine false-positive: `git commit --no-verify`.
+
+set -euo pipefail
+
+# Resolve the repo root so the hook works regardless of the invoking cwd.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+fail() {
+  echo "" >&2
+  echo "✖ pre-commit: $1" >&2
+  echo "  (bypass with 'git commit --no-verify' only if you're sure)" >&2
+  echo "" >&2
+  exit 1
+}
+
+# --- 1. Secret scan (staged diff) -------------------------------------------
+# scan-secrets.ts reads `git diff --cached` itself and exits non-zero on a hit.
+if ! pnpm exec tsx scripts/scan-secrets.ts; then
+  fail "staged changes contain a secret/placeholder (see above)"
+fi
+
+# --- 2. Formatting -----------------------------------------------------------
+if ! pnpm run format:check >/dev/null 2>&1; then
+  # Re-run without silencing so the developer sees which files are unformatted.
+  pnpm run format:check || true
+  fail "prettier format check failed — run 'pnpm format' and re-stage"
+fi
+
+# --- 3. Lint -----------------------------------------------------------------
+if ! pnpm run lint; then
+  fail "eslint failed — fix the reported issues (or 'pnpm lint:fix') and re-stage"
+fi
+
+exit 0

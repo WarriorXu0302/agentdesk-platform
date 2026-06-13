@@ -100,7 +100,15 @@ cd container/agent-runner && bun install && cd ../..
 
 # 跑一次 init
 pnpm exec tsx scripts/init-enterprise-topology.ts
+
+# 装 git pre-commit 钩子（密钥扫描 + format:check + lint，ADR-0029）
+pnpm hooks:install
 ```
+
+> `pnpm hooks:install` 把 `core.hooksPath` 指到仓库内的 `git-hooks/`（committed
+> 钩子，无 Python pre-commit 依赖）。每次 clone 后跑一次。钩子在暂存区命中私钥 /
+> AWS key / 已知占位密钥（复用 `src/security/known-weak-secrets.ts`）、prettier 或
+> eslint 失败时阻止提交；干净提交时静默通过。误报可用 `git commit --no-verify` 临时绕过。
 
 ### 2.2 改 host 代码
 

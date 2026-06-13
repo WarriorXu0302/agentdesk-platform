@@ -1,6 +1,28 @@
+# Least-privilege hardening (ADR-0029): every long-running service drops all
+# Linux capabilities (cap_drop: [ALL]) and forbids privilege escalation
+# (no-new-privileges). These are stock upstream images that need neither extra
+# caps nor setuid transitions; if a future service genuinely needs a cap, add
+# it back explicitly with cap_add rather than relaxing cap_drop. Healthchecks
+# let `docker compose` and depends_on:condition gate on readiness.
 services:
   postgres:
     image: postgres:16
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    # postgres is the one exception to "stock images need no caps": the official
+    # entrypoint starts as root, chowns the data dir, then gosu-drops to the
+    # postgres user — so it needs CHOWN/FOWNER/DAC_OVERRIDE (fix perms) and
+    # SETUID/SETGID (drop privileges). Without these, cap_drop:[ALL] crashes it
+    # on first boot ("operation not permitted"). Verified this set boots clean.
+    # Other services run non-root directly and keep cap_drop:[ALL] bare.
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     environment:
       POSTGRES_USER: ${PHOENIX_POSTGRES_USER:-phoenix}
       POSTGRES_PASSWORD: ${PHOENIX_POSTGRES_PASSWORD:-phoenix_local_only}
@@ -10,9 +32,18 @@ services:
     volumes:
       - agentdesk_phoenix_postgres_data:/var/lib/postgresql/data
       - ./init/grafana_readonly.sql:/docker-entrypoint-initdb.d/10-grafana_readonly.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PHOENIX_POSTGRES_USER:-phoenix} -d ${PHOENIX_POSTGRES_DB:-phoenix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   phoenix:
     image: arizephoenix/phoenix:version-8.0.0
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     depends_on:
       - postgres
     ports:
@@ -23,9 +54,16 @@ services:
       PHOENIX_SQL_DATABASE_URL: postgresql://${PHOENIX_POSTGRES_USER:-phoenix}:${PHOENIX_POSTGRES_PASSWORD:-phoenix_local_only}@postgres:5432/${PHOENIX_POSTGRES_DB:-phoenix}
       PHOENIX_ENABLE_PROMETHEUS: "true"
       PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: "7"
+    # No healthcheck: the phoenix image ships no curl/wget/healthz CLI we can
+    # rely on across versions. Liveness is observed indirectly (grafana/prom
+    # scrape failures). Add one here if a future image bakes in a probe binary.
 
   prometheus:
     image: prom/prometheus:v2.54.1
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     depends_on:
       - alertmanager
     ports:
@@ -42,9 +80,20 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - agentdesk_prometheus_data:/prometheus
+    # The prom/prometheus image bundles `wget` (busybox); hit its own
+    # /-/healthy readiness endpoint on the in-container port 9090.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     ports:
       - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
     command:
@@ -52,9 +101,18 @@ services:
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - agentdesk_alertmanager_data:/alertmanager
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   grafana:
     image: grafana/grafana:11.0.0
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
     depends_on:
       - postgres
       - phoenix
@@ -73,6 +131,12 @@ services:
       - agentdesk_grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    # The grafana image ships wget (busybox); /api/health returns 200 when up.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 volumes:
   agentdesk_phoenix_postgres_data:
