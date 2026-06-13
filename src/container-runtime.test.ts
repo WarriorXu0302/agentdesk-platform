@@ -11,10 +11,14 @@ vi.mock('./log.js', () => ({
   },
 }));
 
-// Mock child_process — store the mock fn so tests can configure it
+// Mock child_process — store the mock fns so tests can configure them.
+// execFile is needed because container-runtime.ts wraps it via promisify() at
+// module load for stopContainerAsync.
 const mockExecSync = vi.fn();
+const mockExecFile = vi.fn();
 vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
+  execFile: (...args: unknown[]) => mockExecFile(...args),
 }));
 
 import {
@@ -41,10 +45,11 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('calls docker stop for valid container names', () => {
+  it('calls docker stop for valid container names (bounded by a timeout)', () => {
     stopContainer('nanoclaw-test-123');
     expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`, {
       stdio: 'pipe',
+      timeout: 5000,
     });
   });
 
@@ -108,9 +113,11 @@ describe('cleanupOrphans', () => {
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(2, `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`, {
       stdio: 'pipe',
+      timeout: 5000,
     });
     expect(mockExecSync).toHaveBeenNthCalledWith(3, `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group2-222`, {
       stdio: 'pipe',
+      timeout: 5000,
     });
     expect(log.info).toHaveBeenCalledWith('Stopped orphaned containers', {
       count: 2,

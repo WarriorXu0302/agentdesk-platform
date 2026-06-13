@@ -23,7 +23,13 @@ import {
   TIMEZONE,
 } from './config.js';
 import { readContainerConfig, writeContainerConfig } from './container-config.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
+  readonlyMountArgs,
+  stopContainer,
+  stopContainerAsync,
+} from './container-runtime.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { revokeAllProxyTokens, revokeProxyTokensForSession } from './db/gateway-proxy-token.js';
@@ -373,11 +379,16 @@ export async function stopAllContainers(reason: string): Promise<void> {
   const entries = [...activeContainers.entries()];
   if (entries.length === 0) return;
   log.info('Stopping active containers on shutdown', { count: entries.length, reason });
+  // Use the ASYNC stop so the calls run concurrently and do NOT block the event
+  // loop — otherwise dozens of serial synchronous `docker stop` calls would
+  // blow past the shutdown deadline (whose timer can't even fire while the loop
+  // is blocked), and a hung daemon would wedge exit forever. Each is bounded by
+  // STOP_TIMEOUT_MS; a failure falls back to SIGKILLing the child process.
   await Promise.allSettled(
     entries.map(async ([sessionId, entry]) => {
       recentlyKilled.add(sessionId);
       try {
-        stopContainer(entry.containerName);
+        await stopContainerAsync(entry.containerName);
       } catch {
         entry.process.kill('SIGKILL');
       }

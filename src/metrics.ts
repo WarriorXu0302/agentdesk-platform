@@ -191,6 +191,17 @@ export const deliveryPermanentFailuresTotal = new client.Counter({
   registers: [registry],
 });
 
+export const dataDirFreeRatio = new client.Gauge({
+  name: `${METRIC_PREFIX}_data_dir_free_ratio`,
+  help: 'Free space ratio (0..1) of the filesystem holding DATA_DIR, sampled by the host sweep',
+  // Single-host killer: the central DB stays small but long-lived session DBs +
+  // inbox attachment dirs grow unbounded (whole-session archival is opt-in/OFF
+  // by default), and SQLITE_FULL across the three DBs stalls everything with no
+  // prior signal. This gauge is the early-warning safety net — alert well before
+  // the volume fills. Deployment-agnostic (ratio, not absolute bytes).
+  registers: [registry],
+});
+
 export const unhandledRejectionsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_unhandled_rejections_total`,
   help: 'Unhandled promise rejections caught by the process-level handler',

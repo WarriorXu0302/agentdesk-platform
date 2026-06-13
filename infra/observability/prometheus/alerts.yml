@@ -250,3 +250,48 @@ groups:
             agentdesk_unhandled_rejections_total is non-zero. A promise error
             escaped its call site; the host logged it but kept running. Check
             host stderr for the 'Unhandled rejection' lines and fix the path.
+
+      # Disk filling: session DBs + inbox attachments grow unbounded (whole-
+      # session archival is opt-in/OFF by default). SQLITE_FULL across the three
+      # DBs stalls everything; this is the early warning. for:10m covers the boot
+      # window before the first sweep tick sets the gauge.
+      - alert: AgentDeskDataDiskLow
+        expr: agentdesk_data_dir_free_ratio < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: DATA_DIR free space below 10%
+          description: >-
+            agentdesk_data_dir_free_ratio < 0.10. The data volume is filling —
+            SQLITE_FULL will stall inbound/outbound once it's full. Enable
+            session archival (AGENTDESK_SESSION_TTL_DAYS) and/or audit retention
+            (AGENTDESK_AUDIT_RETAIN_DAYS), prune old archives, or grow the volume.
+            See RUNBOOK §3.10.
+      - alert: AgentDeskDataDiskCritical
+        expr: agentdesk_data_dir_free_ratio < 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: DATA_DIR free space below 5%
+          description: >-
+            agentdesk_data_dir_free_ratio < 0.05. Imminent SQLITE_FULL — act now
+            (free space / grow the volume). See RUNBOOK §3.10.
+
+      # Signing-proxy audit write failing: best-effort intent/final writes hit a
+      # central-DB error. The pre-forward intent is fail-closed (call refused),
+      # but a finalize failure leaves a row mislabeled 'pending' — investigate
+      # central-DB pressure (busy_timeout / disk).
+      - alert: AgentDeskGatewaySigningAuditFailing
+        expr: rate(agentdesk_gateway_signing_proxy_total{outcome="audit_write_failed"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Signing-proxy audit writes are failing
+          description: >-
+            agentdesk_gateway_signing_proxy_total{outcome="audit_write_failed"}
+            is non-zero. The central DB is rejecting audit writes — pre-forward
+            intents fail closed (signed call refused), finalize failures leave a
+            'pending' row. Check DB pressure / disk. See RUNBOOK §3.8.

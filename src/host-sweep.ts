@@ -34,6 +34,9 @@ import { getAgentGroup } from './db/agent-groups.js';
 import { pruneInboundDedup } from './db/inbound-dedup.js';
 import { purgeStaleProxyTokens } from './db/gateway-proxy-token.js';
 import { purgeGatewayAudit } from './db/gateway-audit.js';
+import { purgeClassificationLog } from './db/classification-log.js';
+import { purgeEnterpriseAudit } from './db/enterprise-audit.js';
+import { purgeDmAudit } from './db/dm-audit.js';
 import { getDb, hasTable } from './db/connection.js';
 import {
   countDueMessages,
@@ -47,7 +50,13 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { inboundProcessingPermanentFailuresTotal, sessionCount, sessionLifecycleTotal } from './metrics.js';
+import { DATA_DIR } from './config.js';
+import {
+  dataDirFreeRatio,
+  inboundProcessingPermanentFailuresTotal,
+  sessionCount,
+  sessionLifecycleTotal,
+} from './metrics.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import { runSessionLifecycleSweep } from './session-archive.js';
@@ -177,15 +186,33 @@ async function sweep(): Promise<void> {
     log.warn('Gateway proxy token purge failed', { err });
   }
 
+  // Sample DATA_DIR free space so an operator gets an early warning before the
+  // volume fills and SQLITE_FULL stalls the three-DB pipeline (session DBs +
+  // inbox attachments grow unbounded with archival OFF by default). Best-effort.
+  try {
+    const st = fs.statfsSync(DATA_DIR);
+    if (st.blocks > 0) dataDirFreeRatio.set(st.bavail / st.blocks);
+  } catch (err) {
+    log.debug('DATA_DIR statfs failed — skipping disk gauge', { err });
+  }
+
   // Opt-in audit retention (default OFF — audit data is never deleted silently).
   // gateway_audit grows per gateway call (incl. the signing proxy's rows); when
   // an operator sets AGENTDESK_AUDIT_RETAIN_DAYS>0, trim rows older than that.
   if (AUDIT_RETAIN_DAYS > 0) {
-    try {
-      const purged = purgeGatewayAudit(AUDIT_RETAIN_DAYS * 24 * 60 * 60_000);
-      if (purged > 0) log.debug('Purged old gateway_audit rows', { purged, retainDays: AUDIT_RETAIN_DAYS });
-    } catch (err) {
-      log.warn('gateway_audit retention purge failed', { err });
+    const olderThanMs = AUDIT_RETAIN_DAYS * 24 * 60 * 60_000;
+    for (const [name, purge] of [
+      ['gateway_audit', purgeGatewayAudit],
+      ['classification_log', purgeClassificationLog],
+      ['enterprise_audit', purgeEnterpriseAudit],
+      ['dm_audit', purgeDmAudit],
+    ] as const) {
+      try {
+        const purged = purge(olderThanMs);
+        if (purged > 0) log.debug('Purged old audit rows', { table: name, purged, retainDays: AUDIT_RETAIN_DAYS });
+      } catch (err) {
+        log.warn('audit retention purge failed', { table: name, err });
+      }
     }
   }
 

@@ -1,5 +1,12 @@
 import { getDb } from './connection.js';
 
+/** Opt-in retention: delete enterprise_audit rows older than `olderThanMs`
+ *  (idx_enterprise_audit_at). Gated default-OFF by the caller (host-sweep). */
+export function purgeEnterpriseAudit(olderThanMs: number, now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+  return getDb().prepare(`DELETE FROM enterprise_audit WHERE occurred_at < ?`).run(cutoff).changes;
+}
+
 export interface EnterpriseAuditEntry {
   eventType: string;
   messagingGroupId?: string | null;

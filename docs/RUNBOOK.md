@@ -332,6 +332,23 @@ pnpm exec tsx scripts/configure-enterprise-gateway.ts --help
 带 `agent_group` 和坏 `pattern`。改对应 group 的 `engage_pattern`（container.json / DB），
 下次入站即恢复。
 
+### 3.10 磁盘将满（`data_dir_free_ratio` 偏低）
+
+单机最常见的"慢性"故障:中央 DB 不大,但每个长生命周期 session 的 inbound/outbound.db +
+`inbox/<msgId>/` 附件目录**只增不减**(整 session 归档默认 OFF),磁盘填满后三个库齐发
+`SQLITE_FULL`,入站/出站全停。host-sweep 每 tick 采样 DATA_DIR 空闲比例到
+`agentdesk_data_dir_free_ratio`(<0.10 告警,<0.05 critical)。处置:
+```bash
+# 看占用大头(会话 DB + 附件)
+du -sh data/v2-sessions/* 2>/dev/null | sort -h | tail -20
+du -sh data/ data/v2.db data/v2-sessions-archive/ 2>/dev/null
+```
+- 开 session 归档:`AGENTDESK_SESSION_TTL_DAYS=N`(把久不活动的 session 打包进归档目录,
+  释放其 DB + 附件);久了再物理删归档(见 §3.6 / §5)。
+- 开审计保留:`AGENTDESK_AUDIT_RETAIN_DAYS=N`(host-sweep 修剪 gateway_audit /
+  classification_log / enterprise_audit / dm_audit 旧行;默认 0=永不删)。
+- 或直接扩卷。
+
 ---
 
 ## 4. 容量与资源

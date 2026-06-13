@@ -255,11 +255,24 @@ describe('processSigningProxyRequest (ADR-0034 security core)', () => {
     expect(cap.fetches[0].body).toBe(raw);
   });
 
-  it('still signs+forwards when audit writes throw (best-effort audit, ADR-0034 #21)', async () => {
+  it('fail-CLOSED when the pre-forward intent audit write throws (never sign without a durable row)', async () => {
     const cap = makeDeps({
       recordIntent: () => {
         throw new Error('central DB busy');
       },
+    });
+    const r = await processSigningProxyRequest(
+      { method: 'POST', pathname: '/execute', token: 'good', sourceIp: 'x', rawBody: body() },
+      cap.deps,
+    );
+    // The privileged signed call MUST NOT happen if its audit row couldn't be written.
+    expect(r.httpStatus).toBe(503);
+    expect(r.outcome).toBe('audit_write_failed');
+    expect(cap.fetches).toHaveLength(0);
+  });
+
+  it('still signs+forwards when only the FINALIZE audit write throws (best-effort — call already happened)', async () => {
+    const cap = makeDeps({
       finalize: () => {
         throw new Error('central DB busy');
       },
@@ -268,7 +281,8 @@ describe('processSigningProxyRequest (ADR-0034 security core)', () => {
       { method: 'POST', pathname: '/execute', token: 'good', sourceIp: 'x', rawBody: body() },
       cap.deps,
     );
-    // Audit failure must NOT block the actual signing/forwarding.
+    // The intent row was written + the forward succeeded; a finalize failure
+    // must not retroactively block the already-made call.
     expect(r.httpStatus).toBe(200);
     expect(r.outcome).toBe('signed');
     expect(cap.fetches).toHaveLength(1);

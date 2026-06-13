@@ -27,7 +27,7 @@ import path from 'path';
 import { DATA_DIR } from '../src/config.js';
 import { initDb } from '../src/db/connection.js';
 import { runMigrations } from '../src/db/migrations/index.js';
-import { getActiveSessions, getSession } from '../src/db/sessions.js';
+import { getAllSessions, getSession } from '../src/db/sessions.js';
 import { listFailedInbound, requeueFailedInbound } from '../src/db/session-db.js';
 import { openInboundDb } from '../src/session-manager.js';
 import type { Session } from '../src/types.js';
@@ -108,9 +108,9 @@ const db = initDb(path.join(DATA_DIR, 'v2.db'));
 runMigrations(db);
 
 if (argv.length === 0 || (argv.length === 1 && argv[0] === '--list')) {
-  listAll(getActiveSessions());
+  listAll(getAllSessions());
 } else if (argv[0] === '--requeue-all' && argv.length === 1) {
-  requeueAll(getActiveSessions());
+  requeueAll(getAllSessions());
 } else if (argv[0] === '--session' && argv[2] === '--message' && argv.length === 4) {
   requeueOne(argv[1], argv[3]);
 } else {

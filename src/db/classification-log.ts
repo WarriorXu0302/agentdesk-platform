@@ -1,5 +1,12 @@
 import { getDb } from './connection.js';
 
+/** Opt-in retention: delete classification_log rows older than `olderThanMs`
+ *  (idx_classification_log_at). Gated default-OFF by the caller (host-sweep). */
+export function purgeClassificationLog(olderThanMs: number, now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+  return getDb().prepare(`DELETE FROM classification_log WHERE occurred_at < ?`).run(cutoff).changes;
+}
+
 export interface ClassificationLogEntry {
   classificationId?: string | null;
   sessionId?: string | null;

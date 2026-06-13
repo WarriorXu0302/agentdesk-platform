@@ -18,8 +18,11 @@
  * dashboard (the per-failure increment in router.ts is lost across a restart).
  */
 import { countIngressByStatus } from './db/inbound-ingress.js';
+import { listFailedInbound } from './db/session-db.js';
+import { getActiveSessions } from './db/sessions.js';
 import { log } from './log.js';
-import { inboundIngressFailedTotal } from './metrics.js';
+import { inboundIngressFailedTotal, inboundProcessingPermanentFailuresTotal } from './metrics.js';
+import { openInboundDb } from './session-manager.js';
 
 export function surfaceOrphanedIngress(): { received: number; failed: number } {
   let counts: { received: number; failed: number };
@@ -51,4 +54,46 @@ export function surfaceOrphanedIngress(): { received: number; failed: number } {
   }
 
   return counts;
+}
+
+/**
+ * Startup re-surface of inbound DEAD-LETTERS: messages_in rows marked
+ * status='failed' by host-sweep retry exhaustion. The per-failure metric
+ * increment (host-sweep) is lost across a restart, so a standing backlog would
+ * otherwise be invisible until it recurs — exactly like surfaceOrphanedIngress
+ * does for the ingress ledger. Scans each active session's inbound.db
+ * (open-read-close), re-surfaces the count on the metric under a synthetic
+ * label, and warns. Read-only + never throws (matches the other startup checks).
+ */
+export function surfaceInboundDeadLetters(): number {
+  let totalFailed = 0;
+  let sessions: ReturnType<typeof getActiveSessions>;
+  try {
+    sessions = getActiveSessions();
+  } catch (err) {
+    log.warn('Inbound dead-letter scan skipped — could not list sessions', { err });
+    return 0;
+  }
+  for (const session of sessions) {
+    let db: ReturnType<typeof openInboundDb> | undefined;
+    try {
+      db = openInboundDb(session.agent_group_id, session.id);
+      const failed = listFailedInbound(db).length;
+      if (failed > 0) {
+        totalFailed += failed;
+        inboundProcessingPermanentFailuresTotal.labels('__startup_backlog__').inc(failed);
+      }
+    } catch {
+      /* session dir not provisioned / unreadable — skip */
+    } finally {
+      db?.close();
+    }
+  }
+  if (totalFailed > 0) {
+    log.warn('Inbound dead-letters present at startup — user requests dropped after retry exhaustion', {
+      count: totalFailed,
+      remediation: 'pnpm exec tsx scripts/requeue-inbound.ts --list   (then --session <id> --message <id>)',
+    });
+  }
+  return totalFailed;
 }

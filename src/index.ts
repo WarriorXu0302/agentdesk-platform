@@ -18,7 +18,7 @@ import { checkBaseImage, cleanupProxyRuntimeOnBoot, stopAllContainers } from './
 import { validateStartupConfig } from './config-validate.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
 import { startGatewaySigningProxy, stopGatewaySigningProxy } from './gateway-signing-proxy.js';
-import { surfaceOrphanedIngress } from './ingress-recovery-check.js';
+import { surfaceInboundDeadLetters, surfaceOrphanedIngress } from './ingress-recovery-check.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import {
   startActiveDeliveryPoll,
@@ -115,6 +115,9 @@ async function main(): Promise<void> {
   // (ADR-0022). Read-only — never auto-replays (that would bypass adapter-layer
   // dedup); remediation is the explicit replay CLI.
   surfaceOrphanedIngress();
+  // Re-surface inbound dead-letters (messages_in status='failed' from retry
+  // exhaustion) so a standing backlog is visible on the metric after a restart.
+  surfaceInboundDeadLetters();
 
   // 3. Channel adapters
   // 3a. Fork-free channel extensions (ADR-0031) — let operator-controlled

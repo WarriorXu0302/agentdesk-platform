@@ -352,21 +352,35 @@ export async function processSigningProxyRequest(
   });
 
   // 8. Two-phase audit: intent BEFORE forwarding (survives a crash window).
+  //    This one is FAIL-CLOSED, not best-effort: the audit trail for a privileged
+  //    signed backend call is load-bearing (CLAUDE.md), so we never sign+forward
+  //    without a durable intent row. If the intent write fails, refuse (503) and
+  //    do NOT forward. (finalize below stays best-effort — by then the call has
+  //    already happened, so a finalize failure must not retroactively block it.)
   const startedAt = deps.now();
-  recordIntent({
-    proxyRequestId,
-    sessionId: record.sessionId,
-    agentGroupId: record.agentGroupId,
-    signedAsGroup: record.agentGroupId,
-    tokenJti: record.jti,
-    path: input.pathname,
-    operation,
-    userId,
-    requesterSource,
-    requesterSourceCoerced,
-    idempotencyKey,
-    inputHash,
-  });
+  try {
+    deps.recordIntent({
+      proxyRequestId,
+      sessionId: record.sessionId,
+      agentGroupId: record.agentGroupId,
+      signedAsGroup: record.agentGroupId,
+      tokenJti: record.jti,
+      path: input.pathname,
+      operation,
+      userId,
+      requesterSource,
+      requesterSourceCoerced,
+      idempotencyKey,
+      inputHash,
+    });
+  } catch (err) {
+    gatewaySigningProxyTotal.labels('audit_write_failed').inc();
+    log.error('Gateway signing proxy: intent audit write failed — refusing to sign (fail-closed)', {
+      proxyRequestId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return jsonError(503, 'AUDIT_UNAVAILABLE', 'audit write failed; refusing to sign', 'audit_write_failed');
+  }
 
   const target = `${sanitizeBaseUrl(gateway.baseUrl)}${input.pathname}`;
   const controller = new AbortController();

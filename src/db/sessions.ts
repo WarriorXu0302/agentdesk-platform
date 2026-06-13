@@ -111,6 +111,16 @@ export function getActiveSessions(): Session[] {
 }
 
 /**
+ * Every session regardless of status (active + archived). Recovery tooling that
+ * scans per-session DBs (e.g. scripts/requeue-inbound.ts) must use this, not
+ * getActiveSessions — a dead-lettered message most often sits in a session that
+ * has since aged into 'archived', which the active-only query would never show.
+ */
+export function getAllSessions(): Session[] {
+  return getDb().prepare('SELECT * FROM sessions').all() as Session[];
+}
+
+/**
  * Active sessions whose last_active is older than `beforeIso` and whose
  * container isn't currently running. Running sessions are never archived —
  * archival tears down the filesystem out from under the container.
