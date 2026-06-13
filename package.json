@@ -10,6 +10,7 @@
     "hooks:install": "git config core.hooksPath git-hooks",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "quickstart": "bash quickstart.sh",
     "typecheck": "tsc --noEmit",
     "init:enterprise": "tsx scripts/init-enterprise-topology.ts",
     "configure:enterprise-gateway": "tsx scripts/configure-enterprise-gateway.ts",

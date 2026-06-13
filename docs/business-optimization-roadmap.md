@@ -22,6 +22,7 @@
 ## 主题一:运营者上手与价值实现速度(降低首次部署门槛)
 
 ### 1.1 缺少一键 quickstart 脚本
+> ✅ **已实现**(上手 batch):新增 `quickstart.sh` + `pnpm quickstart`。自动按序跑确定性步骤(install → container:build → init:enterprise **带默认示例 workers** `research-worker,ops-worker`),然后打印剩下两步(接后端网关 URL、配通道凭证——这两步需运营者特定信息,无法猜)的明确指引,含本地 demo 路径(跑 reference-gateway + configure + dev + chat)。支持 `--skip-build` / `QUICKSTART_WORKERS` 覆盖。README 快速启动段加了一键入口说明。
 - **现状**:`README.md` L105-192 提供 5 步启动,`examples/README.md` L39-128 是 6 步手工演练,但**没有 `quickstart.sh` 或 make target** 把整个流程打包。`init-enterprise` 默认创建空白 frontdesk,运营者需自己理解要加 `--workers` 才能得到可用拓扑。
 - **业务影响**:中等。30-60 分钟成本主要花在"理解编排顺序"而非执行困难。"需要自己编排"的心理障碍大于真实工作量。
 - **建议**:写 `quickstart.sh`,顺序执行 install → container:build → init:enterprise(带默认 workers)→ configure-gateway → dev,STDOUT 显示进度。把"手工编排"变成"一键启动"。
@@ -393,7 +394,7 @@
 | ✅ **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
 | ✅ **4.3 namespace 可发现性** | S | 记忆(小 schema) |
 | ✅ **6.4 交互卡失败 fallback** | S | 渠道体验 |
-| **1.1 quickstart.sh** | S | 上手速度 |
+| ✅ **1.1 quickstart.sh** | S | 上手速度 |
 | ✅ **6.1 投递失败用户反馈** | M | 渠道体验 |
 | 🟡 **6.2 审批卡过期通知**(核心已做;过期窗口可配/倒计时未做) | M | 渠道体验 |
 | **2.1 误路由反馈机制** | M | 对话质量 |
