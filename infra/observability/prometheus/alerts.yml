@@ -222,6 +222,23 @@ groups:
             forge its requests. Provision a key via
             scripts/configure-enterprise-gateway.ts. See RUNBOOK §3.8.
 
+      # Base agent image missing at boot: the host stays up by design (channels
+      # + /metrics keep serving) but NO agent can spawn, so every inbound message
+      # will fail. Signal is set by the boot precheck (checkBaseImage); refreshed
+      # on host restart.
+      - alert: AgentDeskBaseImageMissing
+        expr: agentdesk_agent_base_image_present == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Base agent image not built — agents cannot spawn
+          description: >-
+            agentdesk_agent_base_image_present == 0. The host booted without the
+            base agent image present locally, so every session wake fails with
+            "No such image". Run `pnpm container:build` and restart the host. A
+            common cause is skipping the build step after init:enterprise.
+
       # Broken agent regex: an engage_pattern failed to compile, so that agent
       # is fail-closed and silently dropping ALL its inbound (ADR-0019).
       - alert: AgentDeskEngagePatternInvalid

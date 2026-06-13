@@ -36,7 +36,7 @@ import { revokeAllProxyTokens, revokeProxyTokensForSession } from './db/gateway-
 import { gatewaySigningProxyEnabled, mintSessionProxyToken } from './gateway-signing-proxy.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
-import { containerExitsTotal, wakeRejectedTotal } from './metrics.js';
+import { agentBaseImagePresent, containerExitsTotal, wakeRejectedTotal } from './metrics.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
@@ -157,12 +157,16 @@ function defaultInspectImage(image: string): boolean {
 export function checkBaseImage(inspectImage: (image: string) => boolean = defaultInspectImage): boolean {
   if (inspectImage(CONTAINER_IMAGE)) {
     log.debug('Base agent image present', { image: CONTAINER_IMAGE });
+    // Surface the precheck result as a gauge so a missing image is observable
+    // (alert-backed, ADR-0021) and not just a boot log line that scrolls away.
+    agentBaseImagePresent.set(1);
     return true;
   }
   log.error('Base agent image not found — agents cannot spawn until it is built. Run: pnpm container:build', {
     image: CONTAINER_IMAGE,
     runtime: CONTAINER_RUNTIME_BIN,
   });
+  agentBaseImagePresent.set(0);
   return false;
 }
 

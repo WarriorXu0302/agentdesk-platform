@@ -736,8 +736,12 @@ export async function run(argv: string[]): Promise<void> {
     console.log(`  channel:   ${sharedEntry.channel_type} ${sharedEntry.platform_id}`);
   }
   console.log('');
+  console.log('Next steps:');
   console.log(
-    'Next step: run `pnpm exec tsx scripts/configure-enterprise-gateway.ts --base-url <gateway>` and point these groups at your backend capability layer.',
+    '  1. Build the agent image: `pnpm container:build` — REQUIRED before the first message. Skipping it lets the host boot but every wake fails with "No such image".',
+  );
+  console.log(
+    '  2. Point these groups at your backend: `pnpm exec tsx scripts/configure-enterprise-gateway.ts --base-url <gateway>`.',
   );
 }
 

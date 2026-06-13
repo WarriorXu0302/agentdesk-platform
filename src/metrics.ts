@@ -154,6 +154,12 @@ export const containerExitsTotal = new client.Counter({
   registers: [registry],
 });
 
+export const agentBaseImagePresent = new client.Gauge({
+  name: `${METRIC_PREFIX}_agent_base_image_present`,
+  help: 'Base agent image present locally at last boot precheck (1 = present, 0 = missing — agents cannot spawn until built)',
+  registers: [registry],
+});
+
 export const routeSeconds = new client.Histogram({
   name: `${METRIC_PREFIX}_route_seconds`,
   help: 'Router-side latency by phase',

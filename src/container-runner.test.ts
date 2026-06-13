@@ -188,6 +188,17 @@ describe('checkBaseImage', () => {
   it('returns false without throwing when the image is missing (non-fatal precheck)', () => {
     expect(checkBaseImage(() => false)).toBe(false);
   });
+
+  it('records the precheck result as a gauge so a missing image is alert-observable (roadmap 1.2)', async () => {
+    const { agentBaseImagePresent } = await import('./metrics.js');
+    const read = async () => (await agentBaseImagePresent.get()).values[0]?.value;
+
+    checkBaseImage(() => true);
+    expect(await read()).toBe(1);
+
+    checkBaseImage(() => false);
+    expect(await read()).toBe(0);
+  });
 });
 
 describe('buildSecurityArgs (ADR-0029 least-privilege)', () => {

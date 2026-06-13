@@ -28,10 +28,14 @@
 - **建议**:写 `quickstart.sh`,顺序执行 install → container:build → init:enterprise(带默认 workers)→ configure-gateway → dev,STDOUT 显示进度。把"手工编排"变成"一键启动"。
 - **工作量 S · 价值 中**
 
-### 1.2 容器镜像缺失时宿主"假装启动成功"
+### 1.2 容器镜像缺失时宿主"假装启动成功" — ✅ 已落地(d13d1e6)
 - **现状**:`src/container-runner.ts` 的 `checkBaseImage()` 在镜像缺失时**只记日志、不中止**;`src/index.ts:103` 调用后宿主继续启动。运营者跳过 `pnpm container:build` 时,宿主起来了,但第一条消息才失败。
 - **业务影响**:中等偏低。错误消息清晰,但"启动成功 + 首条消息失败"的体验割裂,诊断要多一跳。
 - **建议**:在 `init-enterprise` 输出末尾加一行明确提示 "Next: run pnpm container:build";或将 `checkBaseImage` 失败升级为 fail-fast(在 `initObservability` 之后)。
+- **已实现**(选了不破坏既有设计的两手,**没有**采纳 fail-fast —— `checkBaseImage` 的 docstring 明确"非致命是有意为之:镜像缺失绝不能让宿主崩溃,通道与 /metrics 必须继续在线",fail-fast 会削弱这条可靠性决策):
+  - **可观测化**:新增 gauge `agentdesk_agent_base_image_present`(1/0),`checkBaseImage` 在引导预检时落值;配套告警 `AgentDeskBaseImageMissing`(`== 0` for 10m,warning)。把"诊断要回翻 boot 日志"变成"告警自动触发"(符合 ADR-0021:指标必须有抓取者 + 告警承载体)。信号在宿主重启时刷新。
+  - **引导提示**:`init-enterprise-topology.ts` 末尾的 "Next steps" 现在显式列出第 1 步 `pnpm container:build`(REQUIRED before first message),直接堵住"跳过 build"这个失败入口。
+  - 测试:`container-runner.test.ts` 断言 gauge 在镜像存在/缺失时分别置 1/0。
 - **工作量 S · 价值 低**
 
 ### 1.3 `.env.example` 342 行,缺"最小可用"导航
