@@ -140,10 +140,11 @@
 - **建议**:扩 `/describe` 响应(可选)含操作 schema:`{operations:[{name, summary, schema:{properties:{field:{type,required,enum,pattern,...}}}, mutating, approval}]}`。后端暂返最小 schema;conformance runner 至少校验 name+summary。
 - **工作量 M · 价值 中**
 
-### 3.4 文件/附件处理不在契约内 ⭐
+### 3.4 文件/附件处理不在契约内 ⭐ — ✅ 已落地(bf3f76e)
 - **现状**:`gateway.ts:528-530` 固定 `Content-Type: application/json`。无 multipart、无 base64 约定、无二进制/大文档指引。"上传 PO PDF 审批"无标准传法。
 - **业务影响**:中等。真实流程涉及发票/BOM/合同/PDF,缺标准文件处理逼运营者自建 workaround(本地文件服务 / S3 引用 / 手工 base64)。
 - **建议**:在 `enterprise-erp-gateway.md` 文档化文件处理模式:(1) 小文件(<1MB)内联 base64;(2) URL 引用存 memory;(3) 大文档走带外文件服务(S3 签名 URL 经 context 传递)。Content-Type 保持 json,无需 multipart 改动。
+- **已实现**(纯文档,无契约/代码变更——建议本就是"保持 json,无 multipart"):`enterprise-erp-gateway.md` 新增 "File & attachment handling" 章节。先说清网关是 **JSON 控制面**(`input`/`context` 均 free-form `z.record`,Content-Type 固定 json,有意无 multipart),再讲入站文件落地 `/workspace/downloads/{messageId}/`(agent 用 Read/Bash 取字节),按大小给 3 个模式:(1) ≲1MB 在 `input` 内联 base64(提示 ~33% 膨胀、勿塞大 blob);(2) 已托管文件传 URL/handle 不传字节、引用经 memory_upsert 记忆;(3) 大/二进制走带外预签名 URL(后端 `files.requestUpload` 返回 PUT URL → agent 直传字节 → 业务操作只引用 objectId;反向用 send_file),网关永不见字节。附 审计/保密提示:`gateway_audit` 存 body 摘要而非原文,但内联 base64 仍过宿主与签名代理,敏感件默认走(2)/(3)。grounded:`/workspace/downloads` 路径、free-form input/context、json-only、send_file、audit 摘要均已核对。
 - **工作量 M · 价值 中**
 
 ### 3.5 部分失败 / 事务语义未明确 — ✅ 已落地(69c1343)

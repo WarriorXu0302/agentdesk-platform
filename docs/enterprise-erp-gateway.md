@@ -485,6 +485,58 @@ You control the payload shape, but keep it explicit. Recommended patterns:
   - `ok: true | false`
   - `results`: an array of `{ value, source?, score? }` (see below)
 
+## File & attachment handling
+
+Real workflows carry files — an invoice PDF to approve, a BOM spreadsheet, a
+signed contract. The gateway is a **JSON control plane**: every request is
+`Content-Type: application/json`, and the request envelope's `input` and
+`context` are free-form objects (`z.record(z.string(), z.unknown())`). There is
+deliberately **no multipart upload** — bytes either ride inline (small) or move
+out of band (large), and only a reference travels through the gateway. Pick by
+size:
+
+**Where the bytes start.** When a user sends a file, the runner saves it to
+`/workspace/downloads/{messageId}/` and notes the path in the prompt; the agent
+reads it with its `Read`/`Bash` tools. So the agent has the local bytes and
+chooses how to hand them to your backend.
+
+1. **Small files (≲ 1 MB): inline base64 in `input`.** Encode and pass it as a
+   field of the operation input:
+
+   ```json
+   { "operation": "finance.invoice.submit",
+     "input": { "vendor": "ACME",
+                "document": { "filename": "po-8821.pdf", "contentType": "application/pdf", "base64": "<...>" } } }
+   ```
+
+   Base64 adds ~33% overhead, so keep the encoded size comfortably under your
+   gateway/body limits. Don't inline large blobs — they bloat every retry and
+   the audit path.
+
+2. **Already-hosted files: pass a URL/handle, not the bytes.** When the file
+   already lives in your DMS / object store, put its stable URL or document id in
+   `input`, and `gateway_memory_upsert` the reference if it should be remembered
+   across turns (store the *reference*, never the blob, in memory).
+
+3. **Large or binary documents: out-of-band file service (pre-signed URL).**
+   Keep big payloads off the JSON path entirely:
+   - The agent calls a backend operation (e.g. `files.requestUpload`) that
+     returns a short-lived **pre-signed PUT URL**.
+   - The agent uploads the bytes **directly** to that URL (out of band — a plain
+     HTTPS PUT, not a gateway call).
+   - The agent then references the resulting object id in the business operation
+     (`input.documentRef`). For backend→user delivery, the reverse: the backend
+     returns a pre-signed GET URL, the agent fetches it and uses `send_file`.
+
+   The pre-signed URL or object handle is what travels in `input` / `context`;
+   the gateway never sees the bytes.
+
+> **Audit & secrecy.** The `gateway_audit` row stores a digest of the request
+> body, not the raw bytes — but an inlined base64 document still passes through
+> the host process and the signing proxy. Treat patterns (2)/(3) as the default
+> for anything sensitive or non-trivial; reserve inline base64 for genuinely
+> small, low-sensitivity attachments.
+
 ## Recommended durable-memory model
 
 For shared enterprise agents, keep long-lived memory in your backend instead
