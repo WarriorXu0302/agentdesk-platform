@@ -157,6 +157,20 @@ function readEnvConfig(): FeishuConfig | null {
   };
 }
 
+/**
+ * Construct a Feishu adapter from a fully-resolved config.
+ *
+ * Exported as a test seam (and for operators embedding the adapter with a
+ * programmatic config rather than env). Pure constructor — no env reads, no
+ * registration side effects. The registration below still goes through the
+ * env-driven factory; this just lets a test drive the real `setup` /
+ * `deliver` / webhook-handler code paths with an explicit config and a
+ * captured `registerWebhookHandler`. Does not change runtime behavior.
+ */
+export function createFeishuAdapter(config: FeishuConfig): ChannelAdapter {
+  return createAdapter(config);
+}
+
 function createAdapter(config: FeishuConfig): ChannelAdapter {
   let setupConfig: ChannelSetup | null = null;
   let connected = false;

@@ -47,6 +47,17 @@ export function getChannelContainerConfig(name: string): ChannelRegistration['co
 }
 
 /**
+ * Test seam: return the registered factory for a channel name without going
+ * through initChannelAdapters (which calls setup() and binds sockets/servers).
+ * Lets the channel-contract conformance test instantiate the REAL registered
+ * factory — proving the in-tree registration, not a reconstruction — and run
+ * the adapter through the structural contract check. Not used at runtime.
+ */
+export function __getRegisteredFactoryForTests(name: string): ChannelRegistration['factory'] | undefined {
+  return registry.get(name)?.factory;
+}
+
+/**
  * Instantiate and set up all registered channel adapters.
  * Skips adapters that return null (missing credentials).
  */
