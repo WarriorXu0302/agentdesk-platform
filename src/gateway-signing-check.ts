@@ -18,6 +18,7 @@ import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
 import { readContainerConfig } from './container-config.js';
+import { gatewaySigningProxyEnabled } from './gateway-signing-proxy.js';
 import { log } from './log.js';
 import { gatewayUnsignedGroups } from './metrics.js';
 import { isKnownWeakSecret } from './security/known-weak-secrets.js';
@@ -56,6 +57,7 @@ export interface GatewaySigningCoverage {
 export function checkGatewaySigningCoverage(): GatewaySigningCoverage {
   const unsigned: string[] = [];
   const weakSigned: string[] = [];
+  let signed = 0; // groups with a baseUrl + a real (non-weak) signingKey
 
   // Never throw — this runs in the startup sequence alongside checkBaseImage(),
   // which is deliberately never-throw. A readdir failure (EACCES/EIO) must not
@@ -86,6 +88,8 @@ export function checkGatewaySigningCoverage(): GatewaySigningCoverage {
         unsigned.push(entry.name);
       } else if (isKnownWeakSecret(key)) {
         weakSigned.push(entry.name);
+      } else {
+        signed++;
       }
     } catch (err) {
       // A malformed container.json must not abort the scan or startup.
@@ -115,6 +119,19 @@ export function checkGatewaySigningCoverage(): GatewaySigningCoverage {
       remediation:
         'pnpm exec tsx scripts/configure-enterprise-gateway.ts --folders <folder> --signing-key "$(openssl rand -hex 32)"',
     });
+  }
+
+  // Heads-up: the signing proxy (ADR-0034) only withholds a key the host
+  // actually has. If it's enabled but NO group has a real signingKey, the proxy
+  // is a no-op — agents still get their credentials directly — so an operator
+  // who flipped the flag believing the key is protected is mistaken.
+  if (gatewaySigningProxyEnabled() && signed === 0) {
+    log.warn(
+      'AGENTDESK_GATEWAY_SIGNING_PROXY is enabled but no agent group has a real backend signingKey — ' +
+        'the proxy has nothing to withhold and provides no isolation. Provision a key via ' +
+        'scripts/configure-enterprise-gateway.ts, or the flag is a no-op.',
+      { signedGroups: signed, unsigned: unsigned.length, weakSigned: weakSigned.length },
+    );
   }
 
   return { unsigned, weakSigned };

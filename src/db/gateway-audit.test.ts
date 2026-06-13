@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDb, initTestDb, runMigrations } from './index.js';
 import {
   finalizeGatewayProxyAudit,
+  purgeGatewayAudit,
   queryGatewayAudit,
   recordGatewayAudit,
   recordGatewayProxyIntent,
@@ -133,5 +134,20 @@ describe('gateway_audit proxy two-phase (ADR-0034)', () => {
     expect(String(rows[0].error_msg)).toContain('orphaned_intent_reconciled');
     // idempotent — nothing left at 'intent'
     expect(reconcileOrphanedProxyAudit()).toBe(0);
+  });
+});
+
+describe('purgeGatewayAudit retention (opt-in)', () => {
+  it('deletes only rows older than the cutoff', () => {
+    const old = new Date('2020-01-01T00:00:00.000Z');
+    const recent = new Date();
+    recordGatewayAudit({ path: '/execute', operation: 'old', requesterSource: 'session', status: 'ok' }, old);
+    recordGatewayAudit({ path: '/execute', operation: 'recent', requesterSource: 'session', status: 'ok' }, recent);
+    // Purge rows older than 30 days.
+    const deleted = purgeGatewayAudit(30 * 24 * 60 * 60_000);
+    expect(deleted).toBe(1);
+    const rows = queryGatewayAudit();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].operation).toBe('recent');
   });
 });

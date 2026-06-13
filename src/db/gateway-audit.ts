@@ -143,6 +143,20 @@ export function reconcileOrphanedProxyAudit(): number {
     .run().changes;
 }
 
+/**
+ * Delete gateway_audit rows older than `olderThanMs`. Append-only audit tables
+ * grow unbounded on the single central DB (the signing proxy adds rows per
+ * gateway call); this gives operators a retention lever. Opt-in / default-off
+ * at the caller (host-sweep gates on AGENTDESK_AUDIT_RETAIN_DAYS) — audit data
+ * is never deleted silently. Uses idx_gateway_audit_at(occurred_at). Returns
+ * rows deleted. (The same pattern extends to classification_log /
+ * enterprise_audit / dm_audit as a follow-up.)
+ */
+export function purgeGatewayAudit(olderThanMs: number, now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+  return getDb().prepare(`DELETE FROM gateway_audit WHERE occurred_at < ?`).run(cutoff).changes;
+}
+
 export interface GatewayAuditQueryOptions {
   limit?: number;
   userId?: string;

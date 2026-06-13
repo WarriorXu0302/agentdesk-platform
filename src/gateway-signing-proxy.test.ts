@@ -255,6 +255,25 @@ describe('processSigningProxyRequest (ADR-0034 security core)', () => {
     expect(cap.fetches[0].body).toBe(raw);
   });
 
+  it('still signs+forwards when audit writes throw (best-effort audit, ADR-0034 #21)', async () => {
+    const cap = makeDeps({
+      recordIntent: () => {
+        throw new Error('central DB busy');
+      },
+      finalize: () => {
+        throw new Error('central DB busy');
+      },
+    });
+    const r = await processSigningProxyRequest(
+      { method: 'POST', pathname: '/execute', token: 'good', sourceIp: 'x', rawBody: body() },
+      cap.deps,
+    );
+    // Audit failure must NOT block the actual signing/forwarding.
+    expect(r.httpStatus).toBe(200);
+    expect(r.outcome).toBe('signed');
+    expect(cap.fetches).toHaveLength(1);
+  });
+
   it('records backend_error and 502 when the upstream forward fails', async () => {
     const cap = makeDeps({
       fetchImpl: (async () => {

@@ -176,6 +176,19 @@ function jsonError(httpStatus: number, code: string, message: string, outcome: s
   return { httpStatus, outcome, body: JSON.stringify({ error: { code, message } }) };
 }
 
+/** Run an audit write, swallowing + counting + logging any failure (best-effort). */
+function auditSafe(stage: 'intent' | 'final', fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    gatewaySigningProxyTotal.labels('audit_write_failed').inc();
+    log.error('Gateway signing proxy audit write failed', {
+      stage,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
@@ -200,6 +213,16 @@ export async function processSigningProxyRequest(
   input: ProxyRequestInput,
   deps: ProxyDeps,
 ): Promise<ProxyRequestResult> {
+  // Audit writes are best-effort: a central-DB hiccup must NOT block the actual
+  // signing/forwarding (observability is read-only w.r.t. message flow). A
+  // failure is counted (audit_write_failed) + logged loud so a finalize failure
+  // after a successful backend call — which would otherwise silently leave the
+  // row mislabeled 'pending' — is visible. (ADR-0034)
+  const recordIntent = (intent: Parameters<typeof deps.recordIntent>[0]): void =>
+    auditSafe('intent', () => deps.recordIntent(intent));
+  const finalize = (id: string, outcome: Parameters<typeof deps.finalize>[1]): void =>
+    auditSafe('final', () => deps.finalize(id, outcome));
+
   if (input.method !== 'POST') {
     gatewaySigningProxyTotal.labels('bad_request').inc();
     return jsonError(405, 'METHOD_NOT_ALLOWED', 'only POST is supported', 'bad_request');
@@ -267,7 +290,7 @@ export async function processSigningProxyRequest(
   //    authoritative group. A mismatch is an impersonation signal — audit it
   //    and refuse to sign (never sign for a group the caller isn't bound to).
   if (claimedGroup !== record.agentGroupId) {
-    deps.recordIntent({
+    recordIntent({
       proxyRequestId,
       sessionId: record.sessionId,
       agentGroupId: record.agentGroupId,
@@ -283,7 +306,7 @@ export async function processSigningProxyRequest(
       inputHash,
       errorMsg: `claimed group ${claimedGroup ?? '<none>'} != token group ${record.agentGroupId}`,
     });
-    deps.finalize(proxyRequestId, { status: 'error', httpStatus: 409, errorMsg: 'identity_mismatch' });
+    finalize(proxyRequestId, { status: 'error', httpStatus: 409, errorMsg: 'identity_mismatch' });
     gatewaySigningProxyTotal.labels('identity_mismatch').inc();
     return jsonError(409, 'IDENTITY_MISMATCH', 'request agent group does not match session', 'identity_mismatch');
   }
@@ -294,7 +317,7 @@ export async function processSigningProxyRequest(
   const gateway = deps.resolveGateway(record.agentGroupId);
   const key = gateway?.signingKey?.trim();
   if (!gateway?.baseUrl || !key) {
-    deps.recordIntent({
+    recordIntent({
       proxyRequestId,
       sessionId: record.sessionId,
       agentGroupId: record.agentGroupId,
@@ -309,7 +332,7 @@ export async function processSigningProxyRequest(
       inputHash,
       errorMsg: 'no host-side signing key for group',
     });
-    deps.finalize(proxyRequestId, { status: 'error', httpStatus: 502, errorMsg: 'no_signing_key' });
+    finalize(proxyRequestId, { status: 'error', httpStatus: 502, errorMsg: 'no_signing_key' });
     gatewaySigningProxyTotal.labels('no_signing_key').inc();
     return jsonError(502, 'NO_SIGNING_KEY', 'gateway not signable for this group', 'no_signing_key');
   }
@@ -330,7 +353,7 @@ export async function processSigningProxyRequest(
 
   // 8. Two-phase audit: intent BEFORE forwarding (survives a crash window).
   const startedAt = deps.now();
-  deps.recordIntent({
+  recordIntent({
     proxyRequestId,
     sessionId: record.sessionId,
     agentGroupId: record.agentGroupId,
@@ -358,7 +381,7 @@ export async function processSigningProxyRequest(
     });
     const text = await upstream.text();
     const outcomeStatus: GatewayProxyOutcome['status'] = upstream.ok ? 'ok' : 'error';
-    deps.finalize(proxyRequestId, {
+    finalize(proxyRequestId, {
       status: outcomeStatus,
       httpStatus: upstream.status,
       durationMs: deps.now() - startedAt,
@@ -368,7 +391,7 @@ export async function processSigningProxyRequest(
     return { httpStatus: upstream.status, body: text, outcome: upstream.ok ? 'signed' : 'backend_error' };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
-    deps.finalize(proxyRequestId, {
+    finalize(proxyRequestId, {
       status: 'error',
       httpStatus: 502,
       durationMs: deps.now() - startedAt,

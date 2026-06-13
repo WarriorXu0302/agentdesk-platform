@@ -167,6 +167,18 @@ export function validateStartupConfig(): void {
     }
   }
 
+  // 2d. OneCLI control plane must be configured as a pair — a URL with no API
+  //     key means the vault rejects every call (the gateway/credential proxy
+  //     can't fetch creds), which surfaces as confusing runtime failures rather
+  //     than a clear boot error. .env.example marks the key Required alongside
+  //     the URL; enforce it.
+  if (get('ONECLI_URL') && !get('ONECLI_API_KEY')) {
+    errors.push(
+      'ONECLI_API_KEY is required when ONECLI_URL is set ' +
+        '(the OneCLI control plane rejects unauthenticated calls — the gateway/credential proxy would fail at runtime).',
+    );
+  }
+
   // --- 3. Soft warnings (degrade gracefully, never block startup) ---
 
   // /metrics is public when no auth token is set. Recommend, don't require.

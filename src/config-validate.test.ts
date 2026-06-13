@@ -214,7 +214,10 @@ describe('validateStartupConfig — OpenAI provider', () => {
       AGENTDESK_OPENAI_VIA_ONECLI: 'true',
       OPENAI_BASE_URL: 'https://gw.example.com/v1',
       OPENAI_MODEL: 'gpt-5.4',
+      // vault mode needs the OneCLI control plane configured (URL + key), but
+      // NOT the OpenAI key on the host — the vault injects it.
       ONECLI_URL: 'https://vault.internal',
+      ONECLI_API_KEY: 'a-real-onecli-key-9f3c2a',
       // no OPENAI_API_KEY on purpose
     });
     expect(() => validateStartupConfig()).not.toThrow();
@@ -227,6 +230,22 @@ describe('validateStartupConfig — OpenAI provider', () => {
       // no ONECLI_URL
     });
     expect(() => validateStartupConfig()).toThrow(/ONECLI_URL/);
+  });
+});
+
+describe('validateStartupConfig — OneCLI control-plane pairing', () => {
+  it('fails when ONECLI_URL is set without ONECLI_API_KEY', () => {
+    setEnv({ ONECLI_URL: 'https://vault.internal' });
+    expect(() => validateStartupConfig()).toThrow(/ONECLI_API_KEY/);
+  });
+
+  it('passes when both are present', () => {
+    setEnv({ ONECLI_URL: 'https://vault.internal', ONECLI_API_KEY: 'a-real-onecli-key-9f3c2a' });
+    expect(() => validateStartupConfig()).not.toThrow();
+  });
+
+  it('does not require ONECLI_API_KEY when ONECLI_URL is unset', () => {
+    expect(() => validateStartupConfig()).not.toThrow();
   });
 });
 

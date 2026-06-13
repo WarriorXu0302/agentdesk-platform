@@ -33,6 +33,7 @@ import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { pruneInboundDedup } from './db/inbound-dedup.js';
 import { purgeStaleProxyTokens } from './db/gateway-proxy-token.js';
+import { purgeGatewayAudit } from './db/gateway-audit.js';
 import { getDb, hasTable } from './db/connection.js';
 import {
   countDueMessages,
@@ -70,6 +71,9 @@ const INBOUND_DEDUP_TTL_MS = 24 * 60 * 60_000;
 // (ADR-0034). Expired/revoked tokens are already rejected at verify; this is
 // pure table-size hygiene, so a generous 24h grace is fine.
 const PROXY_TOKEN_PURGE_TTL_MS = 24 * 60 * 60_000;
+// Opt-in retention for append-only audit tables (default 0 = OFF, never delete
+// audit data silently). Operators with a retention policy set days > 0.
+const AUDIT_RETAIN_DAYS = Math.max(0, parseInt(process.env.AGENTDESK_AUDIT_RETAIN_DAYS || '0', 10) || 0);
 // Absolute idle ceiling for a running container. If the heartbeat file hasn't
 // been touched in this long, the container is either stuck or doing genuinely
 // nothing — kill and restart on the next inbound.
@@ -171,6 +175,18 @@ async function sweep(): Promise<void> {
     }
   } catch (err) {
     log.warn('Gateway proxy token purge failed', { err });
+  }
+
+  // Opt-in audit retention (default OFF — audit data is never deleted silently).
+  // gateway_audit grows per gateway call (incl. the signing proxy's rows); when
+  // an operator sets AGENTDESK_AUDIT_RETAIN_DAYS>0, trim rows older than that.
+  if (AUDIT_RETAIN_DAYS > 0) {
+    try {
+      const purged = purgeGatewayAudit(AUDIT_RETAIN_DAYS * 24 * 60 * 60_000);
+      if (purged > 0) log.debug('Purged old gateway_audit rows', { purged, retainDays: AUDIT_RETAIN_DAYS });
+    } catch (err) {
+      log.warn('gateway_audit retention purge failed', { err });
+    }
   }
 
   try {

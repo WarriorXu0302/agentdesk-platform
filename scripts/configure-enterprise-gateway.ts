@@ -35,7 +35,22 @@ import { fileURLToPath } from 'url';
 import { DEFAULT_FRONTDESK_FOLDER } from '../src/branding.js';
 import { GROUPS_DIR } from '../src/config.js';
 import { updateContainerConfig } from '../src/container-config.js';
+import { readEnvFile } from '../src/env.js';
 import { isKnownWeakSecret } from '../src/security/known-weak-secrets.js';
+
+/**
+ * Resolve a config value with the SAME precedence the host uses (process env →
+ * `.env` file). The host reads `.env` via readEnvFile; this script runs under
+ * `tsx`, which does NOT auto-load `.env` into process.env — so without this an
+ * operator who put GATEWAY_SIGNING_KEY in `.env` (exactly as `.env.example`
+ * documents) would have the script silently provision an UNSIGNED gateway while
+ * the host believed it was signed.
+ */
+function resolveConfigValue(key: string): string | undefined {
+  const fromProc = process.env[key]?.trim();
+  if (fromProc) return fromProc;
+  return readEnvFile([key])[key]?.trim() || undefined;
+}
 
 const DEFAULT_FOLDERS = [DEFAULT_FRONTDESK_FOLDER];
 
@@ -140,16 +155,16 @@ function parseArgs(argv: string[]): Args {
   }
 
   if (!baseUrl) {
-    const fromEnv = (process.env.GATEWAY_BASE_URL || process.env.ERP_GATEWAY_BASE_URL)?.trim();
+    const fromEnv = resolveConfigValue('GATEWAY_BASE_URL') || resolveConfigValue('ERP_GATEWAY_BASE_URL');
     if (fromEnv) {
       baseUrl = fromEnv;
     } else {
-      fatal('Missing required arg: --base-url (or set GATEWAY_BASE_URL in the environment).');
+      fatal('Missing required arg: --base-url (or set GATEWAY_BASE_URL in the environment / .env).');
     }
   }
 
   if (!signingKey) {
-    const fromEnv = process.env.GATEWAY_SIGNING_KEY?.trim();
+    const fromEnv = resolveConfigValue('GATEWAY_SIGNING_KEY');
     if (fromEnv) {
       // Same known-weak defense as the --signing-key path: never write a
       // placeholder env key into container.json.
