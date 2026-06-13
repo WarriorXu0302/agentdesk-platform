@@ -113,6 +113,29 @@ export interface ContainerConfig {
    */
   resources?: ContainerResourceLimits;
   /**
+   * Optional Docker network for the agent container (egress lockdown,
+   * ADR-0032). Maps to `docker run --network <value>`. Per-group setting;
+   * takes precedence over the global `AGENT_CONTAINER_NETWORK` env var.
+   *
+   * Unset (default) → no `--network` flag → Docker's default `bridge`, i.e.
+   * unrestricted egress, exactly as before this field existed.
+   *
+   * Set to a Docker network name (e.g. an operator-managed egress-proxy
+   * network that allowlists destinations), or a built-in mode:
+   *   - `none`   — no network at all; use for workers that only talk to the
+   *                host via the session DBs (pure-DB topology).
+   *   - `host`   — share the host network namespace (rarely advisable; the
+   *                container can then reach host-local services directly).
+   *   - `bridge` — the default; explicit form of the unset behavior.
+   *
+   * The value is validated against a strict allowlist before being passed to
+   * docker (see `resolveContainerNetwork` / `isValidContainerNetwork`); an
+   * unrecognized / unsafe value is rejected and the container falls back to
+   * the default network rather than forwarding an unvalidated string into the
+   * docker argv.
+   */
+  network?: string;
+  /**
    * Optional env vars forwarded into the container at spawn time. Use this
    * to point a skill's bridge.py at a non-default backend (e.g.
    * `CAMERA_BASE_URL=http://172.18.198.229:8001`) without rebuilding the
@@ -165,6 +188,21 @@ function normalizeA2aSessionMode(value: unknown): A2aSessionMode | undefined {
   return value === 'agent-shared' || value === 'root-session' ? value : undefined;
 }
 
+/**
+ * Accept a network value only if it is a string that looks like a safe Docker
+ * network reference. Anything else (non-string, empty, or containing argv /
+ * shell-hostile characters) is dropped so it can never be forwarded into the
+ * docker argv. The actual injection-safety gate lives in
+ * `isValidContainerNetwork` (container-runner.ts), used both here and at
+ * spawn time; we keep config-read lenient-but-typed and let the runner do the
+ * authoritative validation + warn-and-skip.
+ */
+function normalizeNetwork(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function normalizeResources(value: unknown): ContainerResourceLimits | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const raw = value as Partial<ContainerResourceLimits>;
@@ -214,6 +252,7 @@ export function readContainerConfig(folder: string): ContainerConfig {
       agentGroupId: raw.agentGroupId,
       maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
       resources: normalizeResources(raw.resources),
+      network: normalizeNetwork(raw.network),
       env: raw.env,
       progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
     };

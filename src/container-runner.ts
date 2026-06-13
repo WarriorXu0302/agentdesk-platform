@@ -668,6 +668,16 @@ async function buildContainerArgs(
   // so the flag shape is unit-testable without spinning the full builder.
   args.push(...buildSecurityArgs(process.env));
 
+  // Egress lockdown (ADR-0032). Opt-in `--network` — per-group container.json
+  // `network` wins over the global `AGENT_CONTAINER_NETWORK`; unset means no
+  // flag at all (docker default bridge = unrestricted egress, the historical
+  // behavior). The value is allowlist-validated inside the helper; an invalid
+  // value is dropped with a warning, never forwarded into the argv. MUST sit
+  // here in the docker-flag region (before the image tag), same as the
+  // security/OTEL flags — a `--network` after the image would be handed to the
+  // entrypoint instead of parsed by docker.
+  args.push(...buildNetworkArgs(containerConfig, process.env));
+
   // Volume mounts
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -686,6 +696,71 @@ async function buildContainerArgs(
   appendImageAndCommand(args, imageTag);
 
   return args;
+}
+
+/**
+ * Whitelist for `--network` values (ADR-0032 egress lockdown). Two accepted
+ * shapes:
+ *
+ *   1. The built-in network modes `none` / `host` / `bridge` (literal).
+ *   2. A user-defined Docker network NAME matching docker's own naming rule:
+ *      `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` — same pattern we already use to gate
+ *      container names in container-runtime.ts. This excludes spaces, `=`,
+ *      leading `-` (which docker would parse as a flag), and any shell/argv
+ *      metacharacter, so a validated value can never inject extra arguments
+ *      into the docker invocation.
+ *
+ * Anything else (empty, `container:<id>` indirection, `--`-prefixed, or with
+ * hostile characters) is rejected. We deliberately do NOT accept the
+ * `container:<name|id>` form: it is rarely needed for agent containers and
+ * the `:` would otherwise widen the accepted character set.
+ */
+const CONTAINER_NETWORK_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+export function isValidContainerNetwork(value: string): boolean {
+  return CONTAINER_NETWORK_NAME.test(value);
+}
+
+/**
+ * Resolve the effective `--network` value for a container, or `undefined` to
+ * leave docker on its default (`bridge`) — i.e. unrestricted egress, the
+ * pre-ADR-0032 behavior. Pure + exported so the precedence and the
+ * injection-safety gate are unit-testable without a container runtime.
+ *
+ * Precedence (most specific wins):
+ *   1. per-group `container.json` `network`
+ *   2. global `AGENT_CONTAINER_NETWORK` env var
+ *   3. unset → `undefined` (no flag, docker default bridge)
+ *
+ * Hard rule (CLAUDE.md / ADR-0032): default is NO restriction. We only ever
+ * emit `--network` when an operator opted in. A configured-but-invalid value
+ * is treated as "operator typo": we WARN and fall back to the default network
+ * rather than (a) forwarding an unvalidated string into the docker argv or
+ * (b) failing the spawn. Falling back to the permissive default keeps the
+ * backward-compat / "never cut off the agent by accident" promise.
+ */
+export function resolveContainerNetwork(config: { network?: string }, env: NodeJS.ProcessEnv): string | undefined {
+  const raw = (config.network ?? env.AGENT_CONTAINER_NETWORK ?? '').trim();
+  if (!raw) return undefined;
+  if (!isValidContainerNetwork(raw)) {
+    log.warn('Ignoring invalid container network value — falling back to default (bridge)', {
+      value: raw,
+      source: config.network ? 'container.json' : 'AGENT_CONTAINER_NETWORK',
+    });
+    return undefined;
+  }
+  return raw;
+}
+
+/**
+ * Build the `--network <value>` docker args for the agent container, or `[]`
+ * when no valid network is configured. Pure + exported so the ordering
+ * invariant (must precede the image tag) is unit-testable. See
+ * `resolveContainerNetwork` for precedence + validation.
+ */
+export function buildNetworkArgs(config: { network?: string }, env: NodeJS.ProcessEnv): string[] {
+  const network = resolveContainerNetwork(config, env);
+  return network ? ['--network', network] : [];
 }
 
 /**

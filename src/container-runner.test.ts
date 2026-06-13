@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendImageAndCommand,
+  buildNetworkArgs,
   buildRunnerTracingEnvArgs,
   buildSecurityArgs,
   checkBaseImage,
+  isValidContainerNetwork,
+  resolveContainerNetwork,
   resolveProviderName,
 } from './container-runner.js';
 
@@ -234,6 +237,123 @@ describe('buildRunnerTracingEnvArgs (ADR-0026 endpoint injection)', () => {
       // sneaks between flags and image.
       expect(args[imageIndex - 2]).toBe('--entrypoint');
       expect(args[imageIndex - 1]).toBe('bash');
+      expect(args.slice(imageIndex + 1)).toEqual(['-c', 'exec bun run /app/src/index.ts']);
+    });
+  });
+});
+
+describe('isValidContainerNetwork (ADR-0032 injection-safety gate)', () => {
+  it('accepts built-in modes none/host/bridge', () => {
+    expect(isValidContainerNetwork('none')).toBe(true);
+    expect(isValidContainerNetwork('host')).toBe(true);
+    expect(isValidContainerNetwork('bridge')).toBe(true);
+  });
+
+  it('accepts well-formed user-defined network names', () => {
+    expect(isValidContainerNetwork('egress-proxy')).toBe(true);
+    expect(isValidContainerNetwork('agentdesk_egress.v2')).toBe(true);
+    expect(isValidContainerNetwork('net0')).toBe(true);
+  });
+
+  it('rejects empty, leading-dash, and argv/shell-hostile values', () => {
+    expect(isValidContainerNetwork('')).toBe(false);
+    // Leading '-' would be parsed by docker as a flag.
+    expect(isValidContainerNetwork('-rm')).toBe(false);
+    expect(isValidContainerNetwork('--privileged')).toBe(false);
+    // Spaces / argv injection attempts.
+    expect(isValidContainerNetwork('host --privileged')).toBe(false);
+    expect(isValidContainerNetwork('net;rm -rf /')).toBe(false);
+    expect(isValidContainerNetwork('$(whoami)')).toBe(false);
+    // container:<id> indirection is deliberately not accepted.
+    expect(isValidContainerNetwork('container:abc123')).toBe(false);
+  });
+});
+
+describe('resolveContainerNetwork (ADR-0032 precedence + default-permissive)', () => {
+  it('returns undefined when nothing is configured (docker default bridge, historical behavior)', () => {
+    expect(resolveContainerNetwork({}, {})).toBeUndefined();
+    expect(resolveContainerNetwork({ network: undefined }, {})).toBeUndefined();
+  });
+
+  it('uses the per-group config.network when set', () => {
+    expect(resolveContainerNetwork({ network: 'egress-proxy' }, {})).toBe('egress-proxy');
+  });
+
+  it('uses the global AGENT_CONTAINER_NETWORK when no per-group value is set', () => {
+    expect(resolveContainerNetwork({}, { AGENT_CONTAINER_NETWORK: 'egress-proxy' })).toBe('egress-proxy');
+  });
+
+  it('prefers per-group config.network over the global env var', () => {
+    expect(resolveContainerNetwork({ network: 'group-net' }, { AGENT_CONTAINER_NETWORK: 'global-net' })).toBe(
+      'group-net',
+    );
+  });
+
+  it('falls back to default (undefined) for an invalid configured value — never forwards it', () => {
+    expect(resolveContainerNetwork({ network: 'host --privileged' }, {})).toBeUndefined();
+    expect(resolveContainerNetwork({}, { AGENT_CONTAINER_NETWORK: '$(whoami)' })).toBeUndefined();
+  });
+
+  it('accepts the built-in none mode (pure-DB workers)', () => {
+    expect(resolveContainerNetwork({ network: 'none' }, {})).toBe('none');
+  });
+});
+
+describe('buildNetworkArgs (ADR-0032 egress lockdown)', () => {
+  it('emits no --network flag by default (backward compatible)', () => {
+    expect(buildNetworkArgs({}, {})).toEqual([]);
+  });
+
+  it('emits --network <value> for a valid per-group config', () => {
+    expect(buildNetworkArgs({ network: 'egress-proxy' }, {})).toEqual(['--network', 'egress-proxy']);
+  });
+
+  it('emits --network none for a pure-DB worker', () => {
+    expect(buildNetworkArgs({ network: 'none' }, {})).toEqual(['--network', 'none']);
+  });
+
+  it('emits --network from the global env var when no per-group value is set', () => {
+    expect(buildNetworkArgs({}, { AGENT_CONTAINER_NETWORK: 'egress-proxy' })).toEqual(['--network', 'egress-proxy']);
+  });
+
+  it('does NOT push --network for an invalid value (falls back to default, no injection)', () => {
+    expect(buildNetworkArgs({ network: '; rm -rf /' }, {})).toEqual([]);
+    expect(buildNetworkArgs({}, { AGENT_CONTAINER_NETWORK: '--privileged' })).toEqual([]);
+  });
+
+  // Ordering invariant: --network is a docker flag and must precede the image
+  // tag, exactly like the security/OTEL flags. A --network after the image
+  // would be handed to the entrypoint instead of parsed by docker.
+  describe('argv ordering — --network must precede the image tag', () => {
+    const IMAGE = 'agentdesk-agent-v2-deadbeef:latest';
+
+    function buildArgs(netArgs: string[]): { args: string[]; imageIndex: number } {
+      const args = [
+        'run',
+        '--rm',
+        '--name',
+        'agentdesk-v2-grp-123',
+        '--security-opt=no-new-privileges:true',
+        ...netArgs,
+      ];
+      appendImageAndCommand(args, IMAGE);
+      return { args, imageIndex: args.indexOf(IMAGE) };
+    }
+
+    it('places the --network flag before the image tag', () => {
+      const { args, imageIndex } = buildArgs(buildNetworkArgs({ network: 'egress-proxy' }, {}));
+      const netIndex = args.indexOf('--network');
+      expect(netIndex).toBeGreaterThan(-1);
+      expect(imageIndex).toBeGreaterThan(-1);
+      expect(netIndex).toBeLessThan(imageIndex);
+      // The value sits immediately after the flag, still before the image.
+      expect(args[netIndex + 1]).toBe('egress-proxy');
+      expect(netIndex + 1).toBeLessThan(imageIndex);
+    });
+
+    it('leaves the image tail intact when no network is configured', () => {
+      const { args, imageIndex } = buildArgs(buildNetworkArgs({}, {}));
+      expect(args.indexOf('--network')).toBe(-1);
       expect(args.slice(imageIndex + 1)).toEqual(['-c', 'exec bun run /app/src/index.ts']);
     });
   });

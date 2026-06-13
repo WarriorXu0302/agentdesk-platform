@@ -383,6 +383,8 @@ pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
 | `WEBHOOK_REQUEST_TIMEOUT_MS` | 30000 | 单次请求完整生命周期超时（防慢速请求挂住连接） |
 | `WEBHOOK_HEADERS_TIMEOUT_MS` | 10000 | 请求头阶段超时（slow-loris 防护） |
 | `METRICS_AUTH_TOKEN` | 未设（`/metrics` 公开） | 设置后 `/metrics` 要求 `Authorization: Bearer <token>`，否则 401。生产应设置或用反向代理隔离 |
+| `AGENT_DROP_CAPS` | 未设（不丢任何 cap） | 逗号/空格分隔的 Linux capability 列表，每项发一个 `--cap-drop=<CAP>`（ADR-0029）。默认保留 docker 默认 cap 集 |
+| `AGENT_CONTAINER_NETWORK` | 未设（docker 默认 bridge，不限制出网） | 全局 agent 容器 egress 网络（ADR-0032）。设为运营者管理的 egress-proxy 网络名做 allowlist，或 `none`（纯 DB worker）。per-group `container.json` 的 `network` 优先。非法值被拒并回退默认。详见 `docs/security/container-egress.md` |
 
 ### 6.3 资源配置
 
@@ -401,11 +403,14 @@ pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
     "timeoutMs": 15000
   },
   "memoryMode": "gateway",
-  "a2aSessionMode": "root-session"
+  "a2aSessionMode": "root-session",
+  "network": "egress-proxy"
 }
 ```
 
 `init-enterprise-topology` 会写默认值（frontdesk: 768MB / worker: 1024MB），手动改的不被脚本覆盖。
+
+`network`（可选，ADR-0032）：该 group 容器的 egress 网络。不设 = docker 默认 bridge（不限制出网，向后兼容）。设为运营者管理的 egress-proxy 网络名做 allowlist，或 `none`（纯 DB worker）。优先于全局 `AGENT_CONTAINER_NETWORK`。威胁模型与配法见 `docs/security/container-egress.md`。
 
 ### 6.4 监控接入
 
