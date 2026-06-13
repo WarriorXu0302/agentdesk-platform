@@ -53,6 +53,7 @@
 - **工作量 M · 价值 中**
 
 ### 1.6 缺 prompt 模板库与配置参考
+> 🟡 **配置参考已实现**(上手 batch):新增 `docs/configuration-reference.md`——穷举 per-group `container.json` 全部字段(identity/routing/memory/a2a/gateway/resources/network/skills/lifecycle,每条含类型/默认/host-or-container 读取/作用),并指向 `.env.example` 作为环境变量权威表。README「相关文档」加了入口;含「改字段同 PR 更新此表」维护提示。**未做**:prompt 模板库(`examples/prompt-templates/`)+ `docs/agent-prompts.md` 最佳实践——属内容创作,留作专项。
 - **现状**:`CLAUDE.local.md` 机制完整(`src/group-init.ts` 自动加载),`examples/lab-frontdesk/CLAUDE.local.md` 是 300+ 行的好范例。但**没有 starter 模板、没有 `docs/agent-prompts.md` 最佳实践、没有 prompt-patterns 库**;同时运营者可配 `idleExitMs`/`memoryMode`/`a2aSessionMode`/`resources` 等却散落在 `container/agent-runner/src/config.ts` 各处,**无 `docs/configuration-reference.md` 汇总**。
 - **业务影响**:中等。部署 5 个 agent 要从零写 5 份 prompt;运营者可能根本不知道某些 per-group 配置项存在,得逆向源码。
 - **建议**:(a) 建 `examples/prompt-templates/`(frontdesk / generic-worker / approval-specialist / data-lookup / order-processing);(b) 写 `docs/agent-prompts.md`(结构/语气/错误处理/路由表/确认规则配方);(c) 写 `docs/configuration-reference.md` 穷举所有 per-group 字段 + 环境变量。
@@ -416,7 +417,7 @@
 | **3.1 bulk 操作契约** | M | 网关契约 |
 | ✅ **3.3 /describe schema 发现** | M | 网关契约 |
 | **1.4 网关生产模板 + kickstart** | M | 上手速度 |
-| **1.6 prompt 模板库** | M | 业务定制 |
+| 🟡 **1.6 配置参考**(✅)+ prompt 模板库(未做) | M | 业务定制 |
 
 **建议第一冲刺**聚焦三条线:**治理审计补洞**(5.1/5.5/5.2/5.4/5.3,大多 S,合规价值立竿见影)+ **对话可追踪**(2.2 thread_id 是 2.1/2.3 的地基,优先)+ **渠道失败可见**(6.1/6.2/6.4,直接降支持工单)。`4.1` 是 ADR-0033 明确记录的欠账,顺手还清。
 

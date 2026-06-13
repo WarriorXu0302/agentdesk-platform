@@ -219,6 +219,7 @@ pnpm configure:enterprise-gateway --base-url <gateway>
 - [docs/isolation-model.md](docs/isolation-model.md) — session 隔离模式
 - [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md) — 多人共享 frontdesk 拓扑
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md) — 后端网关协议
+- [docs/configuration-reference.md](docs/configuration-reference.md) — per-group `container.json` 字段全表 + 环境变量入口
 - [docs/feishu-channel.md](docs/feishu-channel.md) — 飞书接入
 - [docs/decisions/README.md](docs/decisions/README.md) — ADR 决策档案
 - [docs/business-optimization-roadmap.md](docs/business-optimization-roadmap.md) — 业务侧优化 backlog(56 条经核实的待办 + 优先级)
