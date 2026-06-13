@@ -42,6 +42,15 @@ export interface RunnerConfig {
    * (30 min), which preserves the pre-change behavior.
    */
   idleExitMs: number;
+  /**
+   * Per-group classify_intent clarify threshold (roadmap 2.4). Below this
+   * confidence, classify_intent's advisory tells the frontdesk to clarify
+   * before delegating. Optional; unset = the platform default (0.70). Lets a
+   * stricter group (finance) demand higher confidence and a looser one
+   * (general support) accept lower — without baking any business rule into the
+   * core. Must be in (0, 1); out-of-range values fall back to the default.
+   */
+  confidenceThreshold?: number;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -83,6 +92,13 @@ export function buildRunnerConfig(raw: Record<string, unknown>): RunnerConfig {
     // without a config edit + rebuild). 0 keeps the legacy "run until
     // host-sweep kills me" behavior.
     idleExitMs: resolveIdleExitMs(raw.idleExitMs),
+    confidenceThreshold:
+      typeof raw.confidenceThreshold === 'number' &&
+      Number.isFinite(raw.confidenceThreshold) &&
+      raw.confidenceThreshold > 0 &&
+      raw.confidenceThreshold < 1
+        ? raw.confidenceThreshold
+        : undefined,
   };
 }
 

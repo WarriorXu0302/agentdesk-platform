@@ -82,10 +82,11 @@
 - **工作量 M · 价值 高**
 
 ### 2.4 置信度阈值硬编码 0.70,无法按队伍/场景调
+> ✅ **已实现**(对话质量 batch):container.json 新增可选 `confidenceThreshold`(`RunnerConfig`,`buildRunnerConfig` 校验 (0,1) 否则回退默认 0.70);`confidenceAdvisory(confidence, candidateCount, clarifyBelow=0.70)` 用该阈值(文案里的数字也跟着插值),classify_intent handler 经 `getConfig()` 安全读取(未加载则回退默认)。财务组可设 0.85 更严、客服组设 0.55 更宽——**每组一份 container.json,核心零预设业务规则**。config.test.ts + classify-intent.test.ts 加了测试。
 - **现状**:`classify-intent.ts:62-79` 的 `confidenceAdvisory` 全局硬编码 0.70。`agent_groups`/`messaging_group_agents` 表(`src/db/schema.ts:42-58`、`src/types.ts:84-100`)无 `confidence_threshold` 字段。财务(应更严)和客服(可更宽)用同一阈值。
 - **业务影响**:中等。0.70 对多数场景保守合理,但多层级企业会觉得要么太严(过度澄清拖慢例行请求)要么太松(误路由返工成本高)。
 - **建议**:在 agent_group 或 messaging_group_agent 加可选 `confidence_threshold` 覆盖;classify_intent 接受动态入参。核心保持业务无关(无预设规则),运营者通过 schema 配。
-- **工作量 M · 价值 中**
+- **工作量 M · 价值 中** — ✅ **已实现(见上)**
 
 ### 2.5 "我改主意了" / 返工(nack)流程无正式支持
 - **现状**:a2a 支持委派,`resolveTargetSession`(`agent-route.ts:173-212`)有三层会话解析(返回路径/peer 亲和/最新活跃),但**没有 nack/reject API** 让 worker 把消息退回并请求重路由。worker 收到越界请求只能手工回复(丢失结构化路由)或让消息留在自己这里。

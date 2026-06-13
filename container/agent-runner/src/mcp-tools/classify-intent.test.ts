@@ -172,4 +172,15 @@ describe('confidenceAdvisory', () => {
   it('boundary: exactly 0.85 falls into the "high" bucket', () => {
     expect(confidenceAdvisory(0.85, 1).toLowerCase()).toContain('delegate directly');
   });
+
+  it('honors a per-group clarify threshold (roadmap 2.4)', () => {
+    // Stricter group: clarify below 0.80. 0.75 now clarifies (would not at 0.70).
+    expect(confidenceAdvisory(0.75, 1, 0.8)).toMatch(/ask_user_question/);
+    expect(confidenceAdvisory(0.75, 1, 0.8)).toContain('0.80');
+    // Looser group: clarify below 0.50. 0.6 now delegates (moderate) instead of clarifying.
+    expect(confidenceAdvisory(0.6, 1, 0.5).toLowerCase()).toContain('moderate');
+    // Default (no arg) keeps the 0.70 behavior.
+    expect(confidenceAdvisory(0.69, 1)).toMatch(/ask_user_question/);
+    expect(confidenceAdvisory(0.69, 1)).toContain('0.70');
+  });
 });

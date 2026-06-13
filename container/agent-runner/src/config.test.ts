@@ -60,4 +60,14 @@ describe('buildRunnerConfig (host→container container.json contract)', () => {
     process.env.AGENTDESK_IDLE_EXIT_MS = '30000';
     expect(buildRunnerConfig({ idleExitMs: 5000 }).idleExitMs).toBe(30000);
   });
+
+  it('parses a valid per-group confidenceThreshold and rejects out-of-range/garbage (roadmap 2.4)', () => {
+    expect(buildRunnerConfig({ confidenceThreshold: 0.8 }).confidenceThreshold).toBe(0.8);
+    expect(buildRunnerConfig({}).confidenceThreshold).toBeUndefined();
+    // Out of (0,1) or non-numeric → undefined (falls back to the 0.70 default downstream).
+    expect(buildRunnerConfig({ confidenceThreshold: 1 }).confidenceThreshold).toBeUndefined();
+    expect(buildRunnerConfig({ confidenceThreshold: 0 }).confidenceThreshold).toBeUndefined();
+    expect(buildRunnerConfig({ confidenceThreshold: 1.5 }).confidenceThreshold).toBeUndefined();
+    expect(buildRunnerConfig({ confidenceThreshold: 'high' }).confidenceThreshold).toBeUndefined();
+  });
 });

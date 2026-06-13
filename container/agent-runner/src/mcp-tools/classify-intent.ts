@@ -17,6 +17,7 @@
  * Host side: see src/modules/classification-log/index.ts for the
  * delivery-action handler that persists these into classification_log.
  */
+import { getConfig } from '../config.js';
 import { setCurrentClassificationId } from '../current-batch.js';
 import { findByName } from '../destinations.js';
 import { writeMessageOut } from '../db/messages-out.js';
@@ -59,23 +60,48 @@ function generateClassificationId(): string {
  * than a brief extra clarification, so we nudge frontdesk toward
  * `ask_user_question` below 0.70.
  */
-export function confidenceAdvisory(confidence: number, candidateCount: number): string {
+export const DEFAULT_CLARIFY_THRESHOLD = 0.7;
+const MODERATE_CEILING = 0.85;
+
+/**
+ * `clarifyBelow` is the per-group clarify threshold (roadmap 2.4): below it,
+ * the advisory pushes the frontdesk to ask_user_question before delegating. It
+ * defaults to 0.70 and can be raised (stricter group) or lowered (looser group)
+ * via container.json `confidenceThreshold`. The moderate-confidence band runs
+ * from `clarifyBelow` up to a fixed 0.85 ceiling.
+ */
+export function confidenceAdvisory(
+  confidence: number,
+  candidateCount: number,
+  clarifyBelow: number = DEFAULT_CLARIFY_THRESHOLD,
+): string {
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
     return 'Invalid confidence — treat this as low and ask the user to clarify.';
   }
   if (candidateCount === 0) {
     return 'No candidate workers identified — ask the user to clarify or reject politely.';
   }
-  if (candidateCount > 1 && confidence < 0.7) {
-    return 'Multiple plausible workers and confidence below 0.70 — call ask_user_question before delegating.';
+  const t = clarifyBelow.toFixed(2);
+  if (candidateCount > 1 && confidence < clarifyBelow) {
+    return `Multiple plausible workers and confidence below ${t} — call ask_user_question before delegating.`;
   }
-  if (confidence < 0.7) {
-    return 'Confidence below 0.70 — call ask_user_question before delegating.';
+  if (confidence < clarifyBelow) {
+    return `Confidence below ${t} — call ask_user_question before delegating.`;
   }
-  if (confidence < 0.85) {
+  if (confidence < MODERATE_CEILING) {
     return 'Confidence is moderate. Delegate, but consider adding a brief one-line confirmation in your reply so the user can catch a misroute.';
   }
   return 'High confidence — delegate directly.';
+}
+
+/** Read the per-group clarify threshold from config, falling back safely (the
+ * config singleton isn't loaded in some test/non-runtime contexts). */
+function clarifyThreshold(): number {
+  try {
+    return getConfig().confidenceThreshold ?? DEFAULT_CLARIFY_THRESHOLD;
+  } catch {
+    return DEFAULT_CLARIFY_THRESHOLD;
+  }
 }
 
 export const classifyIntent: McpToolDefinition = {
@@ -208,7 +234,7 @@ export const classifyIntent: McpToolDefinition = {
     // should be attributed to the eventual send.
     setCurrentClassificationId(classificationId);
 
-    const advisory = confidenceAdvisory(confidence, distinctCandidates.length);
+    const advisory = confidenceAdvisory(confidence, distinctCandidates.length, clarifyThreshold());
     log(
       `classify_intent: id=${classificationId} worker=${recommendedWorker ?? 'none'} conf=${confidence.toFixed(2)} action=${action}`,
     );
