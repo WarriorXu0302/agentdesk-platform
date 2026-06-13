@@ -4,6 +4,12 @@
 
 > **品牌可配置。** 默认显示名是 `AgentDesk`，机器命名空间是 `agentdesk`（可通过 `BRAND_NAME` / `BRAND_NAMESPACE` 改写）。本文用默认值书写。
 
+<p align="center">
+  <img src="assets/architecture.png" alt="AgentDesk 架构总览：多通道接入 → 单进程宿主编排与按用户隔离的会话 → 容器化执行与后端网关，全程由一条不可伪造的身份信任链贯穿；底部是只读可观测性、可靠性与供应链硬化。" width="100%">
+</p>
+
+<p align="center"><sub>通道接入 → frontdesk 派活 → 按用户隔离的会话 → 沙箱化执行 → 唯一的、带审计与身份绑定的后端网关</sub></p>
+
 文档分四层：
 
 1. [README.md](../README.md) — 一页能力清单 + 快速启动

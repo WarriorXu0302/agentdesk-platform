@@ -12,6 +12,12 @@
 > 用 `BRAND_NAME` / `BRAND_NAMESPACE` 两个环境变量即可整体改名 —— 它们会渗透到
 > 容器 label、镜像名、指标前缀、签名 header、配置路径。详见 `src/branding.ts`。
 
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="AgentDesk 架构总览:多通道接入 → 单进程宿主编排与按用户隔离的会话 → 容器化执行与后端网关,全程由一条不可伪造的身份信任链贯穿;底部是只读可观测性、可靠性与供应链硬化。" width="100%">
+</p>
+
+<p align="center"><sub>通道接入 → frontdesk 派活 → 按用户隔离的会话 → 沙箱化执行 → 唯一的、带审计与身份绑定的后端网关</sub></p>
+
 ## 它替你解决了什么
 
 | 关注点 | 平台负责的部分 |
@@ -24,6 +30,8 @@
 | 可观测 | Prometheus `/metrics` + OpenTelemetry trace(Phoenix + Grafana) |
 
 ## 架构总览
+
+完整的分层架构见[顶部总览图](docs/assets/architecture.png)(也收录于 [`docs/architecture.md`](docs/architecture.md))。文字版主链路:
 
 ```text
 聊天用户 / 群聊

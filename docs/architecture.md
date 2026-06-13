@@ -1,5 +1,14 @@
 # AgentDesk Architecture (Draft)
 
+<p align="center">
+  <img src="assets/architecture.png" alt="AgentDesk architecture: multi-channel ingress → single-process host orchestration with per-user isolated sessions → containerized execution and the backend gateway, threaded end-to-end by an unforgeable identity trust chain; a bottom band covers read-only observability, reliability/durability, and supply-chain hardening." width="100%">
+</p>
+
+<p align="center"><sub>Channel ingress → frontdesk dispatch → isolated per-user sessions → sandboxed execution → one audited, identity-bound backend gateway.</sub></p>
+
+The diagram above is the canonical system overview. The sections below drill into
+the mechanisms behind each stage.
+
 ## Core Idea
 
 Each agent session has a **pair** of mounted SQLite files. Together they are
