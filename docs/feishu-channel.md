@@ -127,6 +127,52 @@ from the same `open_id`** and asserted to round-trip to `feishu:p2p:<open_id>`.
 `union_id` / `user_id` / `chat_id` (`oc_*`) are rejected — the target must be a
 p2p `open_id` (`ou_*`).
 
+### Make the consent card self-explanatory (onboarding)
+
+The platform only **parses** the `roster.optin` value (`scopeId`, `slotLabel`,
+`agentGroupId`, `expectedUserId`, optional `expiresAt` / `maxSends`) — those keys
+are an opaque scope binding, meaningless to a human. **Whoever builds the card
+(the operator/gateway or the agent via `send_card`) owns the human-readable
+framing**, and a bare "Allow" button with no context produces bad outcomes both
+ways: people click consent without understanding what they signed up for (then
+complain about DM volume), or decline defensively (and the agent can't reach
+them). So build the card to answer "what am I subscribing to?" *before* the
+button:
+
+- **Render the subscription terms in the card body**, above the opt-in button —
+  what will be sent, how often, and who is sending it. Add a one-line
+  **rationale** ("so I can ping you when your review is ready").
+- **Make the button text specific** — "Subscribe to daily product updates", not
+  "Allow". The button's *action value* still carries the `roster.optin` payload;
+  only the label changes.
+- **Offer a way out** — mention that they can opt out anytime by sending
+  `{"kind":"roster.optout","scopeId":...}` (or a directed opt-out card), so
+  consenting feels reversible (see [Opt-out / leave revoke](#opt-out--leave-revoke-adr-0023-item-11)).
+
+Example directed-card shape (member-scoped, so `expectedUserId` is the clicker's
+own `open_id`):
+
+```json
+{
+  "type": "card",
+  "card": {
+    "title": "Subscribe to QA review pings?",
+    "body": "Sender: QA Frontdesk bot. You'll get a direct message when a review you own is ready — about 1–3 per day, only for your reviews. Opt out anytime.",
+    "actions": [
+      { "label": "Subscribe to QA review pings",
+        "value": { "kind": "roster.optin", "scopeId": "scope-...", "slotLabel": "reviewer",
+                   "agentGroupId": "ag-...", "expectedUserId": "ou_<this member>" } }
+    ]
+  }
+}
+```
+
+These description/rationale strings are **informational only** — the grant's
+semantics (scope, slot, expiry, send cap) come entirely from the validated
+`roster.optin` value, never from the card prose. This keeps the platform generic
+(it mints consent from the binding, not the marketing copy) while giving
+operators the hooks to make consent legible.
+
 ### Group chats record intent only
 
 A roster opt-in arriving in a **group** chat records an intent log line and

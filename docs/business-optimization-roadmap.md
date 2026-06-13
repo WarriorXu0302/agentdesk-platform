@@ -379,10 +379,12 @@
 - **建议**:配额拒绝时发系统消息回 agent group 解释限额 + 重置时间 + 补救("明天再发或找管理员加配额");可选 `gateway_get_quota` 让 agent 发前查配额。
 - **工作量 M · 价值 低**
 
-### 6.11 Roster DM 同意卡无 onboarding/自助说明
+### 6.11 Roster DM 同意卡无 onboarding/自助说明 — ✅ 已落地(42e60f3,文档)
 - **现状**:同意卡(ADR-0023,`roster-consent.ts`)的 scopeId 对用户不透明,卡**无订阅内容/频率/发送方描述**。`parseRosterOptIn`(L56-70)无 description/rationale 字段。但卡 payload **可**含丰富描述。
 - **业务影响**:中等。员工不懂在订阅什么就点同意(后抱怨 DM 太多)或谨慎拒绝(限制 agent 触达),两边都降采纳率。
 - **建议**:文档化 opt-in 卡 payload 含 `{description, rationale}`;卡体在按钮前渲染描述;按钮文案具体化("订阅每日产品更新"非泛泛"允许");可选加 Learn more / Opt-out 链接。主要是运营者/网关责任,平台补文档支持。
+- **关键发现**:平台**无 opt-in 卡 builder**——卡由运营者/agent 经 `send_card` 构造,平台只 parse `roster.optin` value(scope 绑定,对人无意义)。所以这正是"运营者责任 + 平台补文档"。
+- **已实现**(纯文档,符合建议的"平台补文档支持"):`docs/feishu-channel.md` roster 段新增 "Make the consent card self-explanatory (onboarding)" 小节:卡体按钮前渲染订阅内容/频率/发送方 + 一句 rationale;按钮文案具体化(action value 仍带 `roster.optin`,只换 label);给出 opt-out 提示(链到 opt-out 段);附 member-scoped directed-card 范例 JSON。明确这些描述**仅信息性**——grant 语义只来自校验过的 `roster.optin` value(scope/slot/expiry/maxSends),不来自卡面文案,从而保持平台通用(从绑定铸同意,不碰营销文案)。
 - **工作量 S · 价值 中**
 
 ---
