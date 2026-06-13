@@ -576,6 +576,49 @@ Suggested namespaces:
 - `conversation.summary`
 - `approval.history`
 
+### Subject scoping & isolation (the backend's job)
+
+`subject.type` / `subject.id` are **free-form** in the contract — the platform
+passes whatever you send and does **not** enforce or validate the scope. That
+flexibility is deliberate (the platform stays business-agnostic), but it means
+**isolation is entirely your gateway's responsibility**: if you write a
+`team`-scoped fact but read it back as `user`, or your store doesn't filter by
+subject, you leak one principal's memory to another. There is no platform
+warning for a mis-scoped subject, so make the scope explicit and enforce it.
+
+Recommended subject-type vocabulary (pick the smallest scope that fits the
+fact), widest → narrowest:
+
+| `subject.type` | `subject.id` example | Use for | Who may read |
+|---|---|---|---|
+| `org` | `org:acme` | org-wide policy, holiday calendar | everyone in the org |
+| `department` | `dept:finance` | departmental SOPs, cost centers | members of that department |
+| `team` | `team:qa-eu` | team conventions, rotation | members of that team |
+| `contract` | `contract:CT-8821` | per-engagement state | parties on that contract |
+| `user` | `feishu:ou_alice` | personal prefs, drafts, PII | that user only |
+
+Isolation rules your gateway must enforce on **every** `get` / `upsert` /
+`search`:
+
+1. **Filter by `(namespace, subject)`** — never return a record whose stored
+   subject differs from the request's. `search` must scope to the subject too
+   (the reference gateway shows this; see also recall isolation in ADR-0033).
+2. **Authorize the requester against the subject's scope**, not just
+   authenticate them — a `user`-scoped read is allowed only for that user (or an
+   admin); a `team` read only for team members. Use `requester.userId` +
+   `requesterSource='session'` (host-verified) as the basis; reject
+   `agent-asserted` reads of another principal's scope.
+3. **Don't widen on write** — a fact learned in a user conversation belongs in
+   `user` scope unless the user is explicitly acting for the team; promoting it
+   to `team`/`org` is a deliberate, authorized step, not a default.
+4. **Pick the type deliberately** — store team facts as `team`, not `user`, so
+   they survive staff changes and don't fragment per-person.
+
+Optionally advertise your scope policy in `/describe` (e.g. per-namespace
+`scope` / `writeable`, which the platform already surfaces — see the namespace
+catalog the reference gateway returns) so the agent discovers it instead of
+guessing.
+
 ## Memory search & provenance (ADR-0033)
 
 `gateway_memory_get` is an exact lookup: the agent must already know the

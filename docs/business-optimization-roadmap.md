@@ -200,10 +200,11 @@
 - **建议**:扩 memory 响应 schema(可选)含 `conflictsWith: recordId[]` 和 `resolved` flag;给运营者一个检测冲突的后端示例(版本向量或 LWW);文档化 per-namespace 冲突策略。
 - **工作量 M · 价值 高**
 
-### 4.5 知识范围(org/team/user)无平台指引(留给运营者 + 文档)
+### 4.5 知识范围(org/team/user)无平台指引(留给运营者 + 文档)— ✅ 已落地(ec3160c,文档)
 - **现状**:契约接受任意 `subject.type`/`subject.id`(`gateway-contract.ts:137-148`),运营者**可建模任意范围**。但**无推荐 subject 类型词汇、无隔离规则示例、无一致性校验**。运营者可能本想写 team 却误写 user 而无警告。
 - **业务影响**:中等。运营者要从零设计范围规则,后端隔离没做好则有跨用户/跨团队泄露风险。
 - **建议**:写 memory-scoping 设计指南(docs 或 ADR),给推荐词汇(user/team/department/org/contract)和 per-type 隔离规则;`/describe` 可选含范围策略元数据;参考网关加范围隔离校验示例。**主要是运营者文档,非平台改动**。
+- **已实现**(纯文档,符合"主要运营者文档"):`enterprise-erp-gateway.md` 的 durable-memory 段新增 "Subject scoping & isolation (the backend's job)" 小节。点明 `subject.type/id` 是 free-form、平台**不校验/不强制**——隔离全是网关责任,误 scope(team 写成 user)无平台告警。给推荐词汇表(org/department/team/contract/user,宽→窄 + id 示例 + 谁可读)+ 网关必须在每次 get/upsert/search 强制的 4 条隔离规则(按 (namespace,subject) 过滤;按 subject scope 授权而非仅认证、拒 agent-asserted 跨主体读;写不自动扩范围;按事实选最小 type)。指出可选在 `/describe` 暴露 scope 策略(平台已支持 namespace catalog 的 scope/writeable,4.2/4.3)。grounded:free-form subject、requesterSource 信任、ADR-0033 召回隔离均已核对。
 - **工作量 M · 价值 中**
 
 ### 4.6 知识反馈闭环 / 运营者策展缺失
