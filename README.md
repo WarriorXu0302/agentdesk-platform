@@ -219,6 +219,7 @@ pnpm configure:enterprise-gateway --base-url <gateway>
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md) — 后端网关协议
 - [docs/feishu-channel.md](docs/feishu-channel.md) — 飞书接入
 - [docs/decisions/README.md](docs/decisions/README.md) — ADR 决策档案
+- [docs/business-optimization-roadmap.md](docs/business-optimization-roadmap.md) — 业务侧优化 backlog(56 条经核实的待办 + 优先级)
 - [examples/](examples/) — 把业务接入框架的参考样例
 
 ## License
