@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendImageAndCommand,
+  buildContainerArgs,
   buildNetworkArgs,
   buildRunnerTracingEnvArgs,
   buildSecurityArgs,
@@ -485,5 +486,74 @@ describe('buildNetworkArgs (ADR-0032 egress lockdown)', () => {
       expect(args.indexOf('--network')).toBe(-1);
       expect(args.slice(imageIndex + 1)).toEqual(['-c', 'exec bun run /app/src/index.ts']);
     });
+  });
+});
+
+describe('buildContainerArgs — real argv assembly (integration-bug class)', () => {
+  const agentGroup = {
+    id: 'ag1',
+    name: 'TestGroup',
+    folder: 'test-group',
+    agent_provider: null,
+    created_at: '2026-01-01T00:00:00Z',
+  } as never;
+
+  const containerConfig = {
+    mcpServers: {},
+    packages: { apt: [], npm: [] },
+    additionalMounts: [],
+    skills: 'all',
+  } as never;
+
+  const mounts = [
+    { hostPath: '/h/ro', containerPath: '/workspace/agent/container.json', readonly: true },
+    { hostPath: '/h/rw', containerPath: '/workspace', readonly: false },
+  ];
+
+  /** Index of the image tag (right after `--entrypoint bash`). */
+  function imageIndex(args: string[]): number {
+    const ep = args.indexOf('--entrypoint');
+    expect(ep).toBeGreaterThanOrEqual(0);
+    return ep + 2; // --entrypoint, bash, <image>
+  }
+
+  it('places EVERY -e flag before the image tag (the docker-drops-trailing-env bug)', async () => {
+    // provider='mock' skips the OneCLI gateway entirely — no network/mock needed.
+    const args = await buildContainerArgs(mounts, 'c-1', agentGroup, containerConfig, 'mock', {}, 'ag1');
+    const img = imageIndex(args);
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-e') expect(i).toBeLessThan(img);
+    }
+    // Baseline env the runner depends on is present and before the image.
+    expect(findInjectedEnvValue(args, 'TZ')).toBeDefined();
+    expect(findInjectedEnvValue(args, 'BRAND_NAMESPACE')).toBe('agentdesk');
+    // Mounts are present and precede the image tag.
+    expect(args.indexOf('-v')).toBeGreaterThanOrEqual(0);
+    expect(args.lastIndexOf('-v')).toBeLessThan(img);
+    // Command tail is sealed exactly once.
+    expect(args.slice(-2)).toEqual(['-c', 'exec bun run /app/src/index.ts']);
+  });
+
+  it('injects the signing-proxy env + merged NO_PROXY, all before the image (ADR-0034)', async () => {
+    const signingProxy = {
+      token: 'jti.sekret',
+      url: 'http://host.docker.internal:8799',
+      noProxyHost: 'host.docker.internal',
+      redactedConfigPath: '/tmp/redacted.container.json',
+    };
+    const args = await buildContainerArgs(mounts, 'c-2', agentGroup, containerConfig, 'mock', {}, 'ag1', signingProxy);
+    const img = imageIndex(args);
+    expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_URL')).toBe('http://host.docker.internal:8799');
+    expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_TOKEN')).toBe('jti.sekret');
+    expect(findInjectedEnvValue(args, 'NO_PROXY')).toContain('host.docker.internal');
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-e') expect(i).toBeLessThan(img);
+    }
+  });
+
+  it('does NOT inject proxy env when signingProxy is absent (default OFF, zero change)', async () => {
+    const args = await buildContainerArgs(mounts, 'c-3', agentGroup, containerConfig, 'mock', {}, 'ag1');
+    expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_URL')).toBeUndefined();
+    expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_TOKEN')).toBeUndefined();
   });
 });

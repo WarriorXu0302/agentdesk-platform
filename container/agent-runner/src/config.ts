@@ -61,20 +61,13 @@ function resolveIdleExitMs(configValue: unknown): number {
 let _config: RunnerConfig | null = null;
 
 /**
- * Load config from container.json. Called once at startup.
- * Falls back to sensible defaults for any missing field.
+ * Build a RunnerConfig from the raw parsed container.json object, applying
+ * defaults for every missing/invalid field. Pure + exported so the host→
+ * container config contract (the RO-mounted container.json the runner reads)
+ * is unit-testable without touching the filesystem or the loadConfig cache.
  */
-export function loadConfig(): RunnerConfig {
-  if (_config) return _config;
-
-  let raw: Record<string, unknown> = {};
-  try {
-    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {
-    console.error(`[config] Failed to read ${CONFIG_PATH}, using defaults`);
-  }
-
-  _config = {
+export function buildRunnerConfig(raw: Record<string, unknown>): RunnerConfig {
+  return {
     provider: (raw.provider as string) || 'claude',
     assistantName: (raw.assistantName as string) || '',
     groupName: (raw.groupName as string) || '',
@@ -91,7 +84,23 @@ export function loadConfig(): RunnerConfig {
     // host-sweep kills me" behavior.
     idleExitMs: resolveIdleExitMs(raw.idleExitMs),
   };
+}
 
+/**
+ * Load config from container.json. Called once at startup.
+ * Falls back to sensible defaults for any missing field.
+ */
+export function loadConfig(): RunnerConfig {
+  if (_config) return _config;
+
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {
+    console.error(`[config] Failed to read ${CONFIG_PATH}, using defaults`);
+  }
+
+  _config = buildRunnerConfig(raw);
   return _config;
 }
 

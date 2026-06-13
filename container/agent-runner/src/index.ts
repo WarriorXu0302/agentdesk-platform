@@ -32,7 +32,7 @@ import { fileURLToPath } from 'url';
 
 import { MCP_SERVER_NAME } from './branding.js';
 import { loadConfig } from './config.js';
-import { buildMcpChildEnv } from './mcp-child-env.js';
+import { buildMcpServersConfig } from './mcp-child-env.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
@@ -86,19 +86,11 @@ async function main(): Promise<void> {
   // (ADR-0034) must travel through env. The allowlist lives in mcp-child-env.ts
   // as a single source of truth so a forgotten passthrough is caught by a unit
   // test, not discovered in production.
-  const mcpChildEnv = buildMcpChildEnv(process.env);
-
-  // Build MCP servers config: built-in tools server + any from container.json
-  const mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {
-    [MCP_SERVER_NAME]: {
-      command: 'bun',
-      args: ['run', mcpServerPath],
-      env: mcpChildEnv,
-    },
-  };
-
+  // Built-in tools server (env-allowlist passthrough applied) + container.json
+  // servers. Assembly is in mcp-child-env.ts as a single source of truth so a
+  // unit test pins that the built-in server's env carries the passthrough.
+  const mcpServers = buildMcpServersConfig(process.env, MCP_SERVER_NAME, mcpServerPath, config.mcpServers);
   for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-    mcpServers[name] = serverConfig;
     log(`Additional MCP server: ${name} (${serverConfig.command})`);
   }
 

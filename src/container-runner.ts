@@ -774,7 +774,16 @@ export function mergeNoProxyArgs(args: string[], additions: string[]): string[] 
   return args;
 }
 
-async function buildContainerArgs(
+/**
+ * Assemble the full `docker run` argv. Exported for testing: with
+ * `provider='mock'` it skips the OneCLI gateway call entirely (no network/mock
+ * needed), so a test can assert the REAL argv — most importantly that every
+ * `-e KEY=VALUE` lands BEFORE the image tag (docker drops `-e` after the image;
+ * this is the exact ordering bug that silently disabled OTEL and the signing
+ * proxy), and that proxy mode injects the proxy env + mounts the REDACTED
+ * container.json.
+ */
+export async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   agentGroup: AgentGroup,
