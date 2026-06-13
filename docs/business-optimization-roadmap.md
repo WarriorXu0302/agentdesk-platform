@@ -146,10 +146,14 @@
 - **建议**:在 `enterprise-erp-gateway.md` 文档化文件处理模式:(1) 小文件(<1MB)内联 base64;(2) URL 引用存 memory;(3) 大文档走带外文件服务(S3 签名 URL 经 context 传递)。Content-Type 保持 json,无需 multipart 改动。
 - **工作量 M · 价值 中**
 
-### 3.5 部分失败 / 事务语义未明确
+### 3.5 部分失败 / 事务语义未明确 — ✅ 已落地(69c1343)
 - **现状**:幂等**已支持**(写操作带 `idempotencyKey`,`ERP-INTEGRATION-GUIDE.md:236-256` 文档化,`gateway.ts:667` 自动生成),所以**重试是安全的**。但错误 schema 无字段区分"成功但有警告"vs"完全失败",无法表达"发票建了但总账过账失败"。ADR-0028 有意保持封闭简单错误枚举。
 - **业务影响**:中等。运营者必须谨慎设计幂等,把操作拆成独立单元以防部分失败污染数据。契约不阻止好设计,但不强制。
 - **建议**:扩 `enterprise-erp-gateway.md` 错误 schema 章节,讲清"何时用结构化错误 vs HTTP 状态"并举例;加"Transactions & Compensation"章节(dryRun preview + commit、显式补偿操作如 `sales.order.unpost`)。这主要是**应用设计责任**,非契约缺陷。
+- **已实现**(纯文档,无契约变更——3.5 本就是"应用设计责任"):
+  - `enterprise-erp-gateway.md` 错误段加 "Structured error vs HTTP status — which to use" 子节:永久可纠错的拒绝走 HTTP 状态(retryable=false 让 agent 停);瞬时基础设施失败走结构化 `retryable:true`/5xx 触发 ADR-0016 退避;非基础设施的业务"否"用 2xx + `ok:false` 带业务原因,而非传输错误码(封闭枚举只管传输/重试分类)。
+  - 新增 "Transactions, partial failure & compensation" 章节:点明平台**无分布式事务协调器**、封闭枚举无"部分成功"码,给 3 个递进模式——(1) 让每个 `/execute` 是后端原子单元(原子 `createAndPost` 或拆成各自幂等的步骤);(2) `dryRun` preview 先校验再 commit;(3) 幂等保证重试安全、**显式补偿操作**(如 `sales.order.unpost`/`payment.refund`)保证多步可恢复,平台不回滚已提交写。批量部分结果用 `ok:true` + 结构化 per-item 状态表达,可接 6.9 的 attestation。
+  - 交叉锚链到 `idempotencyKey` 段与 Execution attestation 段(6.9),锚已核对存在。
 - **工作量 M · 价值 中**
 
 ### 3.6 分页 / 列表操作无协议支持(留给运营者)

@@ -358,6 +358,60 @@ The code is also folded into the `gateway_audit` row (see below) as an
 `[CODE]`-prefixed `error_msg`, and as a dedicated `errorCode` field in the
 container-emitted audit message.
 
+### Structured error vs HTTP status — which to use
+
+- **Permanent, user-actionable refusal** (not allowed, validation, unknown
+  operation): return the matching HTTP status (403 / 422 / 404). `retryable` is
+  `false`, so the agent stops and surfaces it instead of looping.
+- **Transient infrastructure failure** (dependency down, lock timeout, rate
+  limit): return a **structured error** with `retryable: true` (and
+  `retryAfterMs` if you know it), or a 5xx. The host's delivery backoff
+  (ADR-0016) then retries safely — see idempotency below.
+- **Domain "no" that isn't an infra error** (e.g. "insufficient budget"):
+  prefer `ok: false` in a **2xx** result with a structured business reason the
+  agent can relay, rather than a transport error code. The closed enum is for
+  *transport/retry* classification, not for business outcomes.
+
+## Transactions, partial failure & compensation
+
+The error enum is deliberately small (ADR-0028): there is no
+"succeeded-with-warnings" or "partially-applied" code, and the platform has **no
+distributed-transaction coordinator**. It will faithfully retry a failed call,
+but it cannot roll back a multi-step sequence for you. So model operations so a
+partial failure is representable and recoverable — this is application design,
+not a contract gap. Three patterns, in order of preference:
+
+1. **Make each `/execute` one atomic backend unit.** The cleanest answer to
+   "the invoice was created but the ledger post failed" is to not expose that as
+   one half-committable call. Either expose an operation that is atomic on the
+   backend (`finance.invoice.createAndPost`, committed in one backend
+   transaction), or split it into independently-idempotent steps the agent
+   sequences (`invoice.create` → `ledger.post`), each safe to retry on its own.
+
+2. **`dryRun` preview before commit.** A mutating `/execute` accepts
+   `dryRun: true` and returns a `preview` instead of a `result` — validate the
+   whole request (auth, required fields, business preconditions) and surface the
+   preview to the user before the real write. The conformance runner uses this
+   mode precisely so it can probe without committing.
+
+3. **Idempotency makes the retry safe; compensation makes the sequence
+   recoverable.** Every mutating `/execute` carries a platform-generated
+   `idempotencyKey` (see [`idempotencyKey`](#idempotencykey-write-operations));
+   dedupe on it so a host retry replays the prior result instead of double-
+   writing. For a step that a *later* step invalidates, expose an explicit
+   **compensating operation** (e.g. `sales.order.unpost`, `payment.refund`) and
+   have the agent call it — do not expect the platform to undo a committed
+   write. Record both the original and the compensation in your backend audit so
+   the trail reflects what actually happened.
+
+**Representing a partial outcome.** When an operation legitimately has per-item
+results (a batch the backend chose to accept partially), don't flatten it to a
+single code: return `ok: true` with a structured `result` that enumerates each
+item's status (e.g. `{ applied: [...], failed: [{ id, reason }] }`). The agent
+can then report exactly what landed and attest it (see
+[Execution attestation](#execution-attestation-user-visible-trust-signal)).
+Reserve the closed error codes for whole-request transport failures.
+
 ## Strict response mode
 
 By default, a successful (2xx) response that doesn't match the recommended
