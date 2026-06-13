@@ -191,6 +191,19 @@ export const deliveryPermanentFailuresTotal = new client.Counter({
   registers: [registry],
 });
 
+export const inboundProcessingPermanentFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_inbound_processing_permanent_failures_total`,
+  help: 'Inbound messages whose container-processing retries are exhausted (host-sweep marked status=failed)',
+  // The INBOUND mirror of delivery_permanent_failures_total: a message the
+  // container repeatedly crashed/was-killed on (MAX_TRIES sweep resets) is
+  // parked at messages_in.status='failed' and never re-polled — the user's
+  // request is dropped. Alert on ANY non-zero rate; recover via
+  // scripts/requeue-inbound.ts. `agent_group` labels which group's worker is
+  // failing so a single broken group is distinguishable from a host-wide issue.
+  labelNames: ['agent_group'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',

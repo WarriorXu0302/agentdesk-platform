@@ -14,11 +14,14 @@ import {
   getDeliveryAttempts,
   getInboundSourceSessionId,
   getUndeliverableIds,
+  listFailedInbound,
   markDelivered,
   markDeliveryFailed,
+  markMessageFailed,
   migrateDeliveredTable,
   migrateMessagesInTable,
   requeueFailedDelivery,
+  requeueFailedInbound,
 } from './session-db.js';
 
 const TEST_DIR = '/tmp/nanoclaw-session-db-test';
@@ -221,6 +224,65 @@ describe('delivered retry semantics', () => {
 
     expect(requeueFailedDelivery(db, 'msg-4')).toBe(false); // delivered row untouched
     expect(requeueFailedDelivery(db, 'no-such-row')).toBe(false);
+    db.close();
+  });
+});
+
+describe('inbound dead-letter requeue (status=failed)', () => {
+  function freshInboundDb(): Database.Database {
+    if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    const db = new Database(DB_PATH);
+    db.exec(`
+      CREATE TABLE messages_in (
+        id TEXT PRIMARY KEY, seq INTEGER UNIQUE, kind TEXT NOT NULL, timestamp TEXT NOT NULL,
+        status TEXT DEFAULT 'pending', process_after TEXT, tries INTEGER DEFAULT 0,
+        origin_user_id TEXT, content TEXT NOT NULL
+      );
+    `);
+    return db;
+  }
+  function insert(db: Database.Database, id: string, seq: number, status: string, tries = 0): void {
+    db.prepare(
+      "INSERT INTO messages_in (id, seq, kind, timestamp, status, tries, content) VALUES (?, ?, 'task', datetime('now'), ?, ?, '{}')",
+    ).run(id, seq, status, tries);
+  }
+
+  it('listFailedInbound returns only status=failed rows', () => {
+    const db = freshInboundDb();
+    insert(db, 'ok-1', 1, 'completed');
+    insert(db, 'pending-1', 2, 'pending');
+    insert(db, 'failed-1', 3, 'failed', 5);
+    markMessageFailed(db, 'pending-1'); // now also failed
+    const failed = listFailedInbound(db);
+    expect(failed.map((r) => r.id).sort()).toEqual(['failed-1', 'pending-1']);
+    db.close();
+  });
+
+  it('requeueFailedInbound resets a failed row to pending/tries=0 and returns true', () => {
+    const db = freshInboundDb();
+    insert(db, 'failed-1', 1, 'failed', 5);
+    db.prepare("UPDATE messages_in SET process_after = datetime('now','+1 hour') WHERE id = 'failed-1'").run();
+    expect(requeueFailedInbound(db, 'failed-1')).toBe(true);
+    const row = db.prepare('SELECT status, tries, process_after FROM messages_in WHERE id = ?').get('failed-1') as {
+      status: string;
+      tries: number;
+      process_after: string | null;
+    };
+    expect(row.status).toBe('pending');
+    expect(row.tries).toBe(0);
+    expect(row.process_after).toBeNull();
+    db.close();
+  });
+
+  it('requeueFailedInbound is a no-op on non-failed / missing rows', () => {
+    const db = freshInboundDb();
+    insert(db, 'pending-1', 1, 'pending');
+    expect(requeueFailedInbound(db, 'pending-1')).toBe(false); // not failed
+    expect(requeueFailedInbound(db, 'no-such-row')).toBe(false);
+    expect((db.prepare("SELECT status FROM messages_in WHERE id='pending-1'").get() as { status: string }).status).toBe(
+      'pending',
+    );
     db.close();
   });
 });

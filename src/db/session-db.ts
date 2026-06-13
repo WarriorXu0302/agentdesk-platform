@@ -175,6 +175,38 @@ export function markMessageFailed(db: Database.Database, messageId: string): voi
   db.prepare("UPDATE messages_in SET status = 'failed' WHERE id = ?").run(messageId);
 }
 
+export interface FailedInboundRow {
+  id: string;
+  kind: string;
+  tries: number;
+  timestamp: string;
+  origin_user_id: string | null;
+}
+
+/** Inbound messages dead-lettered by host-sweep retry exhaustion (status='failed'). */
+export function listFailedInbound(db: Database.Database): FailedInboundRow[] {
+  return db
+    .prepare(
+      "SELECT id, kind, tries, timestamp, origin_user_id FROM messages_in WHERE status = 'failed' ORDER BY timestamp",
+    )
+    .all() as FailedInboundRow[];
+}
+
+/**
+ * Requeue a dead-lettered inbound message: reset it to pending so the next
+ * wake/sweep re-delivers it to the container. Clears tries + process_after so
+ * it isn't immediately re-killed by the same backoff. Returns true if a failed
+ * row was actually reset. Mirrors requeueFailedDelivery for the outbound DLQ.
+ */
+export function requeueFailedInbound(db: Database.Database, messageId: string): boolean {
+  const res = db
+    .prepare(
+      "UPDATE messages_in SET status = 'pending', tries = 0, process_after = NULL WHERE id = ? AND status = 'failed'",
+    )
+    .run(messageId);
+  return res.changes > 0;
+}
+
 export function retryWithBackoff(db: Database.Database, messageId: string, backoffSec: number): void {
   db.prepare(
     `UPDATE messages_in SET tries = tries + 1, process_after = datetime('now', '+${backoffSec} seconds') WHERE id = ?`,

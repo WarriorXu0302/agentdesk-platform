@@ -140,3 +140,98 @@ groups:
             prompt-injected agent attempted impersonation or a legitimate emit
             path is stamping unverifiable identities. Both require
             investigation. See ADR-0017.
+
+      # Inbound silently parked: envelope persisted to the recovery ledger
+      # (ADR-0022) but routeInbound threw — the user's message was accepted but
+      # never reached a session. Recoverable only via scripts/replay-inbound.ts.
+      # NOTE: also fires post-restart with the __startup_backlog__ label when a
+      # standing failed backlog is re-surfaced — that IS worth paging.
+      - alert: AgentDeskInboundIngressFailing
+        expr: rate(agentdesk_inbound_ingress_failed_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Inbound messages failed to route after being persisted
+          description: >-
+            agentdesk_inbound_ingress_failed_total is non-zero. A message was
+            accepted + persisted to the ingress ledger but routeInbound threw,
+            so it sits at status='failed' and was never delivered to a session.
+            Inspect/replay via scripts/replay-inbound.ts. See RUNBOOK §3.7.
+
+      # Inbound dead-lettered: a container repeatedly crashed/was-killed on a
+      # message until MAX_TRIES sweep resets exhausted it. The inbound mirror of
+      # the outbound DLQ — the user's request is dropped and never re-polled.
+      - alert: AgentDeskInboundProcessingPermanentFailures
+        expr: rate(agentdesk_inbound_processing_permanent_failures_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Inbound messages permanently dropped after retry exhaustion
+          description: >-
+            agentdesk_inbound_processing_permanent_failures_total is non-zero.
+            An inbound message exhausted its container-processing retries and is
+            parked at messages_in.status='failed' (never re-polled). Inspect a
+            crash-looping worker; requeue via scripts/requeue-inbound.ts.
+            See RUNBOOK §3.7.
+
+      # Identity trust-chain alarm: the host signing proxy (ADR-0034) refused to
+      # sign because a container's request body claimed a DIFFERENT agent group
+      # than its token is bound to — an impersonation signal.
+      - alert: AgentDeskGatewaySigningImpersonation
+        expr: rate(agentdesk_gateway_signing_proxy_total{outcome="identity_mismatch"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Signing proxy rejected a cross-group impersonation attempt
+          description: >-
+            agentdesk_gateway_signing_proxy_total{outcome="identity_mismatch"}
+            is non-zero. A proxy-mode container tried to get the host to sign a
+            request claiming another agent group. Investigate for prompt
+            injection. See ADR-0034, RUNBOOK §3.8.
+
+      # Signing proxy fail-closed: a group has no host-side signing key, so its
+      # proxied gateway calls 502 — backend access is broken for that group.
+      - alert: AgentDeskGatewaySigningFailClosed
+        expr: rate(agentdesk_gateway_signing_proxy_total{outcome="no_signing_key"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Signing proxy cannot sign — no key for the group
+          description: >-
+            agentdesk_gateway_signing_proxy_total{outcome="no_signing_key"} is
+            non-zero. The signing proxy is enabled but a group has no host-side
+            signingKey, so its gateway calls fail closed (502). Configure the
+            key via scripts/configure-enterprise-gateway.ts. See RUNBOOK §3.8.
+
+      # Unsigned backend gateways: a group has a baseUrl but no signingKey, so
+      # its backend requests go out UNSIGNED and are forgeable (ADR-0018).
+      - alert: AgentDeskUnsignedGateways
+        expr: agentdesk_gateway_unsigned_groups > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent groups calling the backend gateway unsigned
+          description: >-
+            agentdesk_gateway_unsigned_groups > 0. A group has a gateway baseUrl
+            but no HMAC signingKey — anything that can reach the backend can
+            forge its requests. Provision a key via
+            scripts/configure-enterprise-gateway.ts. See RUNBOOK §3.8.
+
+      # Broken agent regex: an engage_pattern failed to compile, so that agent
+      # is fail-closed and silently dropping ALL its inbound (ADR-0019).
+      - alert: AgentDeskEngagePatternInvalid
+        expr: rate(agentdesk_engage_pattern_invalid_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent engage_pattern regex failed to compile
+          description: >-
+            agentdesk_engage_pattern_invalid_total is non-zero. An agent's
+            engage_pattern did not compile; that agent is fail-closed and
+            dropping all inbound until the regex is fixed. See RUNBOOK §3.9.

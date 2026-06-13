@@ -46,7 +46,7 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { sessionCount, sessionLifecycleTotal } from './metrics.js';
+import { inboundProcessingPermanentFailuresTotal, sessionCount, sessionLifecycleTotal } from './metrics.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import { runSessionLifecycleSweep } from './session-archive.js';
@@ -368,6 +368,11 @@ function resetStuckProcessingRows(
 
     if (msg.tries >= MAX_TRIES) {
       markMessageFailed(inDb, msg.id);
+      // Silent-loss signal: this inbound message is now terminally dead
+      // (status='failed', never re-polled). Surface it so an operator can
+      // requeue it via scripts/requeue-inbound.ts instead of discovering it as
+      // a missing reply. Mirrors the outbound DLQ counter.
+      inboundProcessingPermanentFailuresTotal.labels(session.agent_group_id).inc();
       log.warn('Message marked as failed after max retries', {
         messageId: msg.id,
         sessionId: session.id,
