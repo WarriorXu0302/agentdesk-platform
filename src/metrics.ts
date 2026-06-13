@@ -238,6 +238,17 @@ export const runawaySessionStopsTotal = new client.Counter({
   registers: [registry],
 });
 
+export const approvalEventsTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_approval_events_total`,
+  help: 'Approval decisions resolved (roadmap 5.2), by action + result',
+  // `action`: the approval kind (onecli_credential, install_packages, …).
+  // `result`: approved | rejected. Pairs with the enterprise_audit
+  // `approval_resolved` rows for a queryable + alertable view of who approved
+  // what — the audit row is the durable compliance record, this is the metric.
+  labelNames: ['action', 'result'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',

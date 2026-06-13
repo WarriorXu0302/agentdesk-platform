@@ -14,6 +14,8 @@
  */
 import { wakeContainer } from '../../container-runner.js';
 import { deletePendingApproval, getPendingApproval, getSession } from '../../db/sessions.js';
+import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
+import { approvalEventsTotal } from '../../metrics.js';
 import type { ResponsePayload } from '../../response-registry.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
@@ -23,7 +25,7 @@ import { getApprovalHandler } from './primitive.js';
 
 export async function handleApprovalsResponse(payload: ResponsePayload): Promise<boolean> {
   // OneCLI credential approvals — resolved via in-memory Promise first.
-  if (resolveOneCLIApproval(payload.questionId, payload.value)) {
+  if (resolveOneCLIApproval(payload.questionId, payload.value, payload.userId ?? undefined)) {
     return true;
   }
 
@@ -69,9 +71,23 @@ async function handleRegisteredApproval(
     });
   };
 
+  // Durable compliance record of the decision (roadmap 5.2), emitted BEFORE the
+  // transient pending_approvals row is deleted. enterprise_audit is the permanent
+  // who-approved-what trail; approval_events_total is the metric companion.
+  const auditDecision = (result: 'approved' | 'rejected', outcome: string): void => {
+    recordEnterpriseAudit({
+      eventType: 'approval_resolved',
+      agentGroupId: session.agent_group_id,
+      actor: userId || null,
+      details: { approvalId: approval.approval_id, action: approval.action, result, outcome },
+    });
+    approvalEventsTotal.inc({ action: approval.action, result });
+  };
+
   if (selectedOption !== 'approve') {
     notify(`Your ${approval.action} request was rejected by admin.`);
     log.info('Approval rejected', { approvalId: approval.approval_id, action: approval.action, userId });
+    auditDecision('rejected', 'rejected_by_admin');
     deletePendingApproval(approval.approval_id);
     await wakeContainer(session);
     return;
@@ -85,22 +101,26 @@ async function handleRegisteredApproval(
       action: approval.action,
     });
     notify(`Your ${approval.action} was approved, but no handler is installed to apply it.`);
+    auditDecision('approved', 'no_handler');
     deletePendingApproval(approval.approval_id);
     await wakeContainer(session);
     return;
   }
 
   const payload = JSON.parse(approval.payload);
+  let outcome = 'applied';
   try {
     await handler({ session, payload, userId, notify });
     log.info('Approval handled', { approvalId: approval.approval_id, action: approval.action, userId });
   } catch (err) {
+    outcome = 'apply_failed';
     log.error('Approval handler threw', { approvalId: approval.approval_id, action: approval.action, err });
     notify(
       `Your ${approval.action} was approved, but applying it failed: ${err instanceof Error ? err.message : String(err)}.`,
     );
   }
 
+  auditDecision('approved', outcome);
   deletePendingApproval(approval.approval_id);
   await wakeContainer(session);
 }

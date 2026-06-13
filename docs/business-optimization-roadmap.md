@@ -209,6 +209,7 @@
 - **工作量 S · 价值 高**
 
 ### 5.2 审批过期/拒绝/升级无集中审计,缺审批元数据 ⭐
+> ✅ **已实现核心**(治理审计 batch 4):两条 resolve 路径在**删行前** emit `recordEnterpriseAudit({eventType:'approval_resolved', actor:审批人, details:{approvalId,action,result,outcome}})` + `approval_events_total{action,result}` 指标——OneCLI(`resolveOneCLIApproval` 加 `actorUserId` 入参)与 agent-initiated(reject / approve-applied / approve-no-handler / approve-failed 四个分支)。新增 response-handler.test.ts(用真 session 文件夹 + mock 容器运行时,验拒绝/批准都落审计)。**有意未加 schema 列**(approver/decision_timestamp/decision_reason):pending_approvals 行在 resolve 时即删,持久合规记录落在 enterprise_audit 才对,瞬态列价值低。
 - **现状**:OneCLI 审批 resolve 时(`onecli-approvals.ts:81`)只 `log.info`,**删行前不 emit 审计**;agent-initiated 审批(`response-handler.ts:74,96`)也只 log.info。`pending_approvals` 表(`module-approvals-pending-approvals.ts`)**无 `approver_user_id`/`decision_timestamp`/`decision_reason` 列**。审批决策只在日志(易失),不在审计表(可查)。
 - **业务影响**:中等(价值标中)。审计员无法回答"谁批了这个凭证请求""这个安装包何时被拒、为何",得关联日志。
 - **建议**:`pending_approvals` 加 approver_user_id/decision_timestamp/decision_reason;在 resolve 前调 `recordEnterpriseAudit`(decision 结果);加 metric `approval_event{action,result,duration_ms}`。
@@ -394,7 +395,7 @@
 |---|---|---|
 | 🟡 **5.1 角色授予/撤销审计**(部分,见正文) | S | 治理(合规快赢之王) |
 | ✅ **5.5 a2a 委派审计面包屑** | S | 治理 |
-| **5.2 审批决策审计 + 元数据** | S | 治理 |
+| ✅ **5.2 审批决策审计**(emit+metric;瞬态列有意不加) | S | 治理 |
 | ✅ **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
 | ✅ **4.3 namespace 可发现性** | S | 记忆(小 schema) |
 | ✅ **6.4 交互卡失败 fallback** | S | 渠道体验 |

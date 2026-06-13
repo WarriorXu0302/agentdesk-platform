@@ -22,6 +22,8 @@ import { OneCLI, type ApprovalRequest, type ManualApprovalHandle } from '@onecli
 import { pickApprovalDelivery, pickApprover } from './primitive.js';
 import { ONECLI_API_KEY, ONECLI_URL } from '../../config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
+import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
+import { approvalEventsTotal } from '../../metrics.js';
 import {
   createPendingApproval,
   deletePendingApproval,
@@ -64,15 +66,28 @@ function shortApprovalId(): string {
   return `oa-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Called from the approvals response handler when a card button is clicked. */
-export function resolveOneCLIApproval(approvalId: string, selectedOption: string): boolean {
+/**
+ * Called from the approvals response handler when a card button is clicked.
+ * `actorUserId` is the admin who clicked (optional; recorded in the audit row).
+ */
+export function resolveOneCLIApproval(approvalId: string, selectedOption: string, actorUserId?: string): boolean {
   const state = pending.get(approvalId);
   if (!state) return false;
   pending.delete(approvalId);
   clearTimeout(state.timer);
 
   const decision: Decision = selectedOption === 'approve' ? 'approve' : 'deny';
-  updatePendingApprovalStatus(approvalId, decision === 'approve' ? 'approved' : 'rejected');
+  const result = decision === 'approve' ? 'approved' : 'rejected';
+  updatePendingApprovalStatus(approvalId, result);
+  // Durable compliance record BEFORE the row is deleted (roadmap 5.2): who
+  // approved/denied which credential request, and when. The pending row is
+  // transient (deleted next line); enterprise_audit is the permanent trail.
+  recordEnterpriseAudit({
+    eventType: 'approval_resolved',
+    actor: actorUserId ?? null,
+    details: { approvalId, action: ONECLI_ACTION, result },
+  });
+  approvalEventsTotal.inc({ action: ONECLI_ACTION, result });
   // Card is auto-edited to "✅ <option>" by chat-sdk-bridge's onAction handler,
   // so we don't need to deliver an edit here.
   deletePendingApproval(approvalId);
