@@ -14,7 +14,7 @@ import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import { checkBaseImage, cleanupProxyRuntimeOnBoot } from './container-runner.js';
+import { checkBaseImage, cleanupProxyRuntimeOnBoot, stopAllContainers } from './container-runner.js';
 import { validateStartupConfig } from './config-validate.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
 import { startGatewaySigningProxy, stopGatewaySigningProxy } from './gateway-signing-proxy.js';
@@ -30,6 +30,7 @@ import {
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
+import { unhandledRejectionsTotal } from './metrics.js';
 import { ensureMetricsServer, stopWebhookServer } from './webhook-server.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -251,6 +252,14 @@ async function runShutdownSteps(): Promise<void> {
   // Let any drain caught mid-flight persist its markDelivered row before we
   // exit, shrinking the ADR-0016 duplicate window (see drainInflightDeliveries).
   await drainInflightDeliveries();
+  // Now that polls/sweep are stopped and produced replies are drained, stop the
+  // still-running agent containers so they don't keep producing undeliverable
+  // replies and don't linger as orphans until the next boot's cleanup.
+  try {
+    await stopAllContainers('host-shutdown');
+  } catch (err) {
+    log.error('Stopping containers on shutdown threw', { err });
+  }
   try {
     await teardownChannelAdapters();
   } finally {
@@ -262,8 +271,16 @@ async function runShutdownSteps(): Promise<void> {
   }
 }
 
+/** Guards against a second SIGTERM/SIGINT re-entering shutdown concurrently. */
+let shuttingDown = false;
+
 /** Graceful shutdown. */
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) {
+    log.warn('Shutdown already in progress — ignoring repeat signal', { signal });
+    return;
+  }
+  shuttingDown = true;
   log.info('Shutdown signal received', { signal });
   // Hard deadline: no single step (a hung webhook connection, a stuck adapter
   // teardown) may block exit indefinitely. Keep this below the orchestrator's
@@ -290,6 +307,18 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// log.ts already logs unhandled rejections (it does NOT crash, unlike
+// uncaughtException). Add an observable signal so the silent half-completed
+// state is alertable (AgentDeskUnhandledRejections). Registered here — not in
+// log.ts — to keep the logger free of a metrics import cycle.
+process.on('unhandledRejection', () => {
+  try {
+    unhandledRejectionsTotal.inc();
+  } catch {
+    /* metrics must never mask the rejection */
+  }
+});
 
 main().catch((err) => {
   log.fatal('Startup failed', { err });

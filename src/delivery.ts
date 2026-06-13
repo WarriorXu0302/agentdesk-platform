@@ -348,6 +348,17 @@ async function drainSession(session: Session): Promise<void> {
           }
           const platformMsgId = await deliverMessage(msg, session, inDb);
           markDelivered(inDb, msg.id, platformMsgId ?? null);
+          // Delete outbox attachment files only AFTER the delivered row is
+          // durably recorded. The old order (clear inside deliverMessage,
+          // before this markDelivered) meant a crash in between re-delivered
+          // the message WITHOUT its attachments on the next run. Best-effort: a
+          // cleanup failure must not flip an already-delivered message back
+          // into the retry path (worst case: orphan outbox files, not loss).
+          try {
+            clearOutbox(session.agent_group_id, session.id, msg.id);
+          } catch (err) {
+            log.warn('clearOutbox after delivery failed — orphan outbox files left behind', { id: msg.id, err });
+          }
           handledOutbound = true;
 
           if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
@@ -675,8 +686,9 @@ async function deliverMessage(
       fileCount: files?.length,
     });
 
-    clearOutbox(session.agent_group_id, session.id, msg.id);
-
+    // Outbox cleanup is done by drainSession AFTER markDelivered, not here —
+    // clearing before the delivered row is recorded risks re-delivery without
+    // attachments on a crash. See drainSession.
     return platformMsgId;
   });
 }
@@ -1017,7 +1029,8 @@ async function deliverRosterMessage(
     platformMsgId,
   });
 
-  clearOutbox(session.agent_group_id, session.id, msg.id);
+  // Outbox cleanup is done by drainSession AFTER markDelivered (see there) so a
+  // crash can't re-deliver this roster DM without its attachments.
   return platformMsgId;
 }
 

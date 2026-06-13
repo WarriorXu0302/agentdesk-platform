@@ -235,3 +235,18 @@ groups:
             agentdesk_engage_pattern_invalid_total is non-zero. An agent's
             engage_pattern did not compile; that agent is fail-closed and
             dropping all inbound until the regex is fixed. See RUNBOOK §3.9.
+
+      # Unhandled promise rejection: a promise error escaped its call site. The
+      # host logs but does not crash on these — a non-zero rate means it may be
+      # running in a half-completed state. Investigate the offending async path.
+      - alert: AgentDeskUnhandledRejections
+        expr: rate(agentdesk_unhandled_rejections_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host caught unhandled promise rejections
+          description: >-
+            agentdesk_unhandled_rejections_total is non-zero. A promise error
+            escaped its call site; the host logged it but kept running. Check
+            host stderr for the 'Unhandled rejection' lines and fix the path.

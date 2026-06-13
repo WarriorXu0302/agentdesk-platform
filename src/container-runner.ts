@@ -363,6 +363,29 @@ export async function killContainer(sessionId: string, reason: string): Promise<
 }
 
 /**
+ * Stop every active container — called from graceful shutdown so running
+ * agents don't keep producing replies the (now-stopping) host can't deliver,
+ * and so we don't rely on the next boot's cleanupOrphans to reap them. Each
+ * container's `close` handler still fires (revoking its signing-proxy token,
+ * marking it stopped). Best-effort + bounded by the caller's shutdown deadline.
+ */
+export async function stopAllContainers(reason: string): Promise<void> {
+  const entries = [...activeContainers.entries()];
+  if (entries.length === 0) return;
+  log.info('Stopping active containers on shutdown', { count: entries.length, reason });
+  await Promise.allSettled(
+    entries.map(async ([sessionId, entry]) => {
+      recentlyKilled.add(sessionId);
+      try {
+        stopContainer(entry.containerName);
+      } catch {
+        entry.process.kill('SIGKILL');
+      }
+    }),
+  );
+}
+
+/**
  * Resolve the provider name for a session using the precedence documented in
  * the provider-install skills:
  *

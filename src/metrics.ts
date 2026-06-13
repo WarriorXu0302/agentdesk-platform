@@ -191,6 +191,16 @@ export const deliveryPermanentFailuresTotal = new client.Counter({
   registers: [registry],
 });
 
+export const unhandledRejectionsTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_unhandled_rejections_total`,
+  help: 'Unhandled promise rejections caught by the process-level handler',
+  // The host logs but does not crash on an unhandled rejection (unlike
+  // uncaughtException, which exits). A non-zero rate means a promise error is
+  // escaping its call site, leaving the host in a possibly half-completed
+  // state — alert and investigate the offending async path.
+  registers: [registry],
+});
+
 export const inboundProcessingPermanentFailuresTotal = new client.Counter({
   name: `${METRIC_PREFIX}_inbound_processing_permanent_failures_total`,
   help: 'Inbound messages whose container-processing retries are exhausted (host-sweep marked status=failed)',

@@ -385,3 +385,16 @@ Migrations live in `src/db/migrations/`, one file per migration. Runner: `runMig
 Numbers 005 and 006 are intentionally absent — migrations were renumbered during early development.
 
 Session DB schemas (`INBOUND_SCHEMA`, `OUTBOUND_SCHEMA`) are **not** versioned here. They're `CREATE TABLE IF NOT EXISTS` so new columns land via the session-DB lazy migration helpers (`migrateDeliveredTable()` etc.) when a session file from an older build is reopened. See [db-session.md](db-session.md).
+
+## 3. Connection pragmas & durability boundary
+
+`initDb()` (`src/db/connection.ts`) opens the central `v2.db` with:
+
+| pragma | value | why |
+|---|---|---|
+| `journal_mode` | `WAL` | concurrent readers don't block the single writer; the central DB is host-only and never cross-mounted (unlike the session DBs, which must use `DELETE` for Docker bind-mount visibility). |
+| `foreign_keys` | `ON` | enforce referential integrity. |
+| `busy_timeout` | `5000` ms | give a writer a retry window instead of an immediate `SQLITE_BUSY` when a concurrent writer holds the lock (online backup `.backup`, a maintenance script, a WAL checkpoint). Matches the per-session convention. |
+| `synchronous` | `NORMAL` (default) | **durability boundary:** durable across an app/process crash, but the last committed transactions can be lost on host **power loss**. This is an accepted trade for the single-host target. Operators who need stronger audit durability can set `AGENTDESK_DB_SYNCHRONOUS=FULL` (fsync on every commit — slower writes). |
+
+The session DBs set their own `busy_timeout=5000` + `journal_mode=DELETE` per open (`src/db/session-db.ts`); see [db-session.md](db-session.md).
