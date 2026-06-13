@@ -24,7 +24,7 @@ import {
   handleGatewayMemorySearch,
   handleGatewayMemoryUpsert,
 } from './gateway.js';
-import { CONTRACT_VERSION, classifyHttpError } from './gateway-contract.js';
+import { CONTRACT_VERSION, classifyHttpError, describeResponseSchema } from './gateway-contract.js';
 
 const runtime = {
   assistantName: 'Frontdesk',
@@ -853,5 +853,28 @@ describe('signing credential proxy mode (ADR-0034)', () => {
 
     expect(result.isError).toBeUndefined();
     expect(cap.getUrl()).toBe('http://host.docker.internal:8799/describe');
+  });
+});
+
+describe('describe response: namespace catalog + freshness (roadmap 4.2/4.3)', () => {
+  it('accepts an optional namespaces array with freshnessWindowMs and preserves it', () => {
+    const parsed = describeResponseSchema.parse({
+      ok: true,
+      operations: [{ name: 'demo.echo' }],
+      namespaces: [
+        { name: 'user.preferences', scope: 'user', writeable: true, freshnessWindowMs: 86_400_000 },
+        { name: 'org.directory', writeable: false },
+      ],
+    });
+    expect(parsed.namespaces).toHaveLength(2);
+    expect(parsed.namespaces?.[0]).toMatchObject({ name: 'user.preferences', freshnessWindowMs: 86_400_000 });
+  });
+
+  it('stays backward-compatible: a describe response with no namespaces is valid', () => {
+    expect(describeResponseSchema.safeParse({ ok: true, operations: [] }).success).toBe(true);
+  });
+
+  it('rejects a namespace entry missing the required name', () => {
+    expect(describeResponseSchema.safeParse({ ok: true, namespaces: [{ scope: 'user' }] }).success).toBe(false);
   });
 });

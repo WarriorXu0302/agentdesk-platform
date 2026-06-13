@@ -52,6 +52,15 @@ capability layer.
   even if you think the request should pass.
 - Use `gateway_describe` when you are unsure which operation name or payload
   shape the backend expects.
+- When you need durable memory but are unsure which `namespace` exists, call
+  `gateway_describe` and read its optional `namespaces` list (each entry may
+  carry `description`, `scope`, `writeable`, and a `freshnessWindowMs`). Do not
+  assume a namespace that isn't advertised; discover it rather than guessing.
+- Treat recalled memory as possibly stale. When a record's `source.updatedAt`
+  is older than its namespace's `freshnessWindowMs` (or the fact is in a
+  fast-changing domain like pricing, org structure, or permissions), re-fetch
+  it or tell the user the value may be out of date — do not act on a stale fact
+  as if it were current.
 - If `gateway_execute` returns a backend-directed approval or confirmation
   step, do not improvise around it. Surface the requirement back to the user.
 

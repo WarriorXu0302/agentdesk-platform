@@ -160,12 +160,14 @@
 - **工作量 M · 价值 高**
 
 ### 4.2 缺知识新鲜度 / staleness 指引 ⭐
+> ✅ **已实现**(记忆契约 batch):`describeResponseSchema` 的 namespace 条目新增可选 `freshnessWindowMs`(每 namespace 的新鲜度 TTL);`gateway.instructions.md` 新增指引:agent 比对 `source.updatedAt` 与该 namespace 的 `freshnessWindowMs`(或快变领域),过窗口则重取或提示用户值可能过期;reference-gateway `/describe` 给了两个带 freshnessWindowMs 的 namespace 示例。
 - **现状**:契约有可选 `updatedAt`(`gateway-contract.ts:241`),但 `gateway.instructions.md`(L28-35,83-86)**只说工具用法,不提新鲜度语义**。Agent 看得到时间戳却无阈值/重取逻辑指引,参考网关也无 staleness 演示。
 - **业务影响**:中到高(价值高)。快速变化领域(定价、组织结构、权限)中,agent 可能基于过期事实行动而无警告信号。主要是运营者侧关注点,但平台缺指引。
 - **建议**:在 `gateway.instructions.md` 加新鲜度模式:agent 检查 `updatedAt`,超窗口则重取或警告。可做成 `/describe` 的 per-namespace 策略(`namespaces:[{name, freshnessWindow}]`)。参考网关给一个含新鲜度元数据的 `/describe` 示例。
 - **工作量 S · 价值 高**
 
 ### 4.3 Agent 无法发现可用 memory namespace ⭐
+> ✅ **已实现**(记忆契约 batch):`describeResponseSchema` 新增可选 `namespaces: [{name, description?, scope?, writeable?, freshnessWindowMs?}]`(`memoryNamespaceSchema`,passthrough + 全可选 → 向后兼容);`gateway.instructions.md` 指引 agent「需要不确定的 namespace 时调 gateway_describe 看 namespaces,别瞎猜」;reference-gateway 给了示例;gateway.test.ts 加了 3 个 schema 测试(接受 namespaces / 无 namespaces 仍合规 / 缺 name 拒绝)。
 - **现状**:`gateway_describe`(`gateway.ts:619-632`)响应 schema(`gateway-contract.ts:204-209`)**不含 `namespaces` 数组**。Agent 必须在 CLAUDE.md 硬编码 namespace 知识。运营者新增 namespace(如 `compliance.policies`)时,现有 agent 无法发现,得改 prompt。
 - **业务影响**:中等。限制运营者敏捷性,多租户/演进部署中 agent 指令里的 namespace 列表易过期。
 - **建议**:扩 `describeResponseSchema` 含可选 `namespaces:[{name, description, scope, writeable, expectedSchema?}]`。Agent 指令加 fallback:"需要没见过的 memory 时,调 gateway_describe 看 namespaces"。小 schema 改动,消除可用性缺口。
@@ -385,8 +387,8 @@
 | 🟡 **5.1 角色授予/撤销审计**(部分,见正文) | S | 治理(合规快赢之王) |
 | ✅ **5.5 a2a 委派审计面包屑** | S | 治理 |
 | **5.2 审批决策审计 + 元数据** | S | 治理 |
-| **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
-| **4.3 namespace 可发现性** | S | 记忆(小 schema) |
+| ✅ **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
+| ✅ **4.3 namespace 可发现性** | S | 记忆(小 schema) |
 | **6.4 交互卡失败 fallback** | S | 渠道体验 |
 | **1.1 quickstart.sh** | S | 上手速度 |
 | **6.1 投递失败用户反馈** | M | 渠道体验 |

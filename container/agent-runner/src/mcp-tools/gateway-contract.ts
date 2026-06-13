@@ -201,10 +201,36 @@ const responseEnvelope = {
   error: gatewayErrorSchema.optional(),
 };
 
+/**
+ * Optional memory-namespace descriptor in a /describe response (roadmap 4.3/4.2).
+ *
+ * Lets a backend advertise which memory namespaces exist so the agent can
+ * DISCOVER them (instead of hard-coding namespace knowledge in its prompt) and
+ * adapt when an operator adds one. `freshnessWindowMs` (4.2) is an advisory TTL:
+ * a recalled record older than this should be re-fetched or flagged as stale
+ * rather than trusted blindly. All fields optional + passthrough → a backend
+ * adopts this incrementally and one that omits `namespaces` stays conformant.
+ */
+export const memoryNamespaceSchema = z
+  .object({
+    name: z.string(),
+    description: z.string().optional(),
+    // Backend's own scope vocabulary (e.g. 'user' | 'team' | 'org'); the
+    // platform never interprets it.
+    scope: z.string().optional(),
+    writeable: z.boolean().optional(),
+    // Advisory freshness TTL in ms; compare against a record's `source.updatedAt`.
+    freshnessWindowMs: z.number().int().positive().optional(),
+  })
+  .passthrough();
+
 export const describeResponseSchema = z
   .object({
     ...responseEnvelope,
     operations: z.array(z.unknown()).optional(),
+    // Optional namespace catalog so the agent can discover memory namespaces
+    // (and their freshness policy) at runtime instead of hard-coding them.
+    namespaces: z.array(memoryNamespaceSchema).optional(),
   })
   .passthrough();
 

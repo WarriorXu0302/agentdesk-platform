@@ -163,6 +163,26 @@ const handlers = {
     ok: true,
     backend: { id: 'reference-gateway', version: '1.0.0' },
     operations: OPERATIONS,
+    // Optional namespace catalog (roadmap 4.3/4.2): lets the agent DISCOVER
+    // memory namespaces instead of hard-coding them, and learn each one's
+    // freshness policy. `freshnessWindowMs` is advisory — the agent re-fetches
+    // or flags a record whose `source.updatedAt` is older than this.
+    namespaces: [
+      {
+        name: 'user.preferences',
+        description: 'Per-user durable preferences and settings.',
+        scope: 'user',
+        writeable: true,
+        freshnessWindowMs: 1000 * 60 * 60 * 24 * 30, // 30 days
+      },
+      {
+        name: 'org.directory',
+        description: 'Org structure / people lookup (changes often).',
+        scope: 'org',
+        writeable: false,
+        freshnessWindowMs: 1000 * 60 * 60 * 12, // 12 hours
+      },
+    ],
   }),
 
   '/authorize': (req) => {
