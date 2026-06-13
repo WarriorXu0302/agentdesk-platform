@@ -12,7 +12,9 @@
 
 按顺序看，任一异常进入对应章节。
 
-本平台不附带 launchd / systemd 单元文件（host 是裸 Node 进程，由操作员自己的进程管理器拉起）。所以"进程活着"不要按服务名查，按 host 健康探针查。
+host 是裸 Node 进程，由操作员的进程管理器拉起。`deploy/` 提供 systemd / launchd
+**单元模板**（填 `<PLACEHOLDERS>` 后安装，见 `deploy/README.md`）；若你用的是自己的
+单元名，"进程活着"按你的服务名查，否则一律按 host 健康探针 `/healthz` 查。
 
 | 检查 | 命令 / Panel | 期望 |
 |---|---|---|
@@ -318,17 +320,24 @@ vim groups/agentdesk-finance-worker/container.json
 
 ## 5. 数据库维护
 
-### 5.1 中央 DB 备份
+### 5.1 备份(中央 DB + 所有会话 DB)
+
+**用 `scripts/backup.sh`**——它在线快照 `v2.db` **以及每个会话的 inbound/outbound.db**
+(手动只备 `v2.db` 会漏掉所有会话的在途消息与投递账本)。
 
 ```bash
-# Online backup（不锁表）
-sqlite3 data/v2.db ".backup /backup/v2-$(date +%Y%m%d).db"
+# 一次性
+DATA_DIR=./data BACKUP_DIR=./backups scripts/backup.sh
+
+# cron(每天 03:00,保留最近 14 份)
+0 3 * * *  cd /srv/agentdesk && BACKUP_RETAIN=14 scripts/backup.sh >> /var/log/agentdesk-backup.log 2>&1
 
 # Vacuum（很久没做的话回收空间）
 sqlite3 data/v2.db "vacuum"
 ```
 
-建议：每天 backup，每周 vacuum。
+**RPO = 快照间隔**:两次备份之间崩溃会丢这段时间的变更——按你的 RPO 定运行频率,
+更紧的 RPO 用卷快照/流式方案。建议：每天 backup,每周 vacuum。
 
 ### 5.2 Audit 表归档
 

@@ -1,0 +1,34 @@
+# systemd unit TEMPLATE for the AgentDesk host process.
+#
+# The platform does not ship a hardcoded unit — paths, user, and env are
+# deployment-specific. Fill the <PLACEHOLDERS>, then:
+#   sudo cp deploy/systemd/agentdesk.service /etc/systemd/system/agentdesk.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now agentdesk
+# Logs: journalctl -u agentdesk -f   (the host logs structured JSON to stdout)
+# Health: curl localhost:${WEBHOOK_PORT:-3000}/healthz  (see docs/RUNBOOK.md)
+[Unit]
+Description=AgentDesk agent platform host
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<RUN_AS_USER>
+WorkingDirectory=<ABS_PATH_TO_CHECKOUT>
+# Secrets live in the deployment .env (see .env.example); never inline them here.
+EnvironmentFile=<ABS_PATH_TO_CHECKOUT>/.env
+ExecStart=/usr/bin/node dist/index.js
+# Restart so a crash is auto-recovered; the host's circuit-breaker backs off
+# rapid restart loops on its own.
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown: the host drains in-flight deliveries on SIGTERM up to
+# SHUTDOWN_DEADLINE_MS (default 20s) — give it headroom before SIGKILL.
+TimeoutStopSec=30
+# Light hardening (the agent containers are isolated separately; this is the host).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=<ABS_PATH_TO_CHECKOUT>/data <ABS_PATH_TO_CHECKOUT>/backups
+
+[Install]
+WantedBy=multi-user.target

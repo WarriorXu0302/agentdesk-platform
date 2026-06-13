@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd TEMPLATE for running the AgentDesk host on macOS (dev / single-box).
+  Fill <PLACEHOLDERS>, then:
+    cp deploy/launchd/com.agentdesk.host.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.agentdesk.host.plist
+  Health: curl localhost:3000/healthz   Logs: the StandardOut/Error paths below.
+  Note: launchd doesn't read .env; either bake env into EnvironmentVariables
+  here or wrap ExecStart in a script that sources .env. Do not inline secrets
+  into a world-readable plist — restrict its perms or use a sourced .env.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agentdesk.host</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>dist/index.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string><ABS_PATH_TO_CHECKOUT></string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string><ABS_PATH_TO_CHECKOUT>/logs/agentdesk.out.log</string>
+  <key>StandardErrorPath</key>
+  <string><ABS_PATH_TO_CHECKOUT>/logs/agentdesk.err.log</string>
+</dict>
+</plist>

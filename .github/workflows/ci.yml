@@ -58,3 +58,14 @@ jobs:
         run: bash container/build.sh
         env:
           CONTAINER_IMAGE_BASE: ci-smoke-agent
+
+      # Validate the Prometheus alert rules actually parse — a typo'd metric
+      # name or bad PromQL otherwise ships silently and the production
+      # Prometheus fails to load the rule (the alert never fires). Inlined
+      # promtool (mirrors the obs:rules:check npm script) so it needs only
+      # docker, not the pnpm toolchain this job doesn't set up.
+      - name: Alert rule syntax (promtool)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability/prometheus:/work" \
+            prom/prometheus:v2.54.1 check rules /work/alerts.yml
