@@ -26,6 +26,7 @@ import { gateCommand } from './command-gate.js';
 import { getTracer } from './observability/tracer.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { recordDroppedMessage } from './db/dropped-messages.js';
+import { recordEnterpriseAudit } from './db/enterprise-audit.js';
 import { insertIngress, deleteIngress, markIngressFailed } from './db/inbound-ingress.js';
 import {
   createMessagingGroup,
@@ -625,6 +626,15 @@ async function deliverToAgent(
               return;
             }
             if (gate.action === 'deny') {
+              // Audit denied admin commands (roadmap 5.6): a denial is a
+              // security-relevant event (e.g. repeated failed privilege probes).
+              // The pure gateCommand() stays side-effect-free; the caller audits.
+              recordEnterpriseAudit({
+                eventType: 'command_gate_deny',
+                agentGroupId: agent.agent_group_id,
+                actor: userId,
+                details: { command: gate.command },
+              });
               const ok = writeOutboundDirect(session.agent_group_id, session.id, {
                 id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 kind: 'chat',

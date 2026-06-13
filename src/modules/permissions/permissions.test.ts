@@ -12,10 +12,11 @@ import {
   teardownChannelAdapters,
 } from '../../channels/channel-registry.js';
 import { closeDb, createAgentGroup, createMessagingGroup, initTestDb, runMigrations } from '../../db/index.js';
+import { getDb } from '../../db/connection.js';
 import { canAccessAgentGroup } from './access.js';
 import { addMember, isMember } from './db/agent-group-members.js';
 import { createUser } from './db/users.js';
-import { grantRole, hasAnyOwner, isOwner } from './db/user-roles.js';
+import { grantRole, hasAnyOwner, isOwner, revokeRole } from './db/user-roles.js';
 import { getUserDm } from './db/user-dms.js';
 import { ensureUserDm } from './user-dm.js';
 
@@ -238,5 +239,40 @@ describe('ensureUserDm', () => {
     const mg = await ensureUserDm('telegram:555');
     expect(mg?.id).toBe('mg-preexisting');
     expect(getUserDm('telegram:555', 'telegram')?.messaging_group_id).toBe('mg-preexisting');
+  });
+});
+
+describe('role grant/revoke audit (roadmap 5.1)', () => {
+  function auditRows(eventType: string) {
+    return getDb()
+      .prepare('SELECT actor, agent_group_id, details FROM enterprise_audit WHERE event_type = ? ORDER BY occurred_at')
+      .all(eventType) as Array<{ actor: string | null; agent_group_id: string | null; details: string | null }>;
+  }
+
+  it('grantRole emits a user_role_granted audit row with actor + details', () => {
+    seedAgentGroup('ag-9');
+    seedUser('u-x', 'telegram');
+    seedUser('u-owner', 'telegram');
+    grantRole({ user_id: 'u-x', role: 'admin', agent_group_id: 'ag-9', granted_by: 'u-owner', granted_at: now() });
+    const rows = auditRows('user_role_granted');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actor).toBe('u-owner');
+    expect(rows[0].agent_group_id).toBe('ag-9');
+    expect(JSON.parse(rows[0].details!)).toMatchObject({ userId: 'u-x', role: 'admin', agentGroupId: 'ag-9' });
+  });
+
+  it('revokeRole emits user_role_revoked ONLY when a row was actually removed', () => {
+    seedAgentGroup('ag-9');
+    seedUser('u-y', 'telegram');
+    grantRole({ user_id: 'u-y', role: 'admin', agent_group_id: 'ag-9', granted_by: null, granted_at: now() });
+    // No-op revoke (wrong group) must NOT create a misleading audit trail.
+    revokeRole('u-y', 'admin', 'ag-other', 'u-admin');
+    expect(auditRows('user_role_revoked')).toHaveLength(0);
+    // Effective revoke records the actor performing it.
+    revokeRole('u-y', 'admin', 'ag-9', 'u-admin');
+    const rows = auditRows('user_role_revoked');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actor).toBe('u-admin');
+    expect(JSON.parse(rows[0].details!)).toMatchObject({ userId: 'u-y', role: 'admin' });
   });
 });

@@ -196,6 +196,7 @@
 > 这块整体是平台核心责任(身份链已是 load-bearing 不变量),下面是**审计完整性**的补洞,多数是 S 工作量高价值的快赢。
 
 ### 5.1 角色授予/撤销、成员变更无审计 ⭐
+> 🟡 **部分已实现**(治理审计补洞 batch 1):`grantRole()` 现 emit `user_role_granted`、`revokeRole()` 加可选 `revokedBy` 参数并在实际删除时 emit `user_role_revoked`(`src/modules/permissions/db/user-roles.ts`),`permissions.test.ts` 加了验证测试。**剩余**:`agent_group_members` 成员变更的审计(同模式,后续批次)+ 把 `revokedBy` 真正接到生产 caller。
 - **现状**:`grantRole()`/`revokeRole()`(`src/modules/permissions/db/user-roles.ts:8-30`)直接改 `user_roles` 表,**不调 `recordEnterpriseAudit`**;agent_group_members 变更同样无审计。`schema.ts:79` 的 `granted_by` 列只是信息性,未被审计。
 - **业务影响**:**高**。越权授予或离职员工权限遗忘移除,在合规审查中无法发现;权限变更不可取证重建。
 - **建议**:`grantRole()` 包 `recordEnterpriseAudit({eventType:'user_role_granted', actor:grantedBy, details:{userId,role}})`,`revokeRole()` 同理;要求所有 caller 传 grantedBy;在 permissions.test.ts 加测试验证每次 grant/revoke 都 emit 审计。agent_group_members 同模式。
@@ -226,6 +227,7 @@
 - **工作量 S · 价值 中**
 
 ### 5.6 命令闸拒绝不审计,匿名 userId 仅记 warn
+> ✅ **已实现**(治理审计补洞 batch 1):`router.ts` 在 gate `deny` 时 emit `command_gate_deny`(actor=userId,details={command});`gateCommand()` 保持纯函数(无副作用),审计放在 caller。**未做**:'pass' 不 emit(每条 admin 命令都记会噪音,按 review 建议略过)。
 - **现状**:`gateCommand()`(`src/command-gate.ts:42-66`)接受 userId=null 返 deny 但**不 emit 审计**(只 log.warn)。ADR-0019 的 fail-closed 默认是对的,缺的只是**审计完整性**:被拒的 admin 命令应入审计表,不止日志。
 - **业务影响**:中等(价值标中)。滥用尝试和命令拒绝在平台层不可审,安全团队无法检测可疑命令模式(如反复失败的提权)。
 - **建议**:`gateCommand()` 返 deny 后 emit `recordEnterpriseAudit({eventType:'command_gate_deny', actor:userId??'anonymous', details:{command, reason}})`,通过的 emit `command_gate_pass`。这是审计完整性,非安全默认问题。
@@ -378,7 +380,7 @@
 
 | 项 | 工作量 | 主题 |
 |---|---|---|
-| **5.1 角色授予/撤销审计** | S | 治理(合规快赢之王) |
+| 🟡 **5.1 角色授予/撤销审计**(部分,见正文) | S | 治理(合规快赢之王) |
 | **5.5 a2a 委派审计面包屑** | S | 治理 |
 | **5.2 审批决策审计 + 元数据** | S | 治理 |
 | **4.2 知识新鲜度指引** | S | 记忆(文档为主) |

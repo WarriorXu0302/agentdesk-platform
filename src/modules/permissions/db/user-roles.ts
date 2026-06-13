@@ -1,9 +1,14 @@
 import type { UserRole, UserRoleKind } from '../../../types.js';
 import { getDb } from '../../../db/connection.js';
+import { recordEnterpriseAudit } from '../../../db/enterprise-audit.js';
 
 /**
  * Grant a role. Owner rows must have agent_group_id = null (enforced here,
  * not by schema, so callers get a clean error path).
+ *
+ * Privilege grants are recorded to `enterprise_audit` (roadmap 5.1): a missing
+ * audit row for a role change is a compliance gap — reviewers must be able to
+ * reconstruct "who granted whom what, and when".
  */
 export function grantRole(row: UserRole): void {
   if (row.role === 'owner' && row.agent_group_id !== null) {
@@ -15,17 +20,40 @@ export function grantRole(row: UserRole): void {
        VALUES (@user_id, @role, @agent_group_id, @granted_by, @granted_at)`,
     )
     .run(row);
+  recordEnterpriseAudit({
+    eventType: 'user_role_granted',
+    agentGroupId: row.agent_group_id,
+    actor: row.granted_by,
+    details: { userId: row.user_id, role: row.role, agentGroupId: row.agent_group_id },
+  });
 }
 
-export function revokeRole(userId: string, role: UserRoleKind, agentGroupId: string | null): void {
-  if (agentGroupId === null) {
-    getDb()
-      .prepare('DELETE FROM user_roles WHERE user_id = ? AND role = ? AND agent_group_id IS NULL')
-      .run(userId, role);
-  } else {
-    getDb()
-      .prepare('DELETE FROM user_roles WHERE user_id = ? AND role = ? AND agent_group_id = ?')
-      .run(userId, role, agentGroupId);
+/**
+ * Revoke a role. `revokedBy` is the actor performing the revoke (optional for
+ * backward compatibility; callers should pass it). Only emits an audit row when
+ * a role was actually removed, so no-op revokes don't create misleading trails.
+ */
+export function revokeRole(
+  userId: string,
+  role: UserRoleKind,
+  agentGroupId: string | null,
+  revokedBy: string | null = null,
+): void {
+  const result =
+    agentGroupId === null
+      ? getDb()
+          .prepare('DELETE FROM user_roles WHERE user_id = ? AND role = ? AND agent_group_id IS NULL')
+          .run(userId, role)
+      : getDb()
+          .prepare('DELETE FROM user_roles WHERE user_id = ? AND role = ? AND agent_group_id = ?')
+          .run(userId, role, agentGroupId);
+  if (result.changes > 0) {
+    recordEnterpriseAudit({
+      eventType: 'user_role_revoked',
+      agentGroupId,
+      actor: revokedBy,
+      details: { userId, role, agentGroupId, removed: result.changes },
+    });
   }
 }
 
