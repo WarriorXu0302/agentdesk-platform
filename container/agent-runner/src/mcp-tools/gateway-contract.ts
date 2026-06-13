@@ -156,6 +156,21 @@ export const memoryUpsertRequestSchema = z.object({
   context: z.record(z.string(), z.unknown()),
 });
 
+/**
+ * Memory search request (ADR-0033). The platform emits a free-text `query`
+ * plus the same subject scoping as get/upsert. The backend owns the actual
+ * retrieval (keyword, full-text, vector, …) — the platform deliberately keeps
+ * NO host-side index/vector store, so search is just one more gateway call.
+ */
+export const memorySearchRequestSchema = z.object({
+  ...envelopeBase,
+  namespace: z.string().min(1),
+  query: z.string().min(1),
+  subject: memorySubjectSchema,
+  limit: z.number().int().positive(),
+  context: z.record(z.string(), z.unknown()),
+});
+
 /** Path → request schema. Single lookup the conformance runner reuses. */
 export const REQUEST_SCHEMAS = {
   '/describe': describeRequestSchema,
@@ -163,6 +178,7 @@ export const REQUEST_SCHEMAS = {
   '/execute': executeRequestSchema,
   '/memory/get': memoryGetRequestSchema,
   '/memory/upsert': memoryUpsertRequestSchema,
+  '/memory/search': memorySearchRequestSchema,
 } as const;
 
 export type GatewayPath = keyof typeof REQUEST_SCHEMAS;
@@ -206,10 +222,45 @@ export const executeResponseSchema = z
   })
   .passthrough();
 
+/**
+ * Recommended provenance block for a recalled memory record (ADR-0033).
+ *
+ * Provenance lets an agent (and the audit trail) answer "where did this recalled
+ * fact come from, and who wrote it" — the antidote to treating an injected blob
+ * as if the platform vouched for it. Every field is optional so a backend can
+ * adopt it incrementally; `passthrough()` keeps backend-specific provenance
+ * fields. This is NOT trust: a `writtenBy` value is still backend-asserted data,
+ * not a verified identity.
+ */
+export const memorySourceSchema = z
+  .object({
+    namespace: z.string().optional(),
+    subjectType: z.string().optional(),
+    subjectId: z.string().optional(),
+    recordId: z.string().optional(),
+    updatedAt: z.string().optional(),
+    writtenBy: z.string().optional(),
+  })
+  .passthrough();
+
+/** A single recalled record with its value, provenance, and optional score. */
+export const memorySearchResultSchema = z
+  .object({
+    value: z.unknown(),
+    source: memorySourceSchema.optional(),
+    // Backend-defined relevance score. Semantics (range, direction) are the
+    // backend's — the platform never ranks or interprets it.
+    score: z.number().optional(),
+  })
+  .passthrough();
+
 export const memoryGetResponseSchema = z
   .object({
     ...responseEnvelope,
     ok: z.boolean().optional(),
+    // Optional provenance — not forced, so an existing /memory/get backend that
+    // returns only a value stays conformant (backward-compatible).
+    source: memorySourceSchema.optional(),
   })
   .passthrough();
 
@@ -220,6 +271,17 @@ export const memoryUpsertResponseSchema = z
   })
   .passthrough();
 
+export const memorySearchResponseSchema = z
+  .object({
+    ...responseEnvelope,
+    ok: z.boolean().optional(),
+    // The recall list. Recommended shape is `memorySearchResultSchema[]`, but
+    // the array is lenient (`z.unknown()` elements would also pass via the
+    // outer passthrough) so a backend can shape entries however it likes.
+    results: z.array(memorySearchResultSchema).optional(),
+  })
+  .passthrough();
+
 /** Path → response schema. */
 export const RESPONSE_SCHEMAS = {
   '/describe': describeResponseSchema,
@@ -227,6 +289,7 @@ export const RESPONSE_SCHEMAS = {
   '/execute': executeResponseSchema,
   '/memory/get': memoryGetResponseSchema,
   '/memory/upsert': memoryUpsertResponseSchema,
+  '/memory/search': memorySearchResponseSchema,
 } as const;
 
 // ---------------------------------------------------------------------------

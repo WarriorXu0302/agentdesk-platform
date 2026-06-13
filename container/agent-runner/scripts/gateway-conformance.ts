@@ -3,9 +3,14 @@
  *
  * For operators bringing up (or upgrading) a backend that sits behind the
  * AgentDesk gateway contract. It POSTs a contract-compliant sample request to
- * each of the five endpoints and validates each response against the SAME zod
- * schemas the runtime uses (src/mcp-tools/gateway-contract.ts is the single
- * source of truth — this script never re-defines the shapes).
+ * each endpoint and validates each response against the SAME zod schemas the
+ * runtime uses (src/mcp-tools/gateway-contract.ts is the single source of
+ * truth — this script never re-defines the shapes).
+ *
+ * Note: `/memory/search` (ADR-0033) is optional for a backend. A backend that
+ * hasn't implemented it yet will return 404 and this runner reports that
+ * endpoint as FAIL — that is the intended signal ("search not implemented"),
+ * not a contract violation of the other endpoints.
  *
  * Usage:
  *   cd container/agent-runner && bun scripts/gateway-conformance.ts <baseUrl>
@@ -106,6 +111,15 @@ function sampleBody(path: GatewayPath): Record<string, unknown> {
         subject: { type: 'user', id: process.env.GATEWAY_TEST_USER_ID || 'conformance:test-user' },
         value: { conformance: true },
         merge: true,
+        context: {},
+      };
+    case '/memory/search':
+      return {
+        ...base,
+        namespace: 'conformance.probe',
+        query: 'conformance probe',
+        subject: { type: 'user', id: process.env.GATEWAY_TEST_USER_ID || 'conformance:test-user' },
+        limit: 10,
         context: {},
       };
   }
