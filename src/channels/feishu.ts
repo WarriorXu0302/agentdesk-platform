@@ -40,6 +40,7 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   TOKEN_REFRESH_AHEAD_MS,
   appendAttachmentSummary,
+  buildAskQuestionFallbackText,
   buildDisplayCard,
   buildFeishuAskQuestionCardWithPayloads,
   buildMarkdownCard,
@@ -931,7 +932,20 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
           expectedUserId,
           expiresAt: Date.now() + 5 * 60_000,
         });
-        return createMessage(target, 'interactive', JSON.stringify(card), threadId);
+        try {
+          return await createMessage(target, 'interactive', JSON.stringify(card), threadId);
+        } catch (err) {
+          // The interactive card was rejected by Feishu (schema/size/API drift).
+          // Don't let the question silently fail into the retry → permanent-
+          // failure path: degrade to a plain-text question with numbered options
+          // so the user can still respond by replying. (roadmap 6.4)
+          log.warn('Feishu ask_question card send failed; falling back to plain text', {
+            questionId: content.questionId,
+            err,
+          });
+          const fallbackText = buildAskQuestionFallbackText({ title, question, options });
+          return createMessage(target, 'text', JSON.stringify({ text: fallbackText }), threadId);
+        }
       }
 
       if (content.type === 'card') {

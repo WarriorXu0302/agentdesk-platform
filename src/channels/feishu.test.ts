@@ -10,6 +10,7 @@ import {
   parseFeishuQuestionActionPayload,
   signFeishuBody,
 } from './feishu.js';
+import { buildAskQuestionFallbackText } from './feishu/primitives.js';
 
 function encryptFeishuPayload(encryptKey: string, payload: Record<string, unknown>): string {
   const iv = crypto.randomBytes(16);
@@ -162,5 +163,25 @@ describe('cardActionOperatorAllowed (fail-closed wrong-user gate, ADR-0019)', ()
   it('allows unscoped cards regardless of operator', () => {
     expect(cardActionOperatorAllowed(undefined, '')).toBe(true);
     expect(cardActionOperatorAllowed(undefined, 'ou_anyone')).toBe(true);
+  });
+});
+
+describe('buildAskQuestionFallbackText (roadmap 6.4)', () => {
+  const opts = [
+    { label: 'Approve', value: 'approve', selectedLabel: 'Approve' },
+    { label: 'Reject', value: 'reject', selectedLabel: 'Reject' },
+  ];
+
+  it('renders the question, numbered options, and a reply hint', () => {
+    const text = buildAskQuestionFallbackText({ title: 'Decision', question: 'Approve invoice INV-1?', options: opts });
+    expect(text).toContain('Approve invoice INV-1?');
+    expect(text).toContain('1. Approve');
+    expect(text).toContain('2. Reject');
+    expect(text).toContain('Reply with the option number');
+  });
+
+  it('falls back to the title when the question is empty', () => {
+    const text = buildAskQuestionFallbackText({ title: 'Decision', question: '   ', options: opts });
+    expect(text.startsWith('Decision')).toBe(true);
   });
 });

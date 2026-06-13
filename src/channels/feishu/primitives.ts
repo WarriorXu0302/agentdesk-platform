@@ -412,6 +412,27 @@ export function normalizeOptions(raw: unknown): NormalizedQuestionOption[] {
   return out;
 }
 
+/**
+ * Plain-text fallback for an ask_question when the interactive card can't be
+ * delivered (Feishu rejects the schema/size, or the card API drifts). Numbered
+ * options + the question + a reply hint, so the user can still respond by typing
+ * instead of the question silently failing into the retry path. (roadmap 6.4)
+ */
+export function buildAskQuestionFallbackText(params: {
+  title: string;
+  question: string;
+  options: NormalizedQuestionOption[];
+}): string {
+  const lines = [
+    params.question.trim() || params.title.trim(),
+    '',
+    ...params.options.map((o, i) => `${i + 1}. ${o.label}`),
+    '',
+    'Reply with the option number or its text.',
+  ];
+  return lines.join('\n');
+}
+
 export function buildMarkdownCard(text: string, title?: string): Record<string, unknown> {
   const card: Record<string, unknown> = {
     schema: '2.0',

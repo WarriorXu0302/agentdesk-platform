@@ -292,6 +292,7 @@
 - **工作量 M · 价值 高(归运营者)**
 
 ### 6.4 交互卡渲染失败无降级 fallback ⭐
+> ✅ **已实现**(渠道体验 batch):ask_question 卡发送(`feishu.ts`)包了 try-catch,失败时降级到 `buildAskQuestionFallbackText`(primitives.ts 纯函数:问题文本 + 编号选项 + 「Reply with the option number or its text」)并以纯文本发出,同时 `log.warn` 记失败原因。pure helper 加了单测(feishu.test.ts);deliver() 路径本身无 fetch-mock 测试床,故只测可测的纯逻辑。
 - **现状**:ask_question 卡(`feishu.ts:918-934`)直接传 `createMessage`(L934),若 Feishu API 拒绝(schema/尺寸/废弃字段),`createMessage`(L305)抛错,消息进重试 → 永久失败。**无降级为纯文本列选项的 fallback**。用户既没拿到卡也没文本替代,挂着无法回应。
 - **业务影响**:中等。Feishu API 版本偏移或卡 schema 回归时审批工作流静默失败,瞬时失败尤其糟。
 - **建议**:卡投递(L934)包 try-catch,失败 fallback 到 `buildMarkdownCard` 含显式选项("请回复:Approve | Reject"),编号列出所有选项 + 原问题文本;记卡失败原因供运营者排查。渠道适配器责任,不需容器改动。
@@ -389,7 +390,7 @@
 | **5.2 审批决策审计 + 元数据** | S | 治理 |
 | ✅ **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
 | ✅ **4.3 namespace 可发现性** | S | 记忆(小 schema) |
-| **6.4 交互卡失败 fallback** | S | 渠道体验 |
+| ✅ **6.4 交互卡失败 fallback** | S | 渠道体验 |
 | **1.1 quickstart.sh** | S | 上手速度 |
 | **6.1 投递失败用户反馈** | M | 渠道体验 |
 | **6.2 审批卡过期通知** | M | 渠道体验 |
