@@ -69,6 +69,7 @@
 - **工作量 M · 价值 高**
 
 ### 2.2 跨 worker 对话链缺统一 `conversation_thread_id` ⭐
+> ⏸️ **评估后留作专项(需 ADR + 多 commit)**:这是 load-bearing 运行时契约变更——`conversation_thread_id` 要贯穿约 10 个文件(= `origin_user_id` 传播面),涉及①中央迁移(classification_log 加列)②session DB 迁移函数(messages_in/out 加列,走 migrateMessagesInTable 的 ALTER-on-open 模式覆盖在飞会话)③在对话起点生成④跨 a2a 跳传播(镜像 `origin_user_id` 的 writeSessionMessage 透传)。触及三库单写写路径 + a2a 身份传播这两条 load-bearing 路径,CLAUDE.md 要求契约变更同步文档,且不该在一次自主 pass 里赶工。**建议路径**:先写 ADR 定 schema + 传播契约,再分 commit(迁移 → 传播 → 测试),按 `origin_user_id` 已验证的模式做。**没有有意义的「安全小切片」**:单 classify 的 thread id ≈ 已有的 classification_id,价值全在多跳传播(即风险所在)。
 - **现状**:无贯穿 frontdesk classify → worker A → worker B → 回复的顶层线程 id。classification_log 记单次事件,messages_in 按 session 记入站,a2a 用 `source_session_id` + `in_reply_to`。**三张表都没有 conversation 级别标识**。要追踪一个请求的完整链路需多表 join + 时序重建。
 - **业务影响**:**高**。运营者无法快速回答"请求 X 现在在哪""这次多跳花了多久"。SLA 追踪和问题诊断要靠人肉翻日志。
 - **建议**:给 classification_log、messages_in、messages_out 加 `conversation_thread_id`,在 frontdesk classify 时生成,通过 request-context 贯穿所有下游 a2a 跳。这是核心需要的列;之上的"对话时间线"视图可做成下游可观测性模块。
@@ -350,6 +351,7 @@
 > 这一整块按 `SPEC.md` L20/L34 的设计意图,**绝大多数属运营者网关责任,核心不该做**。只有一项(失控成本检测)值得在核心补 hook。
 
 ### 7.1 失控 session 检测无 token/成本维度 ⭐(唯一核心该补的)
+> ✅ **已实现**(成本 batch):`host-sweep.ts` 的 `enforceRunningContainerSla` 新增成本闸——`recentTokenUsage(outDb, 300s)` 汇总 outbound.db `llm-usage` 行的 `totalTokens`(host 只读容器写的 outbound.db,三库不变量保持),超过 `AGENTDESK_SESSION_TOKEN_BUDGET_PER_MIN`(默认 0=关)折算的窗口上限就 `killContainer(…, 'cost-ceiling')` + reset + emit `runaway_session_stops_total{agent_group}`。在心跳/claim 检查**之前**跑(循环 agent 心跳是新鲜的,只有 token 暴露它)。host-sweep.test.ts 测了 `recentTokenUsage`(窗口内求和/窗外排除/非 usage 行忽略/坏 JSON 容错)。.env.example 文档化。**可选follow-up**:加 Prometheus 告警规则 + RUNBOOK 处置(metric 已具备)。
 - **现状**:容器存活检测正确(`host-sweep.ts:106-142` 的 `decideStuckAction` 按心跳/claim 超时杀容器),但**无失控成本检测**。session 进死循环 5 分钟调 LLM 1000 次会全部成功(并烧钱)才被发现"卡住"——而活跃运行时根本不会触发心跳超时。无 per-session token 预算或成本速率异常检测。
 - **业务影响**:**高**。被 prompt 注入或有 bug 的 agent 可在被停前狂烧 token,成本失控。
 - **建议**:(1) SessionConfig 加可选 `maxTokensPerMin`/`costBudgetUsd`(或读自网关 /authorize);(2) host poll loop 周期采样 session outbound.db 的 llm-usage 行,5 分钟窗口超阈值则杀;(3) 或在网关 /authorize 累计 token 花费、超预算拒新请求(更干净)。token 数据已在 outbound.db(`claude-usage.ts`)。
@@ -403,7 +405,7 @@
 | **4.1 conversation.summary 落库** | M | 记忆(ADR-0033 欠账) |
 | **5.4 合规审计导出 + 保留** | M | 治理 |
 | **5.3 审批过期 sweep + 多审批人** | M | 治理 |
-| **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
+| ✅ **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
 | **4.4 记忆冲突检测** | M | 记忆 |
 | **3.1 bulk 操作契约** | M | 网关契约 |
 | **3.3 /describe schema 发现** | M | 网关契约 |

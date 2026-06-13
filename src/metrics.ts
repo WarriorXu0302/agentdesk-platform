@@ -225,6 +225,19 @@ export const inboundProcessingPermanentFailuresTotal = new client.Counter({
   registers: [registry],
 });
 
+export const runawaySessionStopsTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_runaway_session_stops_total`,
+  help: 'Sessions stopped by host-sweep for blowing past the per-minute token budget (roadmap 7.1)',
+  // The heartbeat/claim stuck-checks catch SILENT containers, but an
+  // actively-looping agent (prompt-injected or buggy) keeps the heartbeat fresh
+  // while burning tokens — invisible to those checks. When an operator sets
+  // AGENTDESK_SESSION_TOKEN_BUDGET_PER_MIN>0, a session whose recent LLM spend
+  // exceeds it is killed. Default-OFF, so a non-zero value means either a real
+  // runaway or a budget set too low for legitimate heavy sessions.
+  labelNames: ['agent_group'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',

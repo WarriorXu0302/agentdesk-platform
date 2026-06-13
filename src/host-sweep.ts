@@ -54,6 +54,7 @@ import { DATA_DIR } from './config.js';
 import {
   dataDirFreeRatio,
   inboundProcessingPermanentFailuresTotal,
+  runawaySessionStopsTotal,
   sessionCount,
   sessionLifecycleTotal,
 } from './metrics.js';
@@ -83,6 +84,42 @@ const PROXY_TOKEN_PURGE_TTL_MS = 24 * 60 * 60_000;
 // Opt-in retention for append-only audit tables (default 0 = OFF, never delete
 // audit data silently). Operators with a retention policy set days > 0.
 const AUDIT_RETAIN_DAYS = Math.max(0, parseInt(process.env.AGENTDESK_AUDIT_RETAIN_DAYS || '0', 10) || 0);
+
+// Opt-in runaway-cost ceiling (roadmap 7.1, default 0 = OFF). A session whose
+// LLM token spend over the trailing window exceeds this per-minute budget is
+// killed — catching an actively-looping agent that keeps its heartbeat fresh
+// while burning tokens (invisible to the heartbeat/claim stuck-checks).
+const SESSION_TOKEN_BUDGET_PER_MIN = Math.max(
+  0,
+  parseInt(process.env.AGENTDESK_SESSION_TOKEN_BUDGET_PER_MIN || '0', 10) || 0,
+);
+// Trailing window over which spend is summed (fixed 5 min — long enough to
+// smooth out a single heavy turn, short enough to catch a runaway quickly).
+const COST_WINDOW_SEC = 300;
+
+/**
+ * Sum `totalTokens` across this session's `llm-usage` rows in outbound.db
+ * within the trailing `windowSec`. Host-read-only of the container-written
+ * outbound.db (three-DB invariant preserved). Uses the DB's own clock via
+ * `datetime('now', …)` so it compares against the same SQLite timestamp format
+ * the rows are written with. Exported for testing.
+ */
+export function recentTokenUsage(outDb: Database.Database, windowSec: number, now: number = Date.now()): number {
+  void now; // window is DB-clock relative; `now` kept for signature symmetry/tests
+  const rows = outDb
+    .prepare("SELECT content FROM messages_out WHERE kind = 'llm-usage' AND timestamp >= datetime('now', ?)")
+    .all(`-${Math.max(1, Math.floor(windowSec))} seconds`) as Array<{ content: string }>;
+  let total = 0;
+  for (const r of rows) {
+    try {
+      const c = JSON.parse(r.content) as { totalTokens?: unknown };
+      if (typeof c.totalTokens === 'number' && Number.isFinite(c.totalTokens)) total += c.totalTokens;
+    } catch {
+      /* a malformed usage row shouldn't break the sweep */
+    }
+  }
+  return total;
+}
 // Absolute idle ceiling for a running container. If the heartbeat file hasn't
 // been touched in this long, the container is either stuck or doing genuinely
 // nothing — kill and restart on the next inbound.
@@ -352,6 +389,27 @@ async function enforceRunningContainerSla(
   session: Session,
   agentGroupId: string,
 ): Promise<void> {
+  // Runaway-cost ceiling (roadmap 7.1). Checked before the heartbeat/claim
+  // rules: a looping agent keeps its heartbeat fresh, so only token spend
+  // exposes it. Default-OFF (budget 0) → skipped entirely on existing deploys.
+  if (SESSION_TOKEN_BUDGET_PER_MIN > 0) {
+    const used = recentTokenUsage(outDb, COST_WINDOW_SEC);
+    const ceiling = SESSION_TOKEN_BUDGET_PER_MIN * (COST_WINDOW_SEC / 60);
+    if (used > ceiling) {
+      log.warn('Killing container — token budget exceeded (runaway cost)', {
+        sessionId: session.id,
+        agentGroup: agentGroupId,
+        tokensInWindow: used,
+        ceiling,
+        windowSec: COST_WINDOW_SEC,
+      });
+      runawaySessionStopsTotal.inc({ agent_group: agentGroupId });
+      await killContainer(session.id, 'cost-ceiling');
+      resetStuckProcessingRows(inDb, outDb, session, 'cost-ceiling');
+      return;
+    }
+  }
+
   const decision = decideStuckAction({
     now: Date.now(),
     heartbeatMtimeMs: heartbeatMtimeMs(agentGroupId, session.id),

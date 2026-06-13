@@ -7,12 +7,14 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { deleteOrphanProcessingClaims, getProcessingClaims } from './db/session-db.js';
+import { OUTBOUND_SCHEMA } from './db/schema.js';
 import {
   ABSOLUTE_CEILING_MS,
   CLAIM_STUCK_MS,
   _resetStuckProcessingRowsForTesting,
   decideStuckAction,
   parseSqliteUtc,
+  recentTokenUsage,
 } from './host-sweep.js';
 import type { Session } from './types.js';
 
@@ -333,5 +335,42 @@ describe('parseSqliteUtc', () => {
     // bare string returns different values depending on the host TZ.)
     const bare = '2026-04-20T12:00:00';
     expect(parseSqliteUtc(bare)).toBe(Date.parse(bare + 'Z'));
+  });
+});
+
+describe('recentTokenUsage — runaway-cost windowing (roadmap 7.1)', () => {
+  function makeOutDb(): Database.Database {
+    const db = new Database(':memory:');
+    db.exec(OUTBOUND_SCHEMA);
+    return db;
+  }
+  function insertUsage(db: Database.Database, id: string, totalTokens: unknown, ago: string): void {
+    db.prepare(
+      "INSERT INTO messages_out (id, timestamp, kind, content) VALUES (?, datetime('now', ?), 'llm-usage', ?)",
+    ).run(id, ago, JSON.stringify({ totalTokens }));
+  }
+
+  it('sums totalTokens only for llm-usage rows inside the trailing window', () => {
+    const db = makeOutDb();
+    insertUsage(db, 'u1', 1000, '-10 seconds'); // in window
+    insertUsage(db, 'u2', 2000, '-60 seconds'); // in window
+    insertUsage(db, 'u3', 9999, '-2 hours'); // outside the 300s window
+    // a non-usage row must be ignored even though it's recent
+    db.prepare("INSERT INTO messages_out (id, timestamp, kind, content) VALUES ('m1', datetime('now'), 'chat', ?)").run(
+      JSON.stringify({ text: 'hi' }),
+    );
+    expect(recentTokenUsage(db, 300)).toBe(3000);
+    db.close();
+  });
+
+  it('returns 0 with no usage rows and tolerates malformed/non-numeric content', () => {
+    const db = makeOutDb();
+    expect(recentTokenUsage(db, 300)).toBe(0);
+    db.prepare(
+      "INSERT INTO messages_out (id, timestamp, kind, content) VALUES ('bad', datetime('now'), 'llm-usage', 'not-json')",
+    ).run();
+    insertUsage(db, 'nonum', 'x', '-5 seconds');
+    expect(recentTokenUsage(db, 300)).toBe(0);
+    db.close();
   });
 });
