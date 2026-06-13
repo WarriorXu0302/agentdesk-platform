@@ -26,17 +26,17 @@
  * this only gates whether a send proceeds; it never mutates grants, audit, or
  * the message itself.
  */
-import crypto from 'node:crypto';
-
-import { PLATFORM_PROTOCOL_NAMESPACE } from './branding.js';
 import type { BackendGatewayConfig } from './container-config.js';
 import { readEnvFile } from './env.js';
+// Shared signing primitive — keep roster-DM and the signing proxy (ADR-0034)
+// on one implementation so a backend validates one HMAC regardless of caller.
+import { applyGatewaySigningHeaders, computeGatewaySignature } from './gateway-signing.js';
 import { log } from './log.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const TIMESTAMP_HEADER = `x-${PLATFORM_PROTOCOL_NAMESPACE}-timestamp`;
-const NONCE_HEADER = `x-${PLATFORM_PROTOCOL_NAMESPACE}-nonce`;
-const SIGNATURE_HEADER = `x-${PLATFORM_PROTOCOL_NAMESPACE}-signature`;
+
+// Re-exported for any downstream caller that imported it from here historically.
+export { computeGatewaySignature };
 
 /**
  * Is the gateway the authority for roster-DM authorization? Default OFF.
@@ -47,11 +47,6 @@ export function rosterGatewayAuthorityEnabled(): boolean {
   if (fromProc !== undefined) return fromProc.trim().toLowerCase() === 'true';
   const dotenv = readEnvFile(['ROSTER_GATEWAY_AUTHORITY']);
   return (dotenv.ROSTER_GATEWAY_AUTHORITY ?? '').trim().toLowerCase() === 'true';
-}
-
-/** Same canonical form as the container signer: `<timestamp>.<nonce>.<body>`. */
-export function computeGatewaySignature(key: string, timestamp: string, nonce: string, body: string): string {
-  return crypto.createHmac('sha256', key).update(`${timestamp}.${nonce}.${body}`).digest('hex');
 }
 
 /**
@@ -127,16 +122,7 @@ export async function authorizeDm(
   };
   const key = gateway.signingKey?.trim();
   if (key) {
-    const timestamp = Math.floor(now / 1000).toString();
-    const nonce = crypto.randomBytes(16).toString('hex');
-    headers[gateway.signingHeaders?.timestamp || TIMESTAMP_HEADER] = timestamp;
-    headers[gateway.signingHeaders?.nonce || NONCE_HEADER] = nonce;
-    headers[gateway.signingHeaders?.signature || SIGNATURE_HEADER] = computeGatewaySignature(
-      key,
-      timestamp,
-      nonce,
-      body,
-    );
+    applyGatewaySigningHeaders(headers, key, body, { names: gateway.signingHeaders, now });
   }
 
   const controller = new AbortController();

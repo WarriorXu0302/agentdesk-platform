@@ -32,6 +32,8 @@ import fs from 'fs';
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { pruneInboundDedup } from './db/inbound-dedup.js';
+import { purgeStaleProxyTokens } from './db/gateway-proxy-token.js';
+import { getDb, hasTable } from './db/connection.js';
 import {
   countDueMessages,
   deleteOrphanProcessingClaims,
@@ -64,6 +66,10 @@ export function parseSqliteUtc(s: string): number {
 
 const SWEEP_INTERVAL_MS = 60_000;
 const INBOUND_DEDUP_TTL_MS = 24 * 60 * 60_000;
+// Delete signing-proxy token rows whose expiry lapsed more than this long ago
+// (ADR-0034). Expired/revoked tokens are already rejected at verify; this is
+// pure table-size hygiene, so a generous 24h grace is fine.
+const PROXY_TOKEN_PURGE_TTL_MS = 24 * 60 * 60_000;
 // Absolute idle ceiling for a running container. If the heartbeat file hasn't
 // been touched in this long, the container is either stuck or doing genuinely
 // nothing — kill and restart on the next inbound.
@@ -152,6 +158,19 @@ async function sweep(): Promise<void> {
     if (pruned > 0) log.debug('Pruned inbound_dedup rows', { pruned });
   } catch (err) {
     log.warn('Inbound dedup prune failed', { err });
+  }
+
+  // Reap long-expired signing-proxy tokens (ADR-0034) so the table stays
+  // bounded. Revoked-on-exit tokens are tombstoned but not deleted; this trims
+  // rows whose TTL lapsed over a day ago. Guarded so a DB without the table
+  // (default-OFF deploy that never ran the proxy) is a no-op.
+  try {
+    if (hasTable(getDb(), 'gateway_proxy_token')) {
+      const purged = purgeStaleProxyTokens(PROXY_TOKEN_PURGE_TTL_MS);
+      if (purged > 0) log.debug('Purged stale gateway_proxy_token rows', { purged });
+    }
+  } catch (err) {
+    log.warn('Gateway proxy token purge failed', { err });
   }
 
   try {

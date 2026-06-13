@@ -32,6 +32,7 @@ import { fileURLToPath } from 'url';
 
 import { MCP_SERVER_NAME } from './branding.js';
 import { loadConfig } from './config.js';
+import { buildMcpChildEnv } from './mcp-child-env.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
@@ -79,36 +80,20 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'mcp-tools', 'index.ts');
 
-  // OTel context for the built-in MCP server. It runs as a SEPARATE `bun run`
-  // process (StdioServerTransport), so the in-process OTel active context does
-  // NOT reach it — the trace bridge must travel through these env vars, which
-  // the MCP server's own `observability/init.js` reads to join the same trace.
-  // Without this passthrough the tool spans would land in their own orphan
-  // trace instead of under the host session root.
-  const mcpOtelEnv: Record<string, string> = {};
-  for (const key of [
-    'OTEL_TRACEPARENT',
-    'OTEL_TRACESTATE',
-    'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
-    'OTEL_SDK_DISABLED',
-    'OTEL_SERVICE_NAME',
-    // Content-capture opt-in (ADR-0027). The MCP server runs in this separate
-    // process, so the flag must ride through env too — otherwise tool spans
-    // would stay metadata-only while turn/LLM spans captured plaintext.
-    'OTEL_CAPTURE_CONTENT',
-    'NODE_ENV',
-    'BRAND_NAMESPACE',
-  ]) {
-    const value = process.env[key];
-    if (value !== undefined) mcpOtelEnv[key] = value;
-  }
+  // Env forwarded to the built-in MCP server. It runs as a SEPARATE `bun run`
+  // process (StdioServerTransport), so the in-process context does NOT reach it
+  // — the OTel trace bridge (ADR-0026/0027) AND the signing-proxy URL/token
+  // (ADR-0034) must travel through env. The allowlist lives in mcp-child-env.ts
+  // as a single source of truth so a forgotten passthrough is caught by a unit
+  // test, not discovered in production.
+  const mcpChildEnv = buildMcpChildEnv(process.env);
 
   // Build MCP servers config: built-in tools server + any from container.json
   const mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {
     [MCP_SERVER_NAME]: {
       command: 'bun',
       args: ['run', mcpServerPath],
-      env: mcpOtelEnv,
+      env: mcpChildEnv,
     },
   };
 

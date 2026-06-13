@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDb, initTestDb, runMigrations } from './index.js';
-import { queryGatewayAudit, recordGatewayAudit } from './gateway-audit.js';
+import {
+  finalizeGatewayProxyAudit,
+  queryGatewayAudit,
+  recordGatewayAudit,
+  recordGatewayProxyIntent,
+  reconcileOrphanedProxyAudit,
+} from './gateway-audit.js';
 
 beforeEach(() => {
   const db = initTestDb();
@@ -82,5 +88,50 @@ describe('gateway_audit', () => {
       error_msg: 'Permission denied',
       requester_source: 'agent-asserted',
     });
+  });
+});
+
+describe('gateway_audit proxy two-phase (ADR-0034)', () => {
+  function intent(id: string): void {
+    recordGatewayProxyIntent({
+      proxyRequestId: id,
+      sessionId: 's1',
+      agentGroupId: 'ag1',
+      signedAsGroup: 'ag1',
+      tokenJti: 'j1',
+      path: '/execute',
+      operation: 'op',
+      userId: 'u1',
+      requesterSource: 'session',
+    });
+  }
+
+  it('intent rows are hidden from the default operator query but finalized rows appear', () => {
+    intent('req-1');
+    // While still 'intent' (pending), the default view (status domain {ok,error})
+    // must not surface it.
+    expect(queryGatewayAudit()).toHaveLength(0);
+    expect(queryGatewayAudit({ includeNonFinal: true })).toHaveLength(1);
+
+    finalizeGatewayProxyAudit('req-1', { status: 'ok', httpStatus: 200, durationMs: 5 });
+    const rows = queryGatewayAudit();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'ok', http_status: 200, audit_phase: 'final', signed_as_group: 'ag1' });
+  });
+
+  it('container-driven rows (audit_phase NULL) always appear in the default query', () => {
+    recordGatewayAudit({ path: '/execute', operation: 'op', requesterSource: 'session', status: 'ok' });
+    expect(queryGatewayAudit()).toHaveLength(1);
+  });
+
+  it('reconcileOrphanedProxyAudit finalizes stranded intent rows to a terminal error', () => {
+    intent('req-orphan');
+    expect(reconcileOrphanedProxyAudit()).toBe(1);
+    const rows = queryGatewayAudit();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'error', audit_phase: 'final' });
+    expect(String(rows[0].error_msg)).toContain('orphaned_intent_reconciled');
+    // idempotent — nothing left at 'intent'
+    expect(reconcileOrphanedProxyAudit()).toBe(0);
   });
 });

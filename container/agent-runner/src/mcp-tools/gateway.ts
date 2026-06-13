@@ -41,6 +41,30 @@ const DEFAULT_TIMESTAMP_HEADER = SIGNING_TIMESTAMP_HEADER;
 const DEFAULT_NONCE_HEADER = SIGNING_NONCE_HEADER;
 const DEFAULT_SIGNATURE_HEADER = SIGNING_SIGNATURE_HEADER;
 
+/** Header the host signing proxy expects the per-session token in (ADR-0034). */
+const PROXY_TOKEN_HEADER = 'x-agentdesk-proxy-token';
+
+interface SigningProxyTarget {
+  url: string;
+  token: string;
+}
+
+/**
+ * Host signing credential proxy target (ADR-0034), or null when not in proxy
+ * mode. When the host injects both env vars, the backend signing key is NOT in
+ * this container — every gateway call goes UNSIGNED to the host proxy, which
+ * signs with the real key and forwards. There is deliberately no fallback to
+ * direct signing: with no key, the container is structurally fail-closed.
+ *
+ * Read per call (not cached) so a test or a re-exec sees current env.
+ */
+function getSigningProxyTarget(): SigningProxyTarget | null {
+  const url = process.env.AGENTDESK_GATEWAY_PROXY_URL?.trim();
+  const token = process.env.AGENTDESK_GATEWAY_PROXY_TOKEN?.trim();
+  if (url && token) return { url: url.replace(/\/+$/, ''), token };
+  return null;
+}
+
 type RequesterSource = 'session' | 'agent-asserted';
 
 interface RequesterContext {
@@ -476,7 +500,13 @@ async function callGateway(
   // Stamp the wire-contract version onto every outbound request. This is
   // platform-produced, so always-on is safe.
   body.contractVersion = CONTRACT_VERSION;
-  if (!gateway?.baseUrl) {
+
+  // Signing credential proxy mode (ADR-0034): the key is not in this container,
+  // so we post unsigned to the host proxy instead of the backend directly. In
+  // proxy mode the backend baseUrl is resolved host-side, so we don't require
+  // it here; in direct mode it remains mandatory.
+  const proxy = getSigningProxyTarget();
+  if (!proxy && !gateway?.baseUrl) {
     const msg = 'ERP gateway is not configured for this agent group.';
     emitAuditMessage({
       path: pathname,
@@ -490,7 +520,7 @@ async function callGateway(
   }
 
   const controller = new AbortController();
-  const timeoutMs = gateway.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = gateway?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -498,15 +528,31 @@ async function callGateway(
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
-      ...normalizeHeaders(gateway.defaultHeaders),
+      ...normalizeHeaders(gateway?.defaultHeaders),
     };
-    applySigningHeaders(headers, gateway, bodyString);
-    const response = await fetch(`${sanitizeBaseUrl(gateway.baseUrl)}${pathname}`, {
-      method: 'POST',
-      headers,
-      body: bodyString,
-      signal: controller.signal,
-    });
+    let response: Response;
+    if (proxy) {
+      // Unsigned → host proxy. No signing key in this container; the proxy
+      // signs with the group's real key and forwards. NO fallthrough to a
+      // direct call: structurally fail-closed if the proxy is unreachable.
+      // host.docker.internal is in NO_PROXY (host-injected) so this bypasses
+      // the OneCLI vault HTTP(S)_PROXY.
+      headers[PROXY_TOKEN_HEADER] = proxy.token;
+      response = await fetch(`${proxy.url}${pathname}`, {
+        method: 'POST',
+        headers,
+        body: bodyString,
+        signal: controller.signal,
+      });
+    } else {
+      applySigningHeaders(headers, gateway!, bodyString);
+      response = await fetch(`${sanitizeBaseUrl(gateway!.baseUrl)}${pathname}`, {
+        method: 'POST',
+        headers,
+        body: bodyString,
+        signal: controller.signal,
+      });
+    }
 
     const text = await response.text();
     if (!response.ok) {

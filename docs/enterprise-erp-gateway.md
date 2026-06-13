@@ -178,10 +178,29 @@ Recommended companion policies on the gateway:
   or Redis TTL is fine)
 - reject any request missing the three headers when a signing key is
   configured
+- **recompute the HMAC over the raw received body bytes — do not re-parse and
+  re-serialize before verifying.** The platform always signs canonical JSON
+  (single-key, no duplicate keys); verifying over your own re-serialization can
+  open a parser-differential gap. Treat the bytes you received as authoritative.
 
 Header names can be overridden per group via
 `backendGateway.signingHeaders.{timestamp,nonce,signature}` if the
 gateway you're fronting has mandatory naming conventions.
+
+### Host-side signing proxy (ADR-0034, default OFF)
+
+By default the `signingKey` is mounted into the agent container (in
+`container.json`), so a compromised/injected container could read it. Setting
+`AGENTDESK_GATEWAY_SIGNING_PROXY=true` removes the key from the container
+entirely: the host mints a per-session, scoped, revocable token, mounts a
+**redacted** `container.json` (no `signingKey`, blanked `baseUrl`), and runs a
+local signing proxy. The container posts **unsigned** gateway requests to the
+proxy; the proxy verifies the token, confirms the request's claimed agent group
+matches the token's authoritative (central-DB) group, signs the canonical bytes
+with the real key, and forwards. The backend sees the exact same signed request
+as in direct mode — no contract change. From the gateway's perspective nothing
+changes; this only moves *where* the signature is produced. See ADR-0034 for the
+threat model, token scoping, source-IP pin caveats, and audit columns.
 
 ### Enabling signing
 
@@ -259,6 +278,20 @@ The audit write is best-effort (container → host → DB); if the DB write
 itself fails, the row is dropped. For environments where the gateway side
 needs to reconcile the full trail even when that happens, run audit on
 the gateway as well and match by `idempotencyKey` / returned audit id.
+
+### Signing-proxy audit rows (ADR-0034)
+
+When the host signing proxy is enabled, the proxy writes its own **authoritative**
+rows carrying facts only the host knows, via additive (nullable) columns added by
+migration 029: `signed_as_group`, `token_jti`, `proxy_request_id`,
+`identity_mismatch`, `requester_source_coerced`, `audit_phase`. These rows are
+written in two phases — an `audit_phase='intent'` row (`status='pending'`) *before*
+forwarding, updated to `audit_phase='final'` with the outcome afterwards — so a
+crash mid-call still leaves a forensic row. Any `intent` row left stranded by a
+crash is reconciled to a terminal `error` at the next host start. The default
+`queryGatewayAudit` view (and the operator query above) hides non-final rows, so
+`status` stays within `{ok,error}`; pass `includeNonFinal` to inspect in-flight
+rows. Container-driven rows (the path above) keep `audit_phase=NULL`.
 
 ## Error responses
 

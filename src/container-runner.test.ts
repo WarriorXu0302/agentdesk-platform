@@ -7,9 +7,106 @@ import {
   buildSecurityArgs,
   checkBaseImage,
   isValidContainerNetwork,
+  mergeNoProxyArgs,
+  redactContainerConfigForContainer,
+  redactedConfigPathFor,
   resolveContainerNetwork,
   resolveProviderName,
 } from './container-runner.js';
+import type { ContainerConfig } from './container-config.js';
+
+describe('redactContainerConfigForContainer (ADR-0034 key isolation)', () => {
+  function configWithGateway(): ContainerConfig {
+    return {
+      mcpServers: {},
+      packages: { apt: [], npm: [] },
+      additionalMounts: [],
+      skills: 'all',
+      agentGroupId: 'ag1',
+      groupName: 'G',
+      backendGateway: {
+        baseUrl: 'https://erp.example',
+        signingKey: 'TOP-SECRET-KEY',
+        defaultHeaders: { 'x-tenant': 't1' },
+      },
+    };
+  }
+
+  it('strips the signingKey AND blanks baseUrl (structural fail-closed)', () => {
+    const redacted = redactContainerConfigForContainer(configWithGateway());
+    expect(redacted.backendGateway?.signingKey).toBeUndefined();
+    // baseUrl blanked so a stray direct call has no target -> GATEWAY_NOT_CONFIGURED.
+    expect(redacted.backendGateway?.baseUrl).toBe('');
+    // Non-secret fields preserved so the runner still has its config.
+    expect(redacted.backendGateway?.defaultHeaders).toEqual({ 'x-tenant': 't1' });
+    expect(redacted.agentGroupId).toBe('ag1');
+  });
+
+  it('serialized redacted config contains no trace of the key', () => {
+    const json = JSON.stringify(redactContainerConfigForContainer(configWithGateway()));
+    expect(json).not.toContain('TOP-SECRET-KEY');
+    expect(json).not.toContain('signingKey');
+  });
+
+  it('does not mutate the input config', () => {
+    const original = configWithGateway();
+    redactContainerConfigForContainer(original);
+    expect(original.backendGateway?.signingKey).toBe('TOP-SECRET-KEY');
+    expect(original.backendGateway?.baseUrl).toBe('https://erp.example');
+  });
+
+  it('is a no-op shape when no backendGateway is configured', () => {
+    const redacted = redactContainerConfigForContainer({
+      mcpServers: {},
+      packages: { apt: [], npm: [] },
+      additionalMounts: [],
+      skills: 'all',
+    });
+    expect(redacted.backendGateway).toBeUndefined();
+  });
+});
+
+describe('redactedConfigPathFor (ADR-0034 host-only redacted config)', () => {
+  it('is deterministic and lives under the host-only v2-proxy-runtime dir (never a RW-mounted group dir)', () => {
+    const p1 = redactedConfigPathFor('sess-abc');
+    const p2 = redactedConfigPathFor('sess-abc');
+    expect(p1).toBe(p2);
+    expect(p1).toContain('/v2-proxy-runtime/');
+    expect(p1).not.toContain('/groups/');
+    expect(redactedConfigPathFor('sess-xyz')).not.toBe(p1);
+  });
+});
+
+/** Read the value of the LAST `-e KEY=...` entry (case-sensitive key). */
+function lastEnvArg(args: string[], key: string): string | undefined {
+  let found: string | undefined;
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '-e' && args[i + 1].startsWith(`${key}=`)) found = args[i + 1].slice(key.length + 1);
+  }
+  return found;
+}
+
+describe('mergeNoProxyArgs (ADR-0034 NO_PROXY merge)', () => {
+  it('appends host.docker.internal (both cases) when no prior NO_PROXY exists', () => {
+    const args: string[] = [];
+    mergeNoProxyArgs(args, ['host.docker.internal']);
+    expect(lastEnvArg(args, 'NO_PROXY')).toBe('host.docker.internal');
+    expect(lastEnvArg(args, 'no_proxy')).toBe('host.docker.internal');
+  });
+
+  it('unions with an existing OneCLI-injected NO_PROXY (last -e wins in docker)', () => {
+    const args = ['-e', 'NO_PROXY=vault.internal,localhost'];
+    mergeNoProxyArgs(args, ['host.docker.internal']);
+    const merged = lastEnvArg(args, 'NO_PROXY')!.split(',');
+    expect(new Set(merged)).toEqual(new Set(['vault.internal', 'localhost', 'host.docker.internal']));
+  });
+
+  it('also picks up a lowercase no_proxy and dedups', () => {
+    const args = ['-e', 'no_proxy=host.docker.internal,vault'];
+    mergeNoProxyArgs(args, ['host.docker.internal']);
+    expect(new Set(lastEnvArg(args, 'NO_PROXY')!.split(','))).toEqual(new Set(['host.docker.internal', 'vault']));
+  });
+});
 
 describe('resolveProviderName', () => {
   it('prefers session over group and container.json', () => {

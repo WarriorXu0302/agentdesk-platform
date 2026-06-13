@@ -751,3 +751,107 @@ describe('gateway contract hardening', () => {
     }
   });
 });
+
+describe('signing credential proxy mode (ADR-0034)', () => {
+  const URL_ENV = 'AGENTDESK_GATEWAY_PROXY_URL';
+  const TOKEN_ENV = 'AGENTDESK_GATEWAY_PROXY_TOKEN';
+  let savedUrl: string | undefined;
+  let savedToken: string | undefined;
+
+  beforeEach(() => {
+    savedUrl = process.env[URL_ENV];
+    savedToken = process.env[TOKEN_ENV];
+    delete process.env[URL_ENV];
+    delete process.env[TOKEN_ENV];
+  });
+
+  afterEach(() => {
+    if (savedUrl === undefined) delete process.env[URL_ENV];
+    else process.env[URL_ENV] = savedUrl;
+    if (savedToken === undefined) delete process.env[TOKEN_ENV];
+    else process.env[TOKEN_ENV] = savedToken;
+  });
+
+  function capture(): { getUrl: () => string; getHeaders: () => Record<string, string>; calls: () => number } {
+    let url = '';
+    let calls = 0;
+    const headers: Record<string, string> = {};
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      calls += 1;
+      for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+        headers[String(k).toLowerCase()] = String(v);
+      }
+      return new Response(JSON.stringify({ operations: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    return { getUrl: () => url, getHeaders: () => headers, calls: () => calls };
+  }
+
+  it('routes UNSIGNED to the host proxy with the token header when proxy env is set', async () => {
+    setRequestIdentity(sessionIdentity());
+    process.env[URL_ENV] = 'http://host.docker.internal:8799';
+    process.env[TOKEN_ENV] = 'jti.sekret';
+    const cap = capture();
+
+    const result = await handleGatewayDescribe(
+      configuredRuntime({ baseUrl: 'https://erp-gateway.example', signingKey: 'secret-key' }),
+      {},
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(cap.getUrl()).toBe('http://host.docker.internal:8799/describe');
+    expect(cap.getHeaders()['x-agentdesk-proxy-token']).toBe('jti.sekret');
+    // The container holds no key in proxy mode — no signing headers are sent.
+    expect(cap.getHeaders()['x-agentdesk-signature']).toBeUndefined();
+  });
+
+  it('never falls through to a direct signed call even when a signingKey is present (fail-closed)', async () => {
+    setRequestIdentity(sessionIdentity());
+    process.env[URL_ENV] = 'http://host.docker.internal:8799';
+    process.env[TOKEN_ENV] = 'tkn';
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayExecute(
+      configuredRuntime({ baseUrl: 'https://erp-gateway.example', signingKey: 'secret-key' }),
+      { operation: 'sales.order.create', input: {} },
+    );
+
+    expect(urls).toEqual(['http://host.docker.internal:8799/execute']);
+    expect(urls.some((u) => u.startsWith('https://erp-gateway.example'))).toBe(false);
+  });
+
+  it('signs directly when proxy env is absent (unchanged behavior)', async () => {
+    setRequestIdentity(sessionIdentity());
+    const cap = capture();
+
+    await handleGatewayDescribe(
+      configuredRuntime({ baseUrl: 'https://erp-gateway.example', signingKey: 'secret-key' }),
+      {},
+    );
+
+    expect(cap.getUrl()).toBe('https://erp-gateway.example/describe');
+    expect(cap.getHeaders()['x-agentdesk-signature']).toMatch(/^[0-9a-f]{64}$/);
+    expect(cap.getHeaders()['x-agentdesk-proxy-token']).toBeUndefined();
+  });
+
+  it('still works in proxy mode without a usable baseUrl (resolved host-side)', async () => {
+    setRequestIdentity(sessionIdentity());
+    process.env[URL_ENV] = 'http://host.docker.internal:8799';
+    process.env[TOKEN_ENV] = 'tkn';
+    const cap = capture();
+
+    // baseUrl empty — in direct mode this is GATEWAY_NOT_CONFIGURED, but in
+    // proxy mode the backend URL is resolved host-side, so the call proceeds.
+    const result = await handleGatewayDescribe(configuredRuntime({ baseUrl: '' }), {});
+
+    expect(result.isError).toBeUndefined();
+    expect(cap.getUrl()).toBe('http://host.docker.internal:8799/describe');
+  });
+});

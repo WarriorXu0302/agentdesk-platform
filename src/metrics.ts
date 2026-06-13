@@ -259,6 +259,25 @@ export const rosterDmRejectedTotal = new client.Counter({
   registers: [registry],
 });
 
+export const gatewaySigningProxyTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_gateway_signing_proxy_total`,
+  help: 'Host signing-proxy requests by outcome (ADR-0034). signingKey never enters the container in this mode.',
+  // `outcome`:
+  //   - signed             : token + identity verified, signed and forwarded.
+  //   - unauthorized        : missing / unknown / expired / revoked token (401).
+  //   - source_ip_mismatch  : token presented from an IP other than its pin (401).
+  //   - identity_mismatch   : token valid but request body claimed a different
+  //                           agent group than the token is bound to (409) — an
+  //                           impersonation signal; alert on any non-zero rate.
+  //   - forbidden_path      : path not in the token's allowedPaths / unknown (403).
+  //   - rate_limited        : per-token rate window exceeded (429).
+  //   - bad_request         : malformed body / non-POST / oversized (4xx).
+  //   - no_signing_key      : group has no signing key host-side — fail-closed (502).
+  //   - backend_error       : upstream backend unreachable / errored after signing.
+  labelNames: ['outcome'] as const,
+  registers: [registry],
+});
+
 export function renderMetrics(): Promise<string> {
   return registry.metrics();
 }

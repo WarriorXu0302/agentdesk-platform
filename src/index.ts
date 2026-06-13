@@ -14,9 +14,10 @@ import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import { checkBaseImage } from './container-runner.js';
+import { checkBaseImage, cleanupProxyRuntimeOnBoot } from './container-runner.js';
 import { validateStartupConfig } from './config-validate.js';
 import { checkGatewaySigningCoverage } from './gateway-signing-check.js';
+import { startGatewaySigningProxy, stopGatewaySigningProxy } from './gateway-signing-proxy.js';
 import { surfaceOrphanedIngress } from './ingress-recovery-check.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import {
@@ -100,6 +101,15 @@ async function main(): Promise<void> {
   validateStartupConfig();
   checkBaseImage();
   checkGatewaySigningCoverage();
+  // Host signing credential proxy (ADR-0034). Default OFF. When enabled, signs
+  // backend-gateway requests on behalf of containers so the signingKey never
+  // enters a container. Needs the central DB ready (token store), so it starts
+  // here. A bind failure is non-fatal but makes proxy-mode containers
+  // fail-closed (they have no key to fall back to). Boot cleanup first: revoke
+  // tokens orphaned by a prior crash/restart and clear stale redacted configs
+  // (cleanupOrphans above has already reaped their containers).
+  cleanupProxyRuntimeOnBoot();
+  startGatewaySigningProxy();
   // Report inbound envelopes left unrecovered by a prior crash/route failure
   // (ADR-0022). Read-only — never auto-replays (that would bypass adapter-layer
   // dedup); remediation is the explicit replay CLI.
@@ -230,6 +240,11 @@ async function runShutdownSteps(): Promise<void> {
     await stopWebhookServer();
   } catch (err) {
     log.error('Webhook server stop threw', { err });
+  }
+  try {
+    await stopGatewaySigningProxy();
+  } catch (err) {
+    log.error('Gateway signing proxy stop threw', { err });
   }
   stopDeliveryPolls();
   stopHostSweep();

@@ -4,6 +4,7 @@
  * The container runs the v2 agent-runner which polls the session DB.
  */
 import { ChildProcess, execSync, spawn } from 'child_process';
+import crypto from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -25,6 +26,8 @@ import { readContainerConfig, writeContainerConfig } from './container-config.js
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { revokeAllProxyTokens, revokeProxyTokensForSession } from './db/gateway-proxy-token.js';
+import { gatewaySigningProxyEnabled, mintSessionProxyToken } from './gateway-signing-proxy.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
 import { containerExitsTotal, wakeRejectedTotal } from './metrics.js';
@@ -262,7 +265,12 @@ async function spawnContainer(session: Session): Promise<void> {
       const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
       getActiveSpan()?.setAttribute('provider', provider);
 
-      const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
+      // Signing credential proxy (ADR-0034). When enabled + the group has a
+      // signingKey, mint a per-session token and redact the key from the
+      // container's container.json. Undefined (and a no-op) otherwise.
+      const signingProxy = resolveSpawnSigningProxy(session, agentGroup, containerConfig);
+
+      const mounts = buildMounts(agentGroup, session, containerConfig, contribution, signingProxy);
       const containerName = `${PLATFORM_PROTOCOL_NAMESPACE}-v2-${agentGroup.folder}-${Date.now()}`;
       // OneCLI agent identifier is always the agent group id — stable across
       // sessions and reversible via getAgentGroup() for approval routing.
@@ -278,6 +286,7 @@ async function spawnContainer(session: Session): Promise<void> {
         provider,
         contribution,
         agentIdentifier,
+        signingProxy,
       );
 
       log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
@@ -314,6 +323,7 @@ async function spawnContainer(session: Session): Promise<void> {
         activeContainers.delete(session.id);
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
+        cleanupSigningProxyForSession(session.id, signingProxy);
         containerExitsTotal.labels(agentGroup.id, outcome).inc();
         if (outcome === 'crash' || outcome === 'killed') {
           failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
@@ -326,6 +336,7 @@ async function spawnContainer(session: Session): Promise<void> {
         activeContainers.delete(session.id);
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
+        cleanupSigningProxyForSession(session.id, signingProxy);
         containerExitsTotal.labels(agentGroup.id, 'crash').inc();
         failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
         log.error('Container spawn error', { sessionId: session.id, err });
@@ -391,6 +402,7 @@ function buildMounts(
   session: Session,
   containerConfig: import('./container-config.js').ContainerConfig,
   providerContribution: ProviderContainerContribution,
+  signingProxy?: SpawnSigningProxy,
 ): VolumeMount[] {
   const projectRoot = process.cwd();
 
@@ -417,9 +429,12 @@ function buildMounts(
   // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
 
-  // container.json — nested RO mount on top of RW group dir so the agent
-  // can read its config but cannot modify it.
-  const containerJsonPath = path.join(groupDir, 'container.json');
+  // container.json — nested RO mount on top of RW group dir so the agent can
+  // read its config but cannot modify it. In signing-proxy mode (ADR-0034) we
+  // mount a REDACTED copy (signingKey stripped) at the same container path; the
+  // nested mount shadows the real groupDir/container.json — which is the only
+  // in-container path to it — so the key is never visible inside the container.
+  const containerJsonPath = signingProxy?.redactedConfigPath ?? path.join(groupDir, 'container.json');
   if (fs.existsSync(containerJsonPath)) {
     mounts.push({ hostPath: containerJsonPath, containerPath: '/workspace/agent/container.json', readonly: true });
   }
@@ -571,6 +586,170 @@ function ensureRuntimeFields(
   }
 }
 
+/**
+ * Per-spawn signing-proxy context (ADR-0034). Present only when the proxy is
+ * enabled AND the group actually has a signingKey to protect. Carries the
+ * minted token, the container-facing proxy URL, the host alias to add to
+ * NO_PROXY, and the host path of the REDACTED container.json (signingKey
+ * stripped) that gets mounted in place of the real one.
+ */
+interface SpawnSigningProxy {
+  token: string;
+  url: string;
+  noProxyHost: string;
+  redactedConfigPath: string;
+}
+
+/**
+ * Tear down a session's signing-proxy state when its container exits: tombstone
+ * its tokens (so a leaked token dies with the container, not at TTL) and remove
+ * the redacted config file. Always safe to call — revoke is a no-op when there
+ * are no live tokens, and is cheap. Never throws into the exit handler.
+ */
+function cleanupSigningProxyForSession(sessionId: string, signingProxy?: SpawnSigningProxy): void {
+  try {
+    revokeProxyTokensForSession(sessionId);
+  } catch (err) {
+    log.warn('Failed to revoke signing-proxy tokens on container exit', { sessionId, err });
+  }
+  if (signingProxy) {
+    try {
+      fs.rmSync(signingProxy.redactedConfigPath, { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+/** Host-only directory holding per-session redacted container.json files. */
+function proxyRuntimeDir(): string {
+  return path.join(DATA_DIR, 'v2-proxy-runtime');
+}
+
+/** Host-only path for a session's redacted container.json (not mounted RW). */
+export function redactedConfigPathFor(sessionId: string): string {
+  const fname = `${crypto.createHash('sha1').update(sessionId).digest('hex')}.container.json`;
+  return path.join(proxyRuntimeDir(), fname);
+}
+
+/**
+ * Boot-time signing-proxy cleanup (ADR-0034). The host has just (re)started and
+ * cleanupOrphans() has reaped any prior containers, so no container can
+ * legitimately hold a proxy token or own a redacted config. Revoke every live
+ * token (a leaked token must not outlive its container across a restart up to
+ * its TTL) and clear the stale redacted-config directory. No-op when the proxy
+ * is disabled, so default-OFF stays byte-for-byte unchanged.
+ */
+export function cleanupProxyRuntimeOnBoot(): void {
+  if (!gatewaySigningProxyEnabled()) return;
+  try {
+    const revoked = revokeAllProxyTokens();
+    if (revoked > 0) log.warn('Revoked orphaned signing-proxy tokens at startup', { count: revoked });
+  } catch (err) {
+    log.warn('Failed to revoke signing-proxy tokens at startup', { err });
+  }
+  try {
+    fs.rmSync(proxyRuntimeDir(), { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Produce the container-facing (redacted) view of a group's container config
+ * for proxy mode. Strips the signing key (the whole point) AND blanks the
+ * backend baseUrl. Pure + exported for testing.
+ *
+ * Blanking baseUrl makes fail-closed STRUCTURAL rather than code-discipline: if
+ * the container ever reaches the DIRECT branch (proxy env missing), it has no
+ * key to sign with AND no target to hit, so callGateway's
+ * `!proxy && !gateway?.baseUrl` guard fires GATEWAY_NOT_CONFIGURED instead of
+ * sending an UNSIGNED request to the real backend. The host proxy resolves the
+ * real baseUrl host-side, so the container never needs it in proxy mode.
+ */
+export function redactContainerConfigForContainer(
+  containerConfig: import('./container-config.js').ContainerConfig,
+): import('./container-config.js').ContainerConfig {
+  const clone = JSON.parse(JSON.stringify(containerConfig)) as import('./container-config.js').ContainerConfig;
+  if (clone.backendGateway) {
+    delete clone.backendGateway.signingKey;
+    clone.backendGateway.baseUrl = '';
+  }
+  return clone;
+}
+
+/**
+ * Write the redacted container.json to a host-only path. This is what gets
+ * mounted into the container in proxy mode — the real container.json (with the
+ * key + baseUrl, which the host proxy reads to sign) stays only on the host.
+ * Returns the redacted path.
+ */
+function writeRedactedContainerConfig(
+  sessionId: string,
+  containerConfig: import('./container-config.js').ContainerConfig,
+): string {
+  const out = redactedConfigPathFor(sessionId);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, JSON.stringify(redactContainerConfigForContainer(containerConfig), null, 2) + '\n');
+  return out;
+}
+
+/**
+ * Resolve the signing-proxy context for a spawn, or undefined to leave behavior
+ * unchanged. Engages only when the proxy is enabled AND the group has a
+ * signingKey worth protecting — a group with no key has nothing to withhold, so
+ * we skip the redaction + token machinery entirely (zero behavior change).
+ */
+function resolveSpawnSigningProxy(
+  session: Session,
+  agentGroup: AgentGroup,
+  containerConfig: import('./container-config.js').ContainerConfig,
+): SpawnSigningProxy | undefined {
+  if (!containerConfig.backendGateway?.signingKey?.trim()) return undefined;
+  const minted = mintSessionProxyToken(session.id, agentGroup.id);
+  if (!minted) return undefined; // proxy disabled
+  const redactedConfigPath = writeRedactedContainerConfig(session.id, containerConfig);
+  return {
+    token: minted.token,
+    url: minted.url,
+    noProxyHost: minted.noProxyHost,
+    redactedConfigPath,
+  };
+}
+
+/**
+ * Merge `additions` into any existing NO_PROXY / no_proxy `-e` entries already
+ * pushed onto the docker args (e.g. by the OneCLI gateway or a provider), then
+ * append overriding `-e NO_PROXY` / `-e no_proxy` so the merged set wins
+ * (docker uses the last `-e` for a given key). Pure + exported for testing.
+ *
+ * Why this matters (ADR-0034): the OneCLI gateway injects HTTP(S)_PROXY so the
+ * container's outbound API calls route through the credential vault. Bun's
+ * fetch honors those proxy env vars — so without host.docker.internal in
+ * NO_PROXY, the container's call to THIS proxy would be tunneled through the
+ * vault and never arrive. NO_PROXY is therefore a hard precondition, not a
+ * nicety.
+ */
+export function mergeNoProxyArgs(args: string[], additions: string[]): string[] {
+  const values = new Set<string>();
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] !== '-e') continue;
+    const m = /^(?:NO_PROXY|no_proxy)=(.*)$/.exec(args[i + 1]);
+    if (!m) continue;
+    for (const v of m[1].split(',')) {
+      const t = v.trim();
+      if (t) values.add(t);
+    }
+  }
+  for (const a of additions) {
+    const t = a.trim();
+    if (t) values.add(t);
+  }
+  const merged = [...values].join(',');
+  args.push('-e', `NO_PROXY=${merged}`, '-e', `no_proxy=${merged}`);
+  return args;
+}
+
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -579,6 +758,7 @@ async function buildContainerArgs(
   provider: string,
   providerContribution: ProviderContainerContribution,
   agentIdentifier?: string,
+  signingProxy?: SpawnSigningProxy,
 ): Promise<string[]> {
   const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
 
@@ -677,6 +857,18 @@ async function buildContainerArgs(
   // security/OTEL flags — a `--network` after the image would be handed to the
   // entrypoint instead of parsed by docker.
   args.push(...buildNetworkArgs(containerConfig, process.env));
+
+  // Signing credential proxy (ADR-0034). Inject the proxy URL + per-session
+  // token, and merge host.docker.internal into NO_PROXY so the container's call
+  // to the proxy bypasses the OneCLI vault HTTP(S)_PROXY. MUST be after the
+  // OneCLI/provider env pushes (so the merge sees their NO_PROXY) and, like all
+  // `-e` vars, BEFORE the image tag. When proxy mode is off, signingProxy is
+  // undefined and nothing is added — byte-for-byte the prior behavior.
+  if (signingProxy) {
+    args.push('-e', `AGENTDESK_GATEWAY_PROXY_URL=${signingProxy.url}`);
+    args.push('-e', `AGENTDESK_GATEWAY_PROXY_TOKEN=${signingProxy.token}`);
+    mergeNoProxyArgs(args, [signingProxy.noProxyHost]);
+  }
 
   // Volume mounts
   for (const mount of mounts) {
