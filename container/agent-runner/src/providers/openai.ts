@@ -910,6 +910,13 @@ export class OpenAIProvider implements AgentProvider {
 
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  /**
+   * Vault mode (ADR-0035): when true, the API key is NOT in this container —
+   * the host routes our requests through the OneCLI vault, which injects the
+   * Authorization header. We therefore require no key and send no auth header
+   * of our own (the vault adds it on the wire).
+   */
+  private readonly credentialViaProxy: boolean;
   private readonly model: string;
   private readonly reasoningEffort?: string;
   private readonly timeoutMs: number;
@@ -922,6 +929,7 @@ export class OpenAIProvider implements AgentProvider {
     const env = options.env ?? {};
     this.baseUrl = normalizeBaseUrl(readString(env.OPENAI_BASE_URL));
     this.apiKey = readString(env.OPENAI_API_KEY) || '';
+    this.credentialViaProxy = /^(1|true|yes|on)$/i.test(readString(env.OPENAI_CREDENTIAL_VIA_PROXY) || '');
     this.model = readString(env.OPENAI_MODEL) || DEFAULT_MODEL;
     this.reasoningEffort = readString(env.OPENAI_REASONING_EFFORT);
     this.timeoutMs = Number.parseInt(readString(env.OPENAI_TIMEOUT_MS) || '', 10) || DEFAULT_TIMEOUT_MS;
@@ -937,6 +945,17 @@ export class OpenAIProvider implements AgentProvider {
   isSessionInvalid(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return INVALID_SESSION_RE.test(msg);
+  }
+
+  /**
+   * Headers for an upstream OpenAI request. In vault mode we deliberately omit
+   * the Authorization header — the container has no key, and the OneCLI vault
+   * injects credentials on the wire (ADR-0035). Direct mode signs with the key.
+   */
+  private requestHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (!this.credentialViaProxy) headers.authorization = `Bearer ${this.apiKey}`;
+    return headers;
   }
 
   query(input: QueryInput): AgentQuery {
@@ -1065,7 +1084,7 @@ export class OpenAIProvider implements AgentProvider {
     compacted?: { text: string };
     usages: UsageRecord[];
   }> {
-    if (!this.apiKey) {
+    if (!this.apiKey && !this.credentialViaProxy) {
       throw new Error('OPENAI_API_KEY is missing for provider=openai');
     }
 
@@ -1421,10 +1440,7 @@ export class OpenAIProvider implements AgentProvider {
           response = await withHeartbeat(() =>
             fetch(`${this.baseUrl}/responses`, {
               method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                authorization: `Bearer ${this.apiKey}`,
-              },
+              headers: this.requestHeaders(),
               body: JSON.stringify(body),
               signal: controller.signal,
             }),
@@ -1532,10 +1548,7 @@ export class OpenAIProvider implements AgentProvider {
           response = await withHeartbeat(() =>
             fetch(`${this.baseUrl}/chat/completions`, {
               method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                authorization: `Bearer ${this.apiKey}`,
-              },
+              headers: this.requestHeaders(),
               body: JSON.stringify(body),
               signal: controller.signal,
             }),
@@ -1627,10 +1640,7 @@ export class OpenAIProvider implements AgentProvider {
           response = await withHeartbeat(() =>
             fetch(`${this.baseUrl}/chat/completions`, {
               method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                authorization: `Bearer ${this.apiKey}`,
-              },
+              headers: this.requestHeaders(),
               body: JSON.stringify(body),
               signal: controller.signal,
             }),

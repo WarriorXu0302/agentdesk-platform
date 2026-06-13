@@ -6,13 +6,45 @@ import {
   buildRunnerTracingEnvArgs,
   buildSecurityArgs,
   checkBaseImage,
+  findInjectedEnvValue,
   isValidContainerNetwork,
   mergeNoProxyArgs,
   redactContainerConfigForContainer,
   redactedConfigPathFor,
   resolveContainerNetwork,
   resolveProviderName,
+  routeOpenAiThroughVault,
 } from './container-runner.js';
+
+describe('routeOpenAiThroughVault (ADR-0035)', () => {
+  it('routes openai/codex through the vault only when the flag is on', () => {
+    expect(routeOpenAiThroughVault('openai', true)).toBe(true);
+    expect(routeOpenAiThroughVault('codex', true)).toBe(true);
+    expect(routeOpenAiThroughVault('openai', false)).toBe(false);
+    expect(routeOpenAiThroughVault('codex', false)).toBe(false);
+  });
+
+  it('never routes mock or claude (offline / already-vaulted)', () => {
+    expect(routeOpenAiThroughVault('mock', true)).toBe(false);
+    expect(routeOpenAiThroughVault('claude', true)).toBe(false);
+  });
+});
+
+describe('findInjectedEnvValue (ADR-0035 vault CA detection)', () => {
+  it('returns the value OneCLI injected for a key', () => {
+    const args = ['run', '-e', 'SSL_CERT_FILE=/tmp/onecli-combined-ca.pem', '-v', 'x:y'];
+    expect(findInjectedEnvValue(args, 'SSL_CERT_FILE')).toBe('/tmp/onecli-combined-ca.pem');
+  });
+
+  it('returns undefined when the key was not injected (no combined CA mounted)', () => {
+    expect(findInjectedEnvValue(['run', '-e', 'TZ=UTC'], 'SSL_CERT_FILE')).toBeUndefined();
+  });
+
+  it('returns the LAST value when a key appears more than once', () => {
+    const args = ['-e', 'SSL_CERT_FILE=/a', '-e', 'SSL_CERT_FILE=/b'];
+    expect(findInjectedEnvValue(args, 'SSL_CERT_FILE')).toBe('/b');
+  });
+});
 import type { ContainerConfig } from './container-config.js';
 
 describe('redactContainerConfigForContainer (ADR-0034 key isolation)', () => {

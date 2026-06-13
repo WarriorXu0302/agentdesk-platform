@@ -60,6 +60,9 @@ const INSPECTED_KEYS = [
   'OPENAI_TIMEOUT_MS',
   'OPENAI_COMPACT_MODEL',
   'OTEL_CAPTURE_CONTENT',
+  // ADR-0035: in vault mode the host needs ONECLI_URL (not OPENAI_API_KEY).
+  'AGENTDESK_OPENAI_VIA_ONECLI',
+  'ONECLI_URL',
 ] as const;
 
 /**
@@ -140,11 +143,28 @@ export function validateStartupConfig(): void {
     !!get('OPENAI_REASONING_EFFORT') ||
     !!get('OPENAI_TIMEOUT_MS') ||
     !!get('OPENAI_COMPACT_MODEL');
-  if (openaiConfigured && !get('OPENAI_API_KEY')) {
-    errors.push(
-      'OPENAI_API_KEY is required when the OpenAI provider is configured ' +
-        '(OPENAI_BASE_URL / OPENAI_MODEL / etc. are set but OPENAI_API_KEY is missing).',
-    );
+  // ADR-0035 vault mode flips the requirement: the OpenAI key is intentionally
+  // NOT on the host (the OneCLI vault holds + injects it), so requiring it here
+  // would block the secure setup from booting and push the key back onto disk.
+  // In vault mode require ONECLI_URL instead (without it the vault can't inject
+  // and every call would 401); in direct mode keep the original key check.
+  const openaiViaVault = get('AGENTDESK_OPENAI_VIA_ONECLI')?.toLowerCase() === 'true';
+  if (openaiConfigured) {
+    if (openaiViaVault) {
+      if (!get('ONECLI_URL')) {
+        errors.push(
+          'ONECLI_URL is required when AGENTDESK_OPENAI_VIA_ONECLI=true ' +
+            '(the OpenAI key is withheld from the container and injected by the OneCLI vault; ' +
+            'without ONECLI_URL the vault cannot inject it and every call would fail with 401).',
+        );
+      }
+    } else if (!get('OPENAI_API_KEY')) {
+      errors.push(
+        'OPENAI_API_KEY is required when the OpenAI provider is configured ' +
+          '(OPENAI_BASE_URL / OPENAI_MODEL / etc. are set but OPENAI_API_KEY is missing). ' +
+          'Or set AGENTDESK_OPENAI_VIA_ONECLI=true to inject it from the OneCLI vault instead.',
+      );
+    }
   }
 
   // --- 3. Soft warnings (degrade gracefully, never block startup) ---

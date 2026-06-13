@@ -887,3 +887,61 @@ describe('OpenAIProvider', () => {
     expect(mainUsage).toBeDefined();
   });
 });
+
+describe('OpenAIProvider vault mode (ADR-0035)', () => {
+  it('requires no API key and sends NO Authorization header (the OneCLI vault injects it)', async () => {
+    const capturedHeaders: Record<string, string> = {};
+    let url = '';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      const raw = init?.headers ?? {};
+      if (raw instanceof Headers) {
+        raw.forEach((value, key) => {
+          capturedHeaders[key.toLowerCase()] = value;
+        });
+      } else {
+        for (const [key, value] of Object.entries(raw as Record<string, string>)) {
+          capturedHeaders[String(key).toLowerCase()] = String(value);
+        }
+      }
+      return jsonResponse({
+        id: 'resp_1',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }],
+      });
+    }) as typeof fetch;
+
+    // No OPENAI_API_KEY — vault mode must not throw on the missing key.
+    const provider = new OpenAIProvider({
+      env: { OPENAI_CREDENTIAL_VIA_PROXY: 'true', OPENAI_BASE_URL: 'https://api.openai.example' },
+    });
+
+    const events = await runQuery(provider, 'hello');
+    const result = events.find((event) => event.type === 'result');
+    expect(result).toEqual({ type: 'result', text: 'done' });
+    // Routed to the real OpenAI host (HTTPS_PROXY → vault redirects transparently).
+    expect(url).toContain('https://api.openai.example');
+    // The container sends no auth of its own; content-type still set.
+    expect(capturedHeaders['authorization']).toBeUndefined();
+    expect(capturedHeaders['content-type']).toBe('application/json');
+  });
+
+  it('direct mode still sends Authorization: Bearer <key>', async () => {
+    const capturedHeaders: Record<string, string> = {};
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = init?.headers ?? {};
+      for (const [key, value] of Object.entries(raw as Record<string, string>)) {
+        capturedHeaders[String(key).toLowerCase()] = String(value);
+      }
+      return jsonResponse({
+        id: 'resp_1',
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }],
+      });
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      env: { OPENAI_API_KEY: 'sk-direct', OPENAI_BASE_URL: 'https://api.openai.example' },
+    });
+    await runQuery(provider, 'hello');
+    expect(capturedHeaders['authorization']).toBe('Bearer sk-direct');
+  });
+});

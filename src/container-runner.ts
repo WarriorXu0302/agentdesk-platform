@@ -47,6 +47,7 @@ import {
   type ProviderContainerContribution,
   type VolumeMount,
 } from './providers/provider-container-registry.js';
+import { openaiViaOneCliEnabled } from './providers/openai.js';
 import {
   heartbeatPath,
   markContainerRunning,
@@ -808,9 +809,13 @@ async function buildContainerArgs(
 
   // OneCLI gateway — injects HTTPS_PROXY + certs so container API calls
   // are routed through the agent vault for credential injection. Providers
-  // that receive their own direct credentials (openai/codex)
-  // or are fully offline (mock) don't need the gateway to spawn.
-  if (provider === 'openai' || provider === 'codex' || provider === 'mock') {
+  // that receive their own direct credentials (openai/codex) or are fully
+  // offline (mock) normally skip it. ADR-0035: when AGENTDESK_OPENAI_VIA_ONECLI
+  // is on, openai/codex ALSO route through the vault (their key is withheld
+  // from the container), so they take the apply path too. mock is always
+  // offline and always skips.
+  const openaiViaVault = routeOpenAiThroughVault(provider, openaiViaOneCliEnabled());
+  if ((provider === 'openai' || provider === 'codex' || provider === 'mock') && !openaiViaVault) {
     log.info('Skipping OneCLI gateway for direct-credential provider', {
       containerName,
       provider,
@@ -829,7 +834,31 @@ async function buildContainerArgs(
     if (!onecliApplied) {
       throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
     }
-    log.info('OneCLI gateway applied', { containerName });
+    if (openaiViaVault) {
+      // The OpenAI provider calls the API with bun's `fetch`, which honors
+      // HTTPS_PROXY (OneCLI-injected) but trusts the vault's MITM CA only via
+      // NODE_EXTRA_CA_CERTS — NOT the SSL_CERT_FILE OneCLI sets. OneCLI mounts
+      // its combined CA and points SSL_CERT_FILE at it ONLY when it could build
+      // the bundle (a readable host system CA); applyContainerConfig still
+      // returns true otherwise. So detect OneCLI's ACTUAL injection and mirror
+      // the same path into NODE_EXTRA_CA_CERTS. If no CA was mounted, the vault
+      // TLS can't be trusted and every proxied OpenAI call would silently fail —
+      // fail the spawn loudly instead (fail-closed + diagnosable). (ADR-0035)
+      const vaultCaPath = findInjectedEnvValue(args, 'SSL_CERT_FILE');
+      if (!vaultCaPath) {
+        throw new Error(
+          'OpenAI-via-OneCLI is enabled but the vault mounted no CA bundle (host system CA not readable?) — ' +
+            'refusing to spawn a container whose proxied OpenAI TLS would silently fail',
+        );
+      }
+      args.push('-e', `NODE_EXTRA_CA_CERTS=${vaultCaPath}`);
+      log.info('Routing OpenAI provider through OneCLI vault (key withheld from container)', {
+        containerName,
+        provider,
+      });
+    } else {
+      log.info('OneCLI gateway applied', { containerName });
+    }
   }
 
   // Host gateway
@@ -982,6 +1011,30 @@ export function buildNetworkArgs(config: { network?: string }, env: NodeJS.Proce
  *     its own `--cap-drop=<CAP>`. Operators who have validated their workload
  *     can tighten this; the platform ships zero-risk.
  */
+/**
+ * Value of the last `-e KEY=...` entry already pushed onto a docker args array,
+ * or undefined when absent. Pure + exported for testing. Used to detect what
+ * OneCLI's applyContainerConfig actually injected (e.g. SSL_CERT_FILE) rather
+ * than assuming a fixed path.
+ */
+export function findInjectedEnvValue(args: string[], key: string): string | undefined {
+  let found: string | undefined;
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === '-e' && args[i + 1].startsWith(`${key}=`)) found = args[i + 1].slice(key.length + 1);
+  }
+  return found;
+}
+
+/**
+ * Should this provider's traffic route through the OneCLI vault for credential
+ * injection instead of getting the key directly (ADR-0035)? Only openai/codex,
+ * and only when the operator opted in. Pure + exported for testing. `mock` is
+ * always offline and never routes.
+ */
+export function routeOpenAiThroughVault(provider: string, enabled: boolean): boolean {
+  return enabled && (provider === 'openai' || provider === 'codex');
+}
+
 export function buildSecurityArgs(env: NodeJS.ProcessEnv): string[] {
   const args: string[] = ['--security-opt=no-new-privileges:true'];
 

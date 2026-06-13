@@ -45,6 +45,8 @@ const INSPECTED_KEYS = [
   'OPENAI_TIMEOUT_MS',
   'OPENAI_COMPACT_MODEL',
   'OTEL_CAPTURE_CONTENT',
+  'AGENTDESK_OPENAI_VIA_ONECLI',
+  'ONECLI_URL',
 ];
 
 const savedProcessEnv: Record<string, string | undefined> = {};
@@ -204,6 +206,27 @@ describe('validateStartupConfig — OpenAI provider', () => {
       OPENAI_API_KEY: 'sk-your-openai-api-key',
     });
     expect(() => validateStartupConfig()).toThrow(/OPENAI_API_KEY/);
+  });
+
+  // ADR-0035 vault mode: the key is intentionally NOT on the host.
+  it('does NOT require OPENAI_API_KEY in vault mode (key lives in the vault)', () => {
+    setEnv({
+      AGENTDESK_OPENAI_VIA_ONECLI: 'true',
+      OPENAI_BASE_URL: 'https://gw.example.com/v1',
+      OPENAI_MODEL: 'gpt-5.4',
+      ONECLI_URL: 'https://vault.internal',
+      // no OPENAI_API_KEY on purpose
+    });
+    expect(() => validateStartupConfig()).not.toThrow();
+  });
+
+  it('requires ONECLI_URL in vault mode (the vault cannot inject without it)', () => {
+    setEnv({
+      AGENTDESK_OPENAI_VIA_ONECLI: 'true',
+      OPENAI_BASE_URL: 'https://gw.example.com/v1',
+      // no ONECLI_URL
+    });
+    expect(() => validateStartupConfig()).toThrow(/ONECLI_URL/);
   });
 });
 
