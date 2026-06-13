@@ -69,7 +69,11 @@ the trade-off — see `CLAUDE.md` and `docs/decisions/`):
 - Dependabot (`.github/dependabot.yml`) opens weekly update PRs for the host npm
   tree, the container base image, and GitHub Actions.
 - The container agent-runner uses a `bun.lock` lockfile, which Dependabot does not
-  understand; its dependencies are tracked manually against upstream advisories.
+  understand; its dependencies are tracked manually against upstream advisories
+  via `bun audit` (run in `container/agent-runner/`). Reachable advisories are
+  remediated with bun `overrides` in `container/agent-runner/package.json`
+  (currently `hono`, `fast-uri`, `ip-address`, `qs` pinned to patched in-major
+  versions, clearing the `fast-uri` path-traversal/host-confusion HIGHs).
 
 ### Suppressed advisories
 
@@ -85,6 +89,14 @@ when the dependency tree changes:
 
 Reachable advisories are remediated via `pnpm.overrides` (currently
 `axios`, `ws`, `qs`, `protobufjs` pinned to patched in-major versions).
+
+### Known-deferred (container)
+
+Two container advisories are deferred rather than fixed, because the only fix is
+a major dependency bump that is not safe to apply blind:
+
+- **`GHSA-q7rr-3cgh-j5r3` — `@opentelemetry/sdk-node`** (high). Same Prometheus-exporter-crash advisory as the host; the container's OTEL starts only OTLP trace export and never instantiates the Prometheus exporter, so it is not reachable. Fix needs the OTEL 0.55 → 0.217 jump.
+- **`GHSA-p7fg-763f-g4gf` — `@anthropic-ai/sdk`** (moderate). "Insecure default file permissions in the Local Filesystem Memory Tool." `@anthropic-ai/claude-agent-sdk@0.2.116` pins `@anthropic-ai/sdk@^0.81.0`, and the fix (`>=0.91.1`) is outside that range — clearing it requires bumping `claude-agent-sdk` (0.2 → 0.3), which changes the core Claude execution path (including the `SDKResultMessage` shape the ADR-0026 usage span depends on) and needs real-API verification. Low in-context impact: containers are single-session-isolated and this platform uses gateway-mode memory, not the local filesystem memory tool. Tracked for a deliberate, separately-verified SDK upgrade.
 
 ## Operator Hardening
 

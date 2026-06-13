@@ -27,5 +27,12 @@
     "@types/bun": "^1.1.0",
     "@types/node": "^22.10.7",
     "typescript": "^5.7.3"
+  },
+  "//overrides": "Supply-chain patches for transitive deps (all in-major bumps). fast-uri: 2 HIGH (path traversal + host confusion, <=3.1.1). hono (via @modelcontextprotocol/sdk): cache cross-user leakage / bodyLimit bypass / JWT scheme (<4.12.21). ip-address: XSS in unused HTML methods (<=10.1.0). qs: DoS (<=6.15.1). See SECURITY.md.",
+  "overrides": {
+    "hono": "^4.12.21",
+    "fast-uri": "^3.1.2",
+    "ip-address": "^10.2.0",
+    "qs": "^6.15.2"
   }
 }
