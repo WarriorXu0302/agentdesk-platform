@@ -10,7 +10,7 @@ import {
   parseFeishuQuestionActionPayload,
   signFeishuBody,
 } from './feishu.js';
-import { buildAskQuestionFallbackText } from './feishu/primitives.js';
+import { buildAskQuestionFallbackText, isExpiredQuestionPayload } from './feishu/primitives.js';
 
 function encryptFeishuPayload(encryptKey: string, payload: Record<string, unknown>): string {
   const iv = crypto.randomBytes(16);
@@ -183,5 +183,27 @@ describe('buildAskQuestionFallbackText (roadmap 6.4)', () => {
   it('falls back to the title when the question is empty', () => {
     const text = buildAskQuestionFallbackText({ title: 'Decision', question: '   ', options: opts });
     expect(text.startsWith('Decision')).toBe(true);
+  });
+});
+
+describe('isExpiredQuestionPayload (roadmap 6.2)', () => {
+  const base = { kind: 'card.ask_question', questionId: 'q1', selectedOption: 'approve' };
+
+  it('is true for a well-formed payload whose expiresAt is in the past', () => {
+    expect(isExpiredQuestionPayload({ ...base, expiresAt: 1000 }, 5000)).toBe(true);
+  });
+
+  it('is false for a payload that has not expired yet', () => {
+    expect(isExpiredQuestionPayload({ ...base, expiresAt: 9000 }, 5000)).toBe(false);
+  });
+
+  it('is false for a payload with no expiry (cannot be "expired")', () => {
+    expect(isExpiredQuestionPayload(base, 5000)).toBe(false);
+  });
+
+  it('is false for genuinely unsupported payloads (wrong kind / not a record / missing fields)', () => {
+    expect(isExpiredQuestionPayload({ kind: 'other', expiresAt: 1 }, 5000)).toBe(false);
+    expect(isExpiredQuestionPayload(null, 5000)).toBe(false);
+    expect(isExpiredQuestionPayload({ kind: 'card.ask_question', expiresAt: 1 }, 5000)).toBe(false);
   });
 });

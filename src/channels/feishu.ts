@@ -48,6 +48,7 @@ import {
   extractVerificationToken,
   isFeishuCardActionEvent,
   isFeishuMessageEvent,
+  isExpiredQuestionPayload,
   isRecord,
   isWithdrawnReplyError,
   mentionsBot,
@@ -639,6 +640,26 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
     }
     const action = parseFeishuQuestionActionPayload(event.action.value);
     if (!action) {
+      // Distinguish an EXPIRED click from a genuinely-unsupported payload
+      // (parse returns null for both). An expired click means the user clicked
+      // a stale question/approval card — tell them so instead of silently
+      // swallowing it and leaving them to think it worked. (roadmap 6.2)
+      const cardChatId = readString(event.context.chat_id);
+      if (isExpiredQuestionPayload(event.action.value) && cardChatId) {
+        try {
+          await createMessage(
+            resolveReceiveTarget(cardChatId),
+            'text',
+            JSON.stringify({
+              text: 'This request has expired and can no longer be actioned. Please ask the assistant to send it again.',
+            }),
+            null,
+          );
+        } catch (err) {
+          log.warn('Feishu: failed to notify user of expired card action', { token, err });
+        }
+        return;
+      }
       log.warn('Feishu card action ignored: unsupported payload', {
         token,
         chatId: event.context.chat_id,

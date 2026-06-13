@@ -394,6 +394,23 @@ export function parseFeishuQuestionActionPayload(value: unknown, now = Date.now(
   };
 }
 
+/**
+ * True iff `value` is a well-formed ask_question card payload that parseable in
+ * every way EXCEPT that it has expired. Lets the card-action handler tell an
+ * expired click apart from a genuinely-unsupported payload, so an expired click
+ * can get a user-visible "ask the assistant to resend" notice instead of being
+ * silently swallowed (parseFeishuQuestionActionPayload returns null for both).
+ * (roadmap 6.2)
+ */
+export function isExpiredQuestionPayload(value: unknown, now = Date.now()): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind !== 'card.ask_question') return false;
+  if (!readString(value.questionId) || !readString(value.selectedOption)) return false;
+  const expiresAt =
+    typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) ? value.expiresAt : undefined;
+  return expiresAt !== undefined && expiresAt < now;
+}
+
 export function normalizeOptions(raw: unknown): NormalizedQuestionOption[] {
   if (!Array.isArray(raw)) return [];
   const out: NormalizedQuestionOption[] = [];

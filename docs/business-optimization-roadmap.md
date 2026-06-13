@@ -280,6 +280,7 @@
 - **工作量 M · 价值 高**
 
 ### 6.2 审批卡过期静默忽略,无用户通知 ⭐
+> 🟡 **部分已实现**(渠道体验 batch):新增纯函数 `isExpiredQuestionPayload`(区分「过期」vs「真不支持」);`handleCardAction` 的 `!action` 分支在判定过期时,向卡片所在 chat 发一条「This request has expired … ask the assistant to send it again」纯文本提示(失败仅 log.warn),不再静默吞。primitives 测试覆盖该纯函数。**未做(可选增强)**:过期窗口可配(`FEISHU_APPROVAL_EXPIRY_MINUTES`,当前硬编码 5min)、卡体倒计时显示。
 - **现状**:`src/channels/feishu/primitives.ts:376-395` 对过期 payload **静默返 null**(L386),传到 `feishu.ts:640` 只记 "unsupported payload" 日志,**不回用户**。5 分钟过期硬编码(`feishu.ts:932`)。用户午饭回来点过期卡,点击被静默吞掉,以为成功了,工作流停滞。
 - **业务影响**:**高**。审批工作流中创造困惑和支持摩擦。
 - **建议**:(1) 过期返 null 时带元数据让 handleCardAction 能区分过期 vs 其他不支持;(2) 发用户可见错误("审批链接已过期,请让 agent 重发");(3) 过期窗口可配(`FEISHU_APPROVAL_EXPIRY_MINUTES`);(4) 卡体显示倒计时。
@@ -393,7 +394,7 @@
 | ✅ **6.4 交互卡失败 fallback** | S | 渠道体验 |
 | **1.1 quickstart.sh** | S | 上手速度 |
 | **6.1 投递失败用户反馈** | M | 渠道体验 |
-| **6.2 审批卡过期通知** | M | 渠道体验 |
+| 🟡 **6.2 审批卡过期通知**(核心已做;过期窗口可配/倒计时未做) | M | 渠道体验 |
 | **2.1 误路由反馈机制** | M | 对话质量 |
 | **2.2 conversation_thread_id** | M | 对话质量(追踪基石) |
 | **2.3 escalation 显式模式 + hook** | M | 对话质量 |
