@@ -35,7 +35,8 @@ import { pruneInboundDedup } from './db/inbound-dedup.js';
 import { purgeStaleProxyTokens } from './db/gateway-proxy-token.js';
 import { purgeGatewayAudit } from './db/gateway-audit.js';
 import { purgeClassificationLog } from './db/classification-log.js';
-import { purgeEnterpriseAudit } from './db/enterprise-audit.js';
+import { purgeEnterpriseAudit, recordEnterpriseAudit } from './db/enterprise-audit.js';
+import { expireStalePendingApprovals } from './db/sessions.js';
 import { purgeDmAudit } from './db/dm-audit.js';
 import { getDb, hasTable } from './db/connection.js';
 import {
@@ -52,6 +53,7 @@ import {
 import { log } from './log.js';
 import { DATA_DIR } from './config.js';
 import {
+  approvalEventsTotal,
   dataDirFreeRatio,
   inboundProcessingPermanentFailuresTotal,
   runawaySessionStopsTotal,
@@ -96,6 +98,12 @@ const SESSION_TOKEN_BUDGET_PER_MIN = Math.max(
 // Trailing window over which spend is summed (fixed 5 min — long enough to
 // smooth out a single heavy turn, short enough to catch a runaway quickly).
 const COST_WINDOW_SEC = 300;
+
+// Agent-initiated approvals (install_packages, add_mcp_server, …) don't set an
+// expiry and had no background sweep — an unanswered one hung as 'pending'
+// forever (roadmap 5.3). Expire pending approvals older than this many days so
+// they can't dangle indefinitely. Default 7; 0 disables the sweep.
+const APPROVAL_EXPIRY_DAYS = Math.max(0, parseInt(process.env.AGENTDESK_APPROVAL_EXPIRY_DAYS || '7', 10) || 0);
 
 /**
  * Sum `totalTokens` across this session's `llm-usage` rows in outbound.db
@@ -250,6 +258,25 @@ async function sweep(): Promise<void> {
       } catch (err) {
         log.warn('audit retention purge failed', { table: name, err });
       }
+    }
+  }
+
+  // Expire dangling agent-initiated approvals (roadmap 5.3) — they set no
+  // expiry and had no sweep, so an unanswered high-risk approval hung forever.
+  if (APPROVAL_EXPIRY_DAYS > 0) {
+    try {
+      const expired = expireStalePendingApprovals(APPROVAL_EXPIRY_DAYS * 24 * 60 * 60_000);
+      for (const r of expired) {
+        recordEnterpriseAudit({
+          eventType: 'approval_expired',
+          agentGroupId: r.agent_group_id,
+          details: { approvalId: r.approval_id, action: r.action, expiryDays: APPROVAL_EXPIRY_DAYS },
+        });
+        approvalEventsTotal.inc({ action: r.action, result: 'expired' });
+      }
+      if (expired.length > 0) log.info('Expired stale pending approvals', { count: expired.length });
+    } catch (err) {
+      log.warn('Pending-approval expiry sweep failed', { err });
     }
   }
 

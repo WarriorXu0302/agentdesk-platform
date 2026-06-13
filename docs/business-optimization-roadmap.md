@@ -216,6 +216,7 @@
 - **工作量 S · 价值 中**
 
 ### 5.3 agent-initiated 审批无过期 sweep + 无多审批人
+> 🟡 **过期 sweep 已实现**(治理审计 batch 5):`expireStalePendingApprovals(olderThanMs)`(db/sessions.ts)把超期的 `pending` 审批置 `expired` 并返回受影响行;host-sweep 周期调用(`AGENTDESK_APPROVAL_EXPIRY_DAYS` 默认 7,0=关),每行 emit `approval_expired` 审计 + `approval_events_total{result:'expired'}`,堵住「高风险 agent-initiated 审批无限挂起」。host-sweep.test.ts 加了 sweep 测试(只过期超期 pending、保留近期、幂等)。**未做**:多审批人共识(approvers JSON + threshold)——较大特性,单列后续。
 - **现状**:OneCLI 审批过期**已正确强制**(`onecli-approvals.ts:200-214` 超时拒绝 + L222 设过期状态 + L90 启动 sweep)。但 **agent-initiated 审批**(install_packages/add_mcp_server)用了 `expires_at` 列却**无后台 sweep**,会无限挂起直到手工删。另外**无多审批人共识**(pickApprover 返优先列表,首个可达者赢)、无 `approval_votes` 表。
 - **业务影响**:高。高风险动作的 agent-initiated 审批可无限挂起且无"谁被问 vs 谁批准"的审计,真实合规缺口。
 - **建议**:在 host-sweep 加后台任务,过期 agent_group 类 pending_approvals(`APPROVAL_EXPIRY_DAYS`,默认 7 天),置 'expired' 并 emit 审计;多审批人:`pending_approvals` 加可选 approvers JSON + threshold,`handleRegisteredApproval` 按阈值放行。MVP 先单行记 approved_by_user_id。
@@ -407,7 +408,7 @@
 | **2.3 escalation 显式模式 + hook** | M | 对话质量 |
 | **4.1 conversation.summary 落库** | M | 记忆(ADR-0033 欠账) |
 | **5.4 合规审计导出 + 保留** | M | 治理 |
-| **5.3 审批过期 sweep + 多审批人** | M | 治理 |
+| 🟡 **5.3 审批过期 sweep**(✅)** + 多审批人**(未做) | M | 治理 |
 | ✅ **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
 | 🟡 **4.4 记忆冲突检测**(契约+指引已做;后端示例留运营者) | M | 记忆 |
 | **3.1 bulk 操作契约** | M | 网关契约 |

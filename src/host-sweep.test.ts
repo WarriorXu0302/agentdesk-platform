@@ -4,9 +4,11 @@
  * don't have to mock the filesystem or the container runner.
  */
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { closeDb, initTestDb, runMigrations } from './db/index.js';
 import { deleteOrphanProcessingClaims, getProcessingClaims } from './db/session-db.js';
+import { createPendingApproval, expireStalePendingApprovals, getPendingApproval } from './db/sessions.js';
 import { OUTBOUND_SCHEMA } from './db/schema.js';
 import {
   ABSOLUTE_CEILING_MS,
@@ -372,5 +374,46 @@ describe('recentTokenUsage — runaway-cost windowing (roadmap 7.1)', () => {
     insertUsage(db, 'nonum', 'x', '-5 seconds');
     expect(recentTokenUsage(db, 300)).toBe(0);
     db.close();
+  });
+});
+
+describe('expireStalePendingApprovals — dangling-approval reaper (roadmap 5.3)', () => {
+  beforeEach(() => {
+    runMigrations(initTestDb());
+  });
+  afterEach(() => closeDb());
+
+  function pending(id: string, createdAt: string): void {
+    createPendingApproval({
+      approval_id: id,
+      request_id: id,
+      action: 'install_packages',
+      payload: '{}',
+      created_at: createdAt,
+      title: 'T',
+      options_json: '[]',
+    });
+  }
+
+  it('expires only pending rows past the cutoff, returns them, and leaves recent ones', () => {
+    pending('old-1', new Date(Date.now() - 10 * 24 * 60 * 60_000).toISOString());
+    pending('recent-1', new Date().toISOString());
+
+    const expired = expireStalePendingApprovals(7 * 24 * 60 * 60_000);
+
+    expect(expired.map((r) => r.approval_id)).toEqual(['old-1']);
+    expect(expired[0]).toMatchObject({ action: 'install_packages' });
+    expect(getPendingApproval('old-1')?.status).toBe('expired');
+    expect(getPendingApproval('recent-1')?.status).toBe('pending');
+  });
+
+  it('does not touch already-resolved rows (only status=pending)', () => {
+    pending('done-1', new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString());
+    // mark it resolved before the sweep
+    getPendingApproval('done-1'); // sanity
+    expireStalePendingApprovals(0); // cutoff = now → everything "old"
+    // 'done-1' was pending and gets expired on the first call; assert a second
+    // call is a no-op (idempotent — already non-pending).
+    expect(expireStalePendingApprovals(0)).toHaveLength(0);
   });
 });

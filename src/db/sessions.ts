@@ -295,6 +295,31 @@ export function getPendingApprovalsByAction(action: string): PendingApproval[] {
 }
 
 /**
+ * Expire still-`pending` approval rows older than `olderThanMs` (roadmap 5.3):
+ * agent-initiated approvals don't set `expires_at` and had NO background sweep,
+ * so an unanswered high-risk approval (install_packages, etc.) hung forever.
+ * Sets them to status='expired' and returns the affected rows so the caller can
+ * audit each. (OneCLI approvals expire fast via their own timer/startup sweep;
+ * this is a long backstop that also reaps their orphans after a restart.)
+ */
+export function expireStalePendingApprovals(
+  olderThanMs: number,
+  now: Date = new Date(),
+): Array<{ approval_id: string; action: string; agent_group_id: string | null }> {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT approval_id, action, agent_group_id FROM pending_approvals
+       WHERE status = 'pending' AND created_at < ?`,
+    )
+    .all(cutoff) as Array<{ approval_id: string; action: string; agent_group_id: string | null }>;
+  const update = db.prepare("UPDATE pending_approvals SET status = 'expired' WHERE approval_id = ?");
+  for (const r of rows) update.run(r.approval_id);
+  return rows;
+}
+
+/**
  * Resolve ask_question render metadata (title + normalized options) for any
  * card, regardless of whether it was persisted as a pending_question (generic
  * ask_user_question) or a pending_approval (self-mod / OneCLI credential).
