@@ -363,6 +363,23 @@ describe('grant lifecycle (R5)', () => {
     return id as string;
   }
 
+  it('audits grant creation + revocation in enterprise_audit (roadmap 5.7)', () => {
+    const auditRows = (et: string) =>
+      getDb().prepare('SELECT actor, details FROM enterprise_audit WHERE event_type = ?').all(et) as Array<{
+        actor: string | null;
+        details: string | null;
+      }>;
+    mintGrant({ consentOriginUserId: 'u-real' });
+    const created = auditRows('roster_grant_created');
+    expect(created).toHaveLength(1);
+    expect(created[0].actor).toBe('u-real');
+    expect(JSON.parse(created[0].details!)).toMatchObject({ scopeId: 'scope-A', slotLabel: 'reviewer' });
+    expect(revokeScope('scope-A')).toBe(1);
+    const revoked = auditRows('roster_grant_revoked');
+    expect(revoked).toHaveLength(1);
+    expect(JSON.parse(revoked[0].details!)).toMatchObject({ scopeId: 'scope-A', reason: 'scope_revoked' });
+  });
+
   it('revokeScope makes a live grant fail the re-check', () => {
     mintGrant();
     expect(checkGrantLive('scope-A', 'reviewer').ok).toBe(true);

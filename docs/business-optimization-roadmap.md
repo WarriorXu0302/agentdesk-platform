@@ -234,6 +234,7 @@
 - **工作量 S · 价值 中**
 
 ### 5.7 Roster DM 授权生命周期(创建/撤销)未入 enterprise_audit
+> ✅ **已实现**(治理审计补洞 batch 2):`insertDmGrant` emit `roster_grant_created`(actor=consentOriginUserId)、`revokeScope`/`revokeParticipantInScope` emit `roster_grant_revoked`(仅在实际撤销时)、`revokeGrantsForLeaver` emit `roster_grant_revoked_by_platform_event`(member_left / chat_disbanded);roster-dm.test.ts 加了验证测试。现可重建任意时刻的同意状态。
 - **现状**:dm_audit(`src/db/dm-audit.ts`)记每次 roster DM **投递决策**(delivered/rejected),但 `insertDmGrant()`/`revokeScope`/`revokeParticipantInScope`(`src/db/dm-grants.ts:86-142,230-250`)**不 emit enterprise_audit**。审计员能看投递结果,但**无法重建某时刻的同意状态**(grant 何时建、谁建、何时撤)。
 - **业务影响**:中等。完整审计重建的真实合规缺口。
 - **建议**:insertDmGrant 时 emit `roster_grant_created`,revoke 时 emit `roster_grant_revoked`,平台 leave/disband 事件 emit `roster_grant_revoked_by_platform_event`。更新 ADR-0023 实现注记。

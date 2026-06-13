@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto';
 import { readEnvFile } from '../env.js';
 import { parseSqliteUtc } from '../host-sweep.js';
 import { getDb } from './connection.js';
+import { recordEnterpriseAudit } from './enterprise-audit.js';
 
 export type DmConsentSource = 'p2p-ingress' | 'directed-card';
 
@@ -138,6 +139,21 @@ export function insertDmGrant(args: InsertDmGrantArgs): string | null {
   const row = getBySlot(args.scopeId, args.slotLabel);
   if (!row) return null;
   if (row.participant_open_id !== args.participantOpenId) return null;
+  // Audit the consent grant (roadmap 5.7): dm_audit records each DELIVERY
+  // decision, but reconstructing "when was consent granted, by whom" needs the
+  // grant lifecycle in enterprise_audit too. Actor is the real consenting user.
+  recordEnterpriseAudit({
+    eventType: 'roster_grant_created',
+    agentGroupId: args.agentGroupId,
+    actor: args.consentOriginUserId ?? null,
+    details: {
+      grantId: row.id,
+      scopeId: args.scopeId,
+      slotLabel: args.slotLabel,
+      participantOpenId: args.participantOpenId,
+      expiresAt: args.expiresAt ?? null,
+    },
+  });
   return row.id;
 }
 
@@ -229,9 +245,16 @@ export function incrementSends(grantId: string, now: Date = new Date()): DmGrant
  */
 export function revokeScope(scopeId: string, now: Date = new Date()): number {
   const nowIso = now.toISOString();
-  return getDb()
+  const changes = getDb()
     .prepare('UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND revoked_at IS NULL')
     .run(nowIso, scopeId).changes;
+  if (changes > 0) {
+    recordEnterpriseAudit({
+      eventType: 'roster_grant_revoked',
+      details: { scopeId, revoked: changes, reason: 'scope_revoked' },
+    });
+  }
+  return changes;
 }
 
 /**
@@ -242,11 +265,19 @@ export function revokeScope(scopeId: string, now: Date = new Date()): number {
  * UNIQUE(scope_id, participant_open_id) constraint).
  */
 export function revokeParticipantInScope(scopeId: string, participantOpenId: string, now: Date = new Date()): number {
-  return getDb()
+  const changes = getDb()
     .prepare(
       'UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND participant_open_id = ? AND revoked_at IS NULL',
     )
     .run(now.toISOString(), scopeId, participantOpenId).changes;
+  if (changes > 0) {
+    recordEnterpriseAudit({
+      eventType: 'roster_grant_revoked',
+      actor: participantOpenId,
+      details: { scopeId, participantOpenId, revoked: changes, reason: 'participant_opt_out' },
+    });
+  }
+  return changes;
 }
 
 /**
@@ -267,18 +298,30 @@ export function revokeGrantsForLeaver(
   now: Date = new Date(),
 ): number {
   const nowIso = now.toISOString();
-  if (participantOpenId) {
-    return getDb()
-      .prepare(
-        `UPDATE dm_grants SET revoked_at = ?
+  const changes = participantOpenId
+    ? getDb()
+        .prepare(
+          `UPDATE dm_grants SET revoked_at = ?
            WHERE origin_platform_id = ? AND participant_open_id = ? AND revoked_at IS NULL`,
-      )
-      .run(nowIso, originPlatformId, participantOpenId).changes;
+        )
+        .run(nowIso, originPlatformId, participantOpenId).changes
+    : // Disband: revoke every live grant whose origin was this chat.
+      getDb()
+        .prepare('UPDATE dm_grants SET revoked_at = ? WHERE origin_platform_id = ? AND revoked_at IS NULL')
+        .run(nowIso, originPlatformId).changes;
+  if (changes > 0) {
+    recordEnterpriseAudit({
+      eventType: 'roster_grant_revoked_by_platform_event',
+      actor: participantOpenId,
+      details: {
+        originPlatformId,
+        participantOpenId,
+        revoked: changes,
+        event: participantOpenId ? 'member_left' : 'chat_disbanded',
+      },
+    });
   }
-  // Disband: revoke every live grant whose origin was this chat.
-  return getDb()
-    .prepare('UPDATE dm_grants SET revoked_at = ? WHERE origin_platform_id = ? AND revoked_at IS NULL')
-    .run(nowIso, originPlatformId).changes;
+  return changes;
 }
 
 // ---------------------------------------------------------------------------
