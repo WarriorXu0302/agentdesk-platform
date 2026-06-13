@@ -59,11 +59,15 @@ Both paths end with Bun running the same source file from `/app/src/index.ts`.
 
 1. `pnpm install --frozen-lockfile` (host)
 2. `bun install --frozen-lockfile` in `container/agent-runner/` (container)
-3. `pnpm run format:check`
-4. `pnpm exec tsc --noEmit` (host typecheck)
-5. `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit` (container typecheck)
-6. `pnpm exec vitest run` (host tests)
-7. `bun test` in `container/agent-runner/` (container tests)
+3. `pnpm run audit` — supply-chain gate: fails on any high+ advisory in the shipped
+   (prod) dependency tree. Not-applicable advisories in unreachable transitive paths are
+   suppressed via `pnpm.auditConfig.ignoreGhsas` in `package.json`; each suppression is
+   justified in `SECURITY.md`.
+4. `pnpm run format:check`
+5. `pnpm exec tsc --noEmit` (host typecheck)
+6. `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit` (container typecheck)
+7. `pnpm exec vitest run` (host tests)
+8. `bun test` in `container/agent-runner/` (container tests)
 
 A parallel `image-smoke` job sets up Node+pnpm, then:
 

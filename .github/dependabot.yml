@@ -1,0 +1,37 @@
+# Dependabot — automated dependency-update PRs.
+#
+# Scope note: the container agent-runner (container/agent-runner) uses a `bun.lock`
+# lockfile, which Dependabot's npm ecosystem does NOT understand, so it is not
+# listed here. Container dependencies are kept current by the CI supply-chain
+# audit gate (`pnpm run audit` covers the host tree) plus manual bumps when the
+# audit or upstream advisories flag the agent-runner deps. See SECURITY.md.
+version: 2
+updates:
+  # Host Node dependencies (pnpm lockfile — handled by the npm ecosystem).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Collapse low-risk minor/patch bumps into one PR to cut review noise;
+      # majors still come as individual PRs so breaking changes are reviewed alone.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Container base image (container/Dockerfile FROM node:22-slim@sha256:...).
+  # Keeps the pinned digest current with upstream security patches.
+  - package-ecosystem: docker
+    directory: /container
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # GitHub Actions used by the CI workflows (checkout, setup-node, setup-bun, …).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

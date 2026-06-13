@@ -34,7 +34,8 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "audit": "pnpm audit --prod --audit-level high"
   },
   "dependencies": {
     "@arizeai/openinference-core": "^2.2.0",
@@ -67,5 +68,19 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "overrides": {
+      "axios": "^1.16.0",
+      "ws": "^8.20.1",
+      "qs": "^6.15.2",
+      "protobufjs": "^7.5.8"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-q7rr-3cgh-j5r3",
+        "GHSA-w5hq-g745-h8pq"
+      ]
+    }
   }
 }

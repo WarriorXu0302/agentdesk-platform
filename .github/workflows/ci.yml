@@ -33,6 +33,13 @@ jobs:
         run: bun install --frozen-lockfile
         working-directory: container/agent-runner
 
+      # Supply-chain gate: fail the PR on any high/critical advisory in the
+      # SHIPPED (prod) dependency tree. Not-applicable advisories in unreachable
+      # transitive paths are suppressed via pnpm.auditConfig.ignoreGhsas in
+      # package.json — each suppression is justified in SECURITY.md.
+      - name: Dependency audit (prod, high+)
+        run: pnpm run audit
+
       - name: Format check
         run: pnpm run format:check
 
