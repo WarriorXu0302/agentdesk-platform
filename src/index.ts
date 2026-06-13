@@ -68,6 +68,9 @@ import './channels/index.js';
 // Modules barrel — default modules (typing, mount-security) ship here; skills
 // append registry-based modules. Imported for side effects (registrations).
 import './modules/index.js';
+// Approval handlers register at the import above (pre-DB); flush their registry
+// to the audit trail once the central DB is ready in main() (roadmap 5.10).
+import { auditApprovalHandlerRegistry } from './modules/approvals/index.js';
 
 import type { ChannelAdapter, ChannelSetup } from './channels/adapter.js';
 import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from './channels/channel-registry.js';
@@ -87,6 +90,11 @@ async function main(): Promise<void> {
   const db = initDb(dbPath);
   runMigrations(db);
   log.info('Central DB ready', { path: dbPath });
+
+  // Record which approval-handler actions are installed (roadmap 5.10).
+  // Handlers register at module-import time, before the DB exists, so the
+  // registry is flushed to enterprise_audit here, now that it's ready.
+  auditApprovalHandlerRegistry();
 
   // 1b. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();

@@ -22,6 +22,7 @@
  * if either module becomes genuinely optional (see REFACTOR_PLAN open q #3).
  */
 import { normalizeOptions, type RawOption } from '../../channels/ask-question.js';
+import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { createPendingApproval, getSession } from '../../db/sessions.js';
 import { getDeliveryAdapter } from '../../delivery.js';
@@ -56,15 +57,46 @@ export type ApprovalHandler = (ctx: ApprovalHandlerContext) => Promise<void>;
 
 const approvalHandlers = new Map<string, ApprovalHandler>();
 
+/**
+ * Registration log (action + whether it overwrote a prior handler). Populated
+ * at module-import time — BEFORE the central DB exists — so registration cannot
+ * be audited inline. `auditApprovalHandlerRegistry()` flushes it once at boot.
+ */
+const handlerRegistrations: Array<{ action: string; overwrote: boolean }> = [];
+
 export function registerApprovalHandler(action: string, handler: ApprovalHandler): void {
-  if (approvalHandlers.has(action)) {
+  const overwrote = approvalHandlers.has(action);
+  if (overwrote) {
     log.warn('Approval handler re-registered (overwriting)', { action });
   }
   approvalHandlers.set(action, handler);
+  handlerRegistrations.push({ action, overwrote });
 }
 
 export function getApprovalHandler(action: string): ApprovalHandler | undefined {
   return approvalHandlers.get(action);
+}
+
+/**
+ * Emit a one-time audit of the approval-handler registry (roadmap 5.10).
+ * Handlers register at import time, before the central DB is ready, so the host
+ * calls this once after initDb. The durable trail then records which `action`s
+ * have an installed handler — and flags any that were overwritten, a signal
+ * worth seeing if module loading ever becomes dynamic. No-op when nothing
+ * registered (a core-only / no-optional-modules deploy), so it adds no noise.
+ *
+ * The dispatch side is already audited: `approval_resolved` (roadmap 5.2)
+ * carries an `outcome` of `applied` / `apply_failed` / `no_handler` plus the
+ * handler's error message on failure — i.e. handler_status + error.
+ */
+export function auditApprovalHandlerRegistry(): void {
+  if (handlerRegistrations.length === 0) return;
+  const actions = [...new Set(handlerRegistrations.map((r) => r.action))];
+  const overwrites = [...new Set(handlerRegistrations.filter((r) => r.overwrote).map((r) => r.action))];
+  recordEnterpriseAudit({
+    eventType: 'approval_handlers_registered',
+    details: { actions, count: actions.length, overwrites },
+  });
 }
 
 // ── Approver picking ──

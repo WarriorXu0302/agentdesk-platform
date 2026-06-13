@@ -27,7 +27,7 @@ import { getDb } from '../../db/connection.js';
 import { createPendingApproval } from '../../db/sessions.js';
 import type { ResponsePayload } from '../../response-registry.js';
 import { resolveSession } from '../../session-manager.js';
-import { registerApprovalHandler } from './primitive.js';
+import { registerApprovalHandler, auditApprovalHandlerRegistry } from './primitive.js';
 import { handleApprovalsResponse } from './response-handler.js';
 
 const now = (): string => new Date().toISOString();
@@ -111,5 +111,36 @@ describe('approval decision audit (roadmap 5.2)', () => {
     const rows = auditRows('approval_resolved');
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0].details!)).toMatchObject({ result: 'approved', outcome: 'applied' });
+  });
+
+  it('records outcome=apply_failed with the handler error when the handler throws (roadmap 5.10)', async () => {
+    seed('install_packages');
+    registerApprovalHandler('install_packages', async () => {
+      throw new Error('disk full');
+    });
+    expect(await handleApprovalsResponse(payload('approve'))).toBe(true);
+    const rows = auditRows('approval_resolved');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].details!)).toMatchObject({
+      result: 'approved',
+      outcome: 'apply_failed',
+      error: 'disk full',
+    });
+  });
+});
+
+describe('approval handler registry audit (roadmap 5.10)', () => {
+  it('flushes the registered-handler set to enterprise_audit, flagging overwrites', () => {
+    // Two registrations for the same action — the second overwrites the first.
+    registerApprovalHandler('roadmap_5_10_demo', async () => {});
+    registerApprovalHandler('roadmap_5_10_demo', async () => {});
+    auditApprovalHandlerRegistry();
+
+    const rows = auditRows('approval_handlers_registered');
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const details = JSON.parse(rows[rows.length - 1].details!);
+    expect(details.actions).toContain('roadmap_5_10_demo');
+    expect(details.overwrites).toContain('roadmap_5_10_demo');
+    expect(typeof details.count).toBe('number');
   });
 });

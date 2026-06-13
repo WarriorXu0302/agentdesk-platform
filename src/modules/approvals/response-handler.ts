@@ -74,12 +74,18 @@ async function handleRegisteredApproval(
   // Durable compliance record of the decision (roadmap 5.2), emitted BEFORE the
   // transient pending_approvals row is deleted. enterprise_audit is the permanent
   // who-approved-what trail; approval_events_total is the metric companion.
-  const auditDecision = (result: 'approved' | 'rejected', outcome: string): void => {
+  const auditDecision = (result: 'approved' | 'rejected', outcome: string, error?: string): void => {
     recordEnterpriseAudit({
       eventType: 'approval_resolved',
       agentGroupId: session.agent_group_id,
       actor: userId || null,
-      details: { approvalId: approval.approval_id, action: approval.action, result, outcome },
+      details: {
+        approvalId: approval.approval_id,
+        action: approval.action,
+        result,
+        outcome,
+        ...(error ? { error } : {}),
+      },
     });
     approvalEventsTotal.inc({ action: approval.action, result });
   };
@@ -109,18 +115,18 @@ async function handleRegisteredApproval(
 
   const payload = JSON.parse(approval.payload);
   let outcome = 'applied';
+  let errorMsg: string | undefined;
   try {
     await handler({ session, payload, userId, notify });
     log.info('Approval handled', { approvalId: approval.approval_id, action: approval.action, userId });
   } catch (err) {
     outcome = 'apply_failed';
+    errorMsg = err instanceof Error ? err.message : String(err);
     log.error('Approval handler threw', { approvalId: approval.approval_id, action: approval.action, err });
-    notify(
-      `Your ${approval.action} was approved, but applying it failed: ${err instanceof Error ? err.message : String(err)}.`,
-    );
+    notify(`Your ${approval.action} was approved, but applying it failed: ${errorMsg}.`);
   }
 
-  auditDecision('approved', outcome);
+  auditDecision('approved', outcome, errorMsg);
   deletePendingApproval(approval.approval_id);
   await wakeContainer(session);
 }

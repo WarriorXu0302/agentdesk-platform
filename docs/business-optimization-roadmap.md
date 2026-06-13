@@ -281,10 +281,15 @@
 - **建议**:扩 `RequestApprovalOptions` 含可选 `customApprovals:[{action,criteria?,roles?}]`;`pickApprover` 接 roleFilter;动态生成卡选项。需角色扩展,是较大特性,**除非客户紧迫否则可延后**。
 - **工作量 M · 价值 中**
 
-### 5.10 审批 handler 注册/分发无审计
+### 5.10 审批 handler 注册/分发无审计 — ✅ 已落地(c5be05d)
 - **现状**:`registerApprovalHandler`(`primitive.ts:59-64`)用内存 Map,重注册 warn 但**不 emit 审计**;handler 被调用(`response-handler.ts:81`)无"handler 被调"记录。
 - **业务影响**:低。多数部署不动态加载模块,但对可观测性是真缺口。
 - **建议**:注册时 emit `approval_handler_registered`,调用时包裹 emit `approval_handler_invoked{handler_status,error}`。**低优先**。
+- **关键发现**:分发侧**已被 5.2 覆盖**——`approval_resolved` 的 `outcome`(`applied`/`apply_failed`/`no_handler`)正是建议要的 handler_status。本次只补真正缺的两块:
+- **已实现**:
+  - **注册审计(boot-time,安全)**:handler 在模块 import 时注册(早于 `initDb`),inline 审计会 `getDb()` 崩 boot;故 `registerApprovalHandler` 把注册事件(action + 是否覆盖)记到内存,新增 `auditApprovalHandlerRegistry()` 在 `index.ts` 跑完 migrations 后 flush 一行 `approval_handlers_registered{actions,count,overwrites}`。无注册时(纯核心部署)no-op,不产噪声。覆盖注册(overwrite,动态加载场景的安全信号)被单独标出。
+  - **分发 error 补全**:`approval_resolved` 的 `apply_failed` 现在带 handler 抛出的 `error` 消息(原先只在 log,合规轨迹缺),满足建议的 `{handler_status,error}`。
+  - 测试:`response-handler.test.ts` 加 apply_failed→error 详情、registry flush→overwrite 标记两个用例(全套 735 绿)。
 - **工作量 S · 价值 低**
 
 ### 5.11 角色/成员变更不触发会话重评估(留给运营者网关,补文档)
