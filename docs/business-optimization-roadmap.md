@@ -40,10 +40,15 @@
 - **建议**:加 `docs/ENV-QUICK-START.md`,按场景分组(最小 CLI / 生产 Feishu+网关 / 可选 observability),每组附"为什么需要 + 如何获取"。文件本身不动,只加导航层。
 - **工作量 S · 价值 中**
 
-### 1.4 网关只有可运行参考,缺生产框架模板和"业务化"示例
+### 1.4 网关只有可运行参考,缺生产框架模板和"业务化"示例 — 🟡 已落地(7f351e6)
 - **现状**:契约文档(`docs/enterprise-erp-gateway.md`)、zod schema、零依赖参考实现(`examples/reference-gateway/server.mjs`,含 hookpoint 注释)都齐全。但:(1) 参考实现的 3 个操作都是 `conformance.noop / demo.echo / demo.order.create`,**离真实业务流程偏远**;(2) **没有 Express/Fastify/Hono 的生产骨架**,运营者容易误以为必须从零手写。
 - **业务影响**:中等。运营者懂协议,但跳到"我自己的后端怎么接"时要多花 2-4 小时。真实企业受益于"clone 改配置",而非"逆向参考实现"。
 - **建议**:建 `examples/gateway-templates/`(Express/Fastify/Hono 三套骨架),配 `docs/gateway-kickstart.md`(clone → 填凭证 → 部署 + 权限拒绝/审计/幂等重放/审批集成的错误处理菜谱)。reference-gateway 再补 1-2 个接近业务的操作(如 `todo.list`/`todo.create`)。
+- **已实现**:
+  - `docs/gateway-kickstart.md` —— "从可运行参考接到你自己后端"的上手指南:6 个 hookpoint 表 + 6 条生产硬化菜谱(身份映射与 `requesterSource` 信任门、`/authorize` 权限拒绝与 `obligations: ['user-confirmation']` 审批、幂等重放、审计 `auditId` 关联、HMAC + 时钟偏移窗口 + nonce 重放缓存、错误码→闭合枚举映射表)+ 一段 Express 移植骨架 + 上线前 checklist。从 README / `enterprise-erp-gateway.md` / reference-gateway README 三处交叉链入。
+  - reference-gateway 补了真实读写对 `todo.list` / `todo.create`(per-subject 存储),取代"只有 echo/noop"的观感;并**真正实现了幂等重放**(`idempotencyKey` 命中即重放同一结果,而非原先仅一行注释),让 kickstart 的幂等菜谱有可运行代码背书。conformance 仍 6/6 绿。
+  - 错误码映射表与 `classifyHttpError` / `defaultRetryable`(`gateway-contract.ts`)实际行为对齐(401/403→UNAUTHORIZED 不可重试、5xx→UNAVAILABLE 可重试、结构化 body 的 `code` 优先、版本漂移仅告警)。
+- **有意未做(避免冗余)**:未建 Express/Fastify/Hono 三套独立骨架 —— 零依赖 reference-gateway 本身已是可运行模板,三套骨架只是同一份 handler 逻辑换 router 语法,价值低且增加维护面。kickstart 指南明确指出移植是机械工作并给出 Express 范例;Fastify/Hono 仅 router/body-parser 语法不同。如运营者实际需要再补。
 - **工作量 M · 价值 高**
 
 ### 1.5 缺主流通道(Slack 等)参考实现

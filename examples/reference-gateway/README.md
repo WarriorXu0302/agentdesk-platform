@@ -13,17 +13,23 @@ Use it to:
 - copy as the skeleton for your own gateway (replace the in-memory store and the
   no-op operations with calls into your ERP / CRM / ticketing backend).
 
-It is **not** production code: storage is an in-memory `Map` (lost on restart),
-authorization is illustrative, and there is no replay cache. The inline comments
-in [`server.mjs`](server.mjs) mark exactly where a real backend plugs in.
+It is **not** production code: storage is an in-memory `Map` (lost on restart)
+and authorization is illustrative. The idempotency cache is process-local (a
+real backend persists it with the write). The inline comments in
+[`server.mjs`](server.mjs) mark exactly where a real backend plugs in.
+
+> **Going to production?** [`docs/gateway-kickstart.md`](../../docs/gateway-kickstart.md)
+> walks this skeleton → your backend, with the hardening recipes (identity
+> mapping, permission denial, idempotency, audit, HMAC + clock-skew + nonce
+> cache, error-code mapping) and an Express port.
 
 ## What it implements
 
 | Endpoint | Behaviour |
 |---|---|
-| `POST /describe` | returns a small operation catalog (`conformance.noop`, `demo.echo`, `demo.order.create`) |
+| `POST /describe` | returns an operation catalog (`conformance.noop`, `demo.echo`, `demo.order.create`, plus a realistic read+write pair `todo.list` / `todo.create`) and a memory-namespace catalog |
 | `POST /authorize` | allows reads; denies a **mutating** op when `requesterSource` is `agent-asserted` |
-| `POST /execute` | `dryRun` → `preview`; otherwise → `result`; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND` |
+| `POST /execute` | `dryRun` → `preview`; otherwise → `result`; **replays the same result for a repeated `idempotencyKey`** so host retries can't double-write; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND` |
 | `POST /memory/get` | exact lookup by `(namespace, subject)`; returns `value` + `source` provenance |
 | `POST /memory/upsert` | stores (optionally merges) `value`; returns the stored value + `source` |
 | `POST /memory/search` | naive keyword match over stored JSON, scoped by namespace + subject; returns `{ value, source, score }[]` (ADR-0033) |

@@ -8,6 +8,13 @@ backend implement the same contract.
 > The brand namespace below (`agentdesk`) is the default; signing-header
 > prefixes follow `BRAND_NAMESPACE` if you override it.
 
+> **Building one?** This doc is the contract reference. To go from the runnable
+> [`examples/reference-gateway/`](../examples/reference-gateway/) to a production
+> gateway in front of your backend — with the hardening recipes (identity,
+> permission denial, idempotency replay, audit, HMAC + skew + nonce cache,
+> error-code mapping) and an Express port — see
+> [`docs/gateway-kickstart.md`](gateway-kickstart.md).
+
 ## Why this shape
 
 AgentDesk then stays stable at the agent layer:

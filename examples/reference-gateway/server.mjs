@@ -74,6 +74,43 @@ function memKey(namespace, subject) {
 }
 
 /**
+ * Per-subject business records, to give /execute a realistic read+write pair
+ * (`todo.list` / `todo.create`) instead of only echo/no-op operations.
+ * key = subject.id -> item[]. A real backend reads/writes its own tables here.
+ */
+const todos = new Map();
+function todosFor(subject) {
+  const id = subject?.id ?? '';
+  if (!todos.has(id)) todos.set(id, []);
+  return todos.get(id);
+}
+
+/**
+ * Idempotency cache: idempotencyKey -> the committed /execute response.
+ * The platform stamps a stable `idempotencyKey` on every mutating execute and
+ * retries with backoff on transient failure (ADR-0016). Replaying the cached
+ * result instead of committing twice is what makes those retries safe. A real
+ * backend persists this alongside the write (same transaction) rather than in a
+ * process-local Map. See docs/gateway-kickstart.md "Idempotency replay".
+ */
+const idempotency = new Map();
+
+/** Dispatch a committed operation to its business handler. */
+function runOperation(op, req) {
+  const input = req.input ?? {};
+  if (op === 'todo.list') {
+    return { operation: op, todos: todosFor(req.subject).slice() };
+  }
+  if (op === 'todo.create') {
+    const item = { id: crypto.randomUUID(), title: input.title, due: input.due ?? null, done: false };
+    todosFor(req.subject).push(item);
+    return { operation: op, created: item };
+  }
+  // demo.* / conformance.noop: echo the input back, no real side effects.
+  return { operation: op, input, committed: true };
+}
+
+/**
  * The operation catalog this reference backend "supports". A real /describe
  * would reflect what the fronted system can actually do, with required fields
  * and approval hints per operation.
@@ -109,6 +146,26 @@ const OPERATIONS = [
         sku: { type: 'string', required: true, description: 'Catalog SKU.' },
         quantity: { type: 'number', required: true, description: 'Units to order (>0).' },
         note: { type: 'string', required: false, description: 'Optional order note.' },
+      },
+    },
+  },
+  {
+    // A realistic read+write pair so an operator sees a "shaped" operation, not
+    // just echo/no-op. Backed by the per-subject `todos` store above.
+    name: 'todo.list',
+    description: "List the requester's todo items. Safe, read-only.",
+    requiredFields: [],
+    mutating: false,
+  },
+  {
+    name: 'todo.create',
+    description: 'Create a todo item for the requester. Mutating; no approval required (low-risk write).',
+    requiredFields: ['title'],
+    mutating: true,
+    schema: {
+      properties: {
+        title: { type: 'string', required: true, description: 'Short todo title.' },
+        due: { type: 'string', required: false, description: 'Optional ISO-8601 due date.' },
       },
     },
   },
@@ -221,13 +278,25 @@ const handlers = {
     if (def.mutating && !isTrusted(req)) {
       return { status: 403, body: { code: 'BACKEND_UNAUTHORIZED', message: 'untrusted requester may not mutate' } };
     }
+
+    // Idempotency replay (roadmap 1.4 recipe): a mutating execute carries a
+    // stable idempotencyKey, and the host retries with backoff on transient
+    // failure (ADR-0016). If we've already committed this key, replay the SAME
+    // result rather than mutating twice. dryRun never commits, so it neither
+    // consults nor fills the cache.
+    if (def.mutating && !req.dryRun && req.idempotencyKey && idempotency.has(req.idempotencyKey)) {
+      return { ...idempotency.get(req.idempotencyKey), replayed: true };
+    }
+
     const auditId = crypto.randomUUID();
     if (req.dryRun) {
       // dryRun touches no committed state; return a preview, not a result.
       return { ok: true, preview: { operation: op, input: req.input ?? {} }, auditId };
     }
-    // A real backend would dedupe on req.idempotencyKey before committing.
-    return { ok: true, result: { operation: op, input: req.input ?? {}, committed: true }, auditId };
+
+    const response = { ok: true, result: runOperation(op, req), auditId };
+    if (def.mutating && req.idempotencyKey) idempotency.set(req.idempotencyKey, response);
+    return response;
   },
 
   '/memory/get': (req) => {
