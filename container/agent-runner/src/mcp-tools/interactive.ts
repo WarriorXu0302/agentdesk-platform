@@ -38,7 +38,11 @@ export const askUserQuestion: McpToolDefinition = {
   tool: {
     name: 'ask_user_question',
     description:
-      'Ask the user a multiple-choice question and wait for their response. This is a blocking call — execution pauses until the user responds or the timeout expires. Provide a short card title (e.g. "Confirm deletion") and an array of options — each option may be a plain string (used as both button label and result value) or an object { label, selectedLabel?, value? } where selectedLabel is the text shown on the card after the user clicks.',
+      'Ask the user a multiple-choice question and wait for their response. This is a blocking call — execution pauses until the user responds or the timeout expires. Provide a short card title (e.g. "Confirm deletion") and an array of options — each option may be a plain string (used as both button label and result value) or an object { label, selectedLabel?, value? } where selectedLabel is the text shown on the card after the user clicks. ' +
+      "The chosen option's `value` is what comes back to you as the tool result, so use distinct values to capture a structured answer in ONE round-trip — don't approve/reject and then ask a second question for the reason. " +
+      'For an approval, prefer concrete reject options that already encode the reason and remediation, e.g. ' +
+      '[{label:"Approve",value:"approve"}, {label:"Reject — amount looks wrong",value:"reject:amount"}, {label:"Reject — needs manager sign-off",value:"reject:needs-manager"}]. ' +
+      'Put any "what to fix" guidance in the `question` text. Only fall back to a free-text follow-up when the reasons are genuinely open-ended.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -120,7 +124,7 @@ export const askUserQuestion: McpToolDefinition = {
       content: JSON.stringify(contentObj),
     });
 
-    log(`ask_user_question: ${questionId} → "${question}" [${options.join(', ')}]`);
+    log(`ask_user_question: ${questionId} → "${question}" [${options.map((o) => o.value).join(', ')}]`);
 
     // Poll for response in inbound.db (host writes the response there)
     const deadline = Date.now() + timeout;

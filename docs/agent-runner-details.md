@@ -532,6 +532,32 @@ Implementation:
 
 The agent's execution is paused at this tool call. The provider's query keeps running (Claude holds the tool call open). The agent-runner polls for the response in a separate loop.
 
+**Capturing a structured rejection reason (approval pattern).** The chosen
+option's `value` — not its `label` — is what the host writes back as
+`selectedOption` (see `normalizeOption` in `src/channels/ask-question.ts`, and
+the write-back at `src/channels/feishu/primitives.ts` / `src/modules/interactive`).
+So an approval question can collect the *reason* in a single round-trip instead
+of asking "approve or reject?" and then a follow-up "why?". Encode the reason
+(and remediation) into distinct option values:
+
+```typescript
+ask_user_question({
+  title: 'Approve refund REF-8821?',
+  question: 'Customer requests a $240 refund. If rejecting, pick the closest reason.',
+  options: [
+    { label: 'Approve', value: 'approve' },
+    { label: 'Reject — amount exceeds policy', value: 'reject:over-policy' },
+    { label: 'Reject — needs manager sign-off', value: 'reject:needs-manager' },
+    { label: 'Reject — duplicate request', value: 'reject:duplicate' },
+  ],
+})
+// tool result === the chosen value, e.g. "reject:over-policy" — act on it directly.
+```
+
+Only fall back to a second free-text question when the reasons are genuinely
+open-ended. This is an agent-side prompt/design pattern; the platform provides
+the `value` round-trip and does not require a particular question shape.
+
 #### edit_message
 
 Edit a previously sent message.

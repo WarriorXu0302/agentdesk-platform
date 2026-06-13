@@ -337,10 +337,16 @@
 - **建议**:(1) 文档化 agent 可发中间状态消息(今天就支持);(2) 可选进度 API 发非终态更新而不刷屏;(3) PATCH 消息内联进度(需 Feishu 支持,超核心范围)。当前多消息 fallback 多数场景够用。
 - **工作量 S · 价值 中**
 
-### 6.8 审批拒绝无内联原因/补救建议
+### 6.8 审批拒绝无内联原因/补救建议 — ✅ 已落地(0470cee)
 - **现状**:选项 schema 只有 label/value,用户选 Reject 回 `{selectedOption:'reject'}` **无结构化原因**,agent 得追问。但 agent **可**在问题文本里引导,或设计多步卡序列。缺的是 schema 对结构化拒绝原因的支持和文档化模式。
 - **业务影响**:中等。审批工作流要 2-3 轮往返,增延迟。
 - **建议**:(1) agent/网关责任,问题文本引导;(2) 可选扩 schema 支持 `{requiresReason:true, suggestedReasons:[...]}`;(3) 或两阶段审批卡。多消息架构已支持。
+- **关键发现**:能力其实**已经存在**——核查 `src/channels/feishu/primitives.ts:497` 与 `src/modules/interactive/index.ts:43,51`,选项的 `value`(而非 `label`)就是回写给 agent 的 `selectedOption`。所以 agent 今天就能用不同的 `value` 一次往返拿到结构化拒绝原因(如 `{label:"Reject — amount wrong", value:"reject:amount"}`),根本不需要扩 schema。真正缺的只是**引导与文档**,正对应建议(1)。
+- **已实现**(选最保守、零风险路径,**不**改 schema/不动渲染器/不碰审批生命周期):
+  - 充实 `ask_user_question` 工具描述(`interactive.ts`):明确"选项 `value` 即工具返回值,用不同 value 一次拿到结构化答案,别 approve/reject 后再追问原因",给出审批的具体写法范例,补救建议放 question 文本,仅在原因真开放时才退回自由文本。
+  - `docs/agent-runner-details.md` 的 MCP Tools 段补"Capturing a structured rejection reason (approval pattern)"小节 + 代码范例,点明这是 agent 侧 prompt/设计模式,平台只提供 `value` 回传、不强制问题形状。
+  - 新增 `src/channels/ask-question.test.ts`(5 cases)锚定该机制:`normalizeOption` 保留与 `label` 不同的 `value` —— 回归会静默破坏整个模式。
+  - 顺带修了 `interactive.ts` 一处日志 cosmetic bug(options 现为对象,`join` 原会打印 `[object Object]`,改为 `.map(o=>o.value)`)。
 - **工作量 S · 价值 中**
 
 ### 6.9 回复无 citation / "我执行了 X" 信任信号
