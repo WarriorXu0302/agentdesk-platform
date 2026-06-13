@@ -882,6 +882,30 @@ describe('describe response: namespace catalog + freshness (roadmap 4.2/4.3)', (
   it('rejects a namespace entry missing the required name', () => {
     expect(describeResponseSchema.safeParse({ ok: true, namespaces: [{ scope: 'user' }] }).success).toBe(false);
   });
+
+  it('accepts structured operations with a per-field schema and preserves it (roadmap 3.3)', () => {
+    const parsed = describeResponseSchema.parse({
+      ok: true,
+      operations: [
+        {
+          name: 'demo.order.create',
+          mutating: true,
+          approval: 'required',
+          schema: { properties: { sku: { type: 'string', required: true } } },
+        },
+        { name: 'demo.echo' },
+      ],
+    });
+    expect(parsed.operations?.[0]).toMatchObject({
+      name: 'demo.order.create',
+      mutating: true,
+      schema: { properties: { sku: { type: 'string', required: true } } },
+    });
+  });
+
+  it('stays lenient: arbitrary operation entries still parse (back-compat)', () => {
+    expect(describeResponseSchema.safeParse({ ok: true, operations: [{ name: 'x' }, { foo: 1 }] }).success).toBe(true);
+  });
 });
 
 describe('memory search: optional conflict metadata (roadmap 4.4)', () => {

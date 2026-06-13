@@ -51,7 +51,10 @@ capability layer.
 - For privileged or state-changing actions, call `gateway_authorize` first
   even if you think the request should pass.
 - Use `gateway_describe` when you are unsure which operation name or payload
-  shape the backend expects.
+  shape the backend expects. An operation entry may carry a `schema` (e.g.
+  `schema.properties.<field>.{type,required,enum}`) — read it for the exact input
+  shape rather than guessing field names, and re-check it if a call fails
+  validation (the backend's fields may have changed).
 - When you need durable memory but are unsure which `namespace` exists, call
   `gateway_describe` and read its optional `namespaces` list (each entry may
   carry `description`, `scope`, `writeable`, and a `freshnessWindowMs`). Do not

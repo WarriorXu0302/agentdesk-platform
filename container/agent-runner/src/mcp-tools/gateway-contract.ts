@@ -224,10 +224,37 @@ export const memoryNamespaceSchema = z
   })
   .passthrough();
 
+/**
+ * Optional operation descriptor in a /describe response (roadmap 3.3).
+ *
+ * Lets a backend advertise an operation's input shape (`schema.properties`:
+ * field types / required / enums) so the agent learns it at RUNTIME instead of
+ * hard-coding field knowledge in its prompt — and stays in sync when the backend
+ * adds/removes/renames a field. Fully lenient (every field optional + passthrough,
+ * `schema` an open object) so it never tightens what a backend may return: a
+ * backend that lists only `{ name }` per operation stays conformant.
+ */
+export const operationDescriptorSchema = z
+  .object({
+    name: z.string().optional(),
+    summary: z.string().optional(),
+    description: z.string().optional(),
+    mutating: z.boolean().optional(),
+    approval: z.string().optional(),
+    requiredFields: z.array(z.string()).optional(),
+    // e.g. { properties: { sku: { type: 'string', required: true }, ... } }.
+    // Left as an open object — the platform surfaces it to the agent but does
+    // not deeply validate it (the recommended field-descriptor shape is documented).
+    schema: z.object({}).passthrough().optional(),
+  })
+  .passthrough();
+
 export const describeResponseSchema = z
   .object({
     ...responseEnvelope,
-    operations: z.array(z.unknown()).optional(),
+    // Operation catalog. Recommended shape is operationDescriptorSchema[], but
+    // every field is optional + passthrough so existing backends are unaffected.
+    operations: z.array(operationDescriptorSchema).optional(),
     // Optional namespace catalog so the agent can discover memory namespaces
     // (and their freshness policy) at runtime instead of hard-coding them.
     namespaces: z.array(memoryNamespaceSchema).optional(),

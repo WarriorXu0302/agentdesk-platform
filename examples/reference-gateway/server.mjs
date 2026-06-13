@@ -102,6 +102,15 @@ const OPERATIONS = [
     requiredFields: ['sku', 'quantity'],
     mutating: true,
     approval: 'required',
+    // Optional per-field schema (roadmap 3.3): the agent reads this for the
+    // exact input shape instead of hard-coding field knowledge in its prompt.
+    schema: {
+      properties: {
+        sku: { type: 'string', required: true, description: 'Catalog SKU.' },
+        quantity: { type: 'number', required: true, description: 'Units to order (>0).' },
+        note: { type: 'string', required: false, description: 'Optional order note.' },
+      },
+    },
   },
 ];
 const OPERATION_NAMES = new Set(OPERATIONS.map((o) => o.name));

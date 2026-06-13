@@ -122,6 +122,7 @@
 - **工作量 L · 价值 高**
 
 ### 3.3 `/describe` 缺操作 schema / 字段发现 ⭐
+> ✅ **已实现**(网关契约 batch):新增 `operationDescriptorSchema`(name/summary/mutating/approval/requiredFields + 可选 `schema.properties.<field>.{type,required,enum,…}`,全可选 + passthrough,`describeResponseSchema.operations` 从 `z.unknown()` 收紧为它但保持完全宽松,向后兼容);`gateway.instructions.md` 指引 agent「读操作的 `schema` 取确切输入形状,别猜;调用校验失败就重查」;reference-gateway 的 `demo.order.create` 给了带 `schema.properties` 的示例;gateway.test.ts 加了结构化操作 + 向后兼容测试。
 - **现状**:`/describe` 返回 `{operations:[...]}` 但**操作的字段 schema 未规定**,参考实现(`server.mjs:81-106`)只有 name/description/requiredFields。Agent 必须硬编码每个操作的字段知识。ERP schema 变更(新必填字段/废弃字段/枚举值)时 agent 失同步,要人工改 prompt。多租户运营者管 50+ ERP 时无法按版本自动生成 agent 指令。
 - **业务影响**:中等。静态 schema 绑定脆弱,运营者要维护 per-ERP 文档并在变更时同步 agent。
 - **建议**:扩 `/describe` 响应(可选)含操作 schema:`{operations:[{name, summary, schema:{properties:{field:{type,required,enum,pattern,...}}}, mutating, approval}]}`。后端暂返最小 schema;conformance runner 至少校验 name+summary。
@@ -409,7 +410,7 @@
 | ✅ **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
 | 🟡 **4.4 记忆冲突检测**(契约+指引已做;后端示例留运营者) | M | 记忆 |
 | **3.1 bulk 操作契约** | M | 网关契约 |
-| **3.3 /describe schema 发现** | M | 网关契约 |
+| ✅ **3.3 /describe schema 发现** | M | 网关契约 |
 | **1.4 网关生产模板 + kickstart** | M | 上手速度 |
 | **1.6 prompt 模板库** | M | 业务定制 |
 
