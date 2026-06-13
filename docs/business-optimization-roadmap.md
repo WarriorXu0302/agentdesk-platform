@@ -38,10 +38,11 @@
   - 测试:`container-runner.test.ts` 断言 gauge 在镜像存在/缺失时分别置 1/0。
 - **工作量 S · 价值 低**
 
-### 1.3 `.env.example` 342 行,缺"最小可用"导航
+### 1.3 `.env.example` 342 行,缺"最小可用"导航 — ✅ 已落地(67849c8)
 - **现状**:`.env.example` 确实 342 行,但 L16-24 已说明"Required 仅在功能启用时才需要",`src/config-validate.ts` L1-31 也实现了 fail-fast + 拒绝弱密钥。问题不是配置检查缺失,而是**缺一份"哪些变量真的必填"的导航**。
 - **业务影响**:低到中等。新手看到 342 行有心理负担,但配错会被快速捕获,不会"静默错误"。
 - **建议**:加 `docs/ENV-QUICK-START.md`,按场景分组(最小 CLI / 生产 Feishu+网关 / 可选 observability),每组附"为什么需要 + 如何获取"。文件本身不动,只加导航层。
+- **已实现**:新增 `docs/ENV-QUICK-START.md`,按场景分组(A 最小本地 CLI / B 生产 Feishu+网关 / C 可选 tracing),每个变量标注"是否必填 + 为什么 + 哪儿拿",并把 fail-fast"仅功能启用时才必填"与弱密钥硬错误两条规则前置说清。`.env.example` 本身**未重构**,仅在头部加一行注释指针引导新人先看导航(注释行,`readEnvFile` 忽略,parser 安全)。README 文档区加链接。grounded:变量名/默认值/必填条件核对自 `.env.example`(`MAX_CONCURRENT_CONTAINERS` 默认 10、`WEBHOOK_PORT` 默认 3000、webhook/hybrid 下 `FEISHU_ENCRYPT_KEY`+`FEISHU_VERIFICATION_TOKEN` 必填等)。`scan-secrets` + `configure-enterprise-gateway` 测试仍绿(25 passed),确认头部注释不破坏密钥扫描/解析。
 - **工作量 S · 价值 中**
 
 ### 1.4 网关只有可运行参考,缺生产框架模板和"业务化"示例 — 🟡 已落地(7f351e6)

@@ -220,6 +220,7 @@ pnpm configure:enterprise-gateway --base-url <gateway>
 - [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md) — 多人共享 frontdesk 拓扑
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md) — 后端网关协议
 - [docs/gateway-kickstart.md](docs/gateway-kickstart.md) — 从可运行参考接到你自己后端的上手指南(身份映射 / 权限拒绝 / 幂等重放 / 审计 / HMAC / 错误码菜谱 + Express 移植)
+- [docs/ENV-QUICK-START.md](docs/ENV-QUICK-START.md) — 环境变量按场景导航(最小 CLI / 生产 Feishu+网关 / 可选 tracing),先看哪些真的必填
 - [docs/configuration-reference.md](docs/configuration-reference.md) — per-group `container.json` 字段全表 + 环境变量入口
 - [docs/feishu-channel.md](docs/feishu-channel.md) — 飞书接入
 - [docs/decisions/README.md](docs/decisions/README.md) — ADR 决策档案
