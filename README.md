@@ -53,24 +53,44 @@
 
 - Batch 级 `RequestIdentity`:tool 调用用的用户身份在 poll 批次开始时固定,杜绝多人群聊里的归属漂移
 - `origin_user_id` 跨 a2a 链路传递:frontdesk 派给 worker 的任务仍带着原始终端用户身份
-- 可选 HMAC 签名:每次网关请求带 `x-<namespace>-timestamp/nonce/signature`
+- 身份链 host 侧交叉校验:用可信 inbound.db 校验容器自报的 `origin_user_id`,堵跨会话冒充(ADR-0017)
+- 可选 HMAC 签名:每次网关请求带 `x-<namespace>-timestamp/nonce/signature`;未签名 group 由启动扫描暴露为指标 + 告警(ADR-0018)
 - 中央 `gateway_audit` 审计表:每次后端调用(成功或失败)一行
 - 显式 `requesterSource: 'session' | 'agent-asserted'`,后端可对无可信身份的请求拒绝写操作
+- fail-closed 安全默认:历史上三处 fail-open 的安全默认值统一收紧为 fail-closed(ADR-0019)
+- 名册定向私聊(roster DM):宿主强制的、本人显式同意的 per-scope 私聊授权,出站走槽位间接寻址闸,不放宽群聊写权限(ADR-0023)
 
-**后端网关 MCP 工具**
+**后端网关契约(可验证)**
 
 - `gateway_describe` / `gateway_authorize` / `gateway_execute`
 - `gateway_memory_get` / `gateway_memory_upsert`
+- `gateway_memory_search` + 召回来源 provenance + 召回内容注入隔离(ADR-0033)
+- 契约硬化:散文约定 → zod 可验证契约(闭合错误码、envelope `contractVersion`、写操作 `idempotencyKey`、agent 输入白名单),配套 conformance 自测脚本(ADR-0028)。可运行参考实现见 [`examples/reference-gateway/`](examples/reference-gateway/)
 
 **Provider 与容器**
 
 - Claude 与 OpenAI-compatible provider
+- OpenAI provider 摘要式上下文压缩(长会话上下文对齐,ADR-0024)
 - 容器 lazy idle-exit
 - Per-agent-group Docker 资源限制(`resources.memoryMb / cpus / pidsLimit`)
+- 进程/供应链硬化:agent 容器 `--no-new-privileges`、observability sidecar `cap_drop`、镜像 digest pin、git pre-commit 密钥扫描(ADR-0029)
+- 容器 egress 联网管控:可配置、默认不限制、opt-in 锁定到运营者管理的 egress-proxy 网络(ADR-0032)
+- 不 fork 主仓的通道扩展加载:把 adapter 放进 `EXTENSIONS_DIR` 即可加通道(ADR-0031),示例见 [`examples/echo-channel/`](examples/echo-channel/)
+
+**投递与路由韧性**
+
+- 出站投递韧性:超时 + 有界并发 + 持久化退避重试 + 死信(DLQ)工具(ADR-0016)
+- 入站消息路由前持久化:可恢复账本 + 操作员显式重放(ADR-0022)
+- persist-before-route 与投递韧性共同保证 at-least-once、宿主重启不丢消息
 
 **运维与可观测**
 
 - Prometheus `/metrics`:入站、session、路由时延、容器退出、provider 错误、分类
+- 指标抓取 + 告警闭环:Prometheus + Alertmanager,指标必须有抓取者与告警承载体(ADR-0021)
+- 宿主进程硬化:ingress 限制、`/readyz` 健康探针、SIGTERM 优雅停机排空(ADR-0020)
+- 配置安全三件套:`.env.example` 权威清单 + 拒绝占位密钥 + 保守 fail-fast(ADR-0025)
+- OpenTelemetry trace 贯通宿主与 runner(ADR-0011 / ADR-0026),可选全明文内容捕获(默认关,ADR-0027)
+- 通道契约一致性测试 + 宿主主链路 e2e 骨架(ADR-0030)
 - Session TTL + 归档
 - 入站 webhook 去重
 
@@ -110,12 +130,13 @@ ENTERPRISE_AUTO_WIRE_P2P=true
 
 webhook 模式额外需要 `FEISHU_ENCRYPT_KEY` / `FEISHU_VERIFICATION_TOKEN` / `WEBHOOK_PORT`。
 
-生产建议开启的容量保护(默认关闭,向后兼容):
+容量保护。`MAX_CONCURRENT_CONTAINERS` **默认就开**(默认 10,全局并发容器上限),
+另外两项默认关闭(`0`),生产建议显式开启(向后兼容):
 
 ```bash
-MAX_CONCURRENT_CONTAINERS=10
-AGENTDESK_IDLE_EXIT_MS=120000       # 命名空间前缀随 BRAND_NAMESPACE 变化
-AGENTDESK_SESSION_TTL_DAYS=30
+MAX_CONCURRENT_CONTAINERS=10        # 默认 10;调大/调小按宿主容量
+AGENTDESK_IDLE_EXIT_MS=120000       # 默认 0（关）。命名空间前缀随 BRAND_NAMESPACE 变化
+AGENTDESK_SESSION_TTL_DAYS=30       # 默认 0（关）
 ```
 
 ### 3. 构建 agent 容器镜像

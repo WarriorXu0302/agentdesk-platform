@@ -289,10 +289,12 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 - `gateway_authorize` — 操作前置鉴权
 - `gateway_execute` — 执行业务操作
 - `gateway_memory_get` / `gateway_memory_upsert` — durable memory（user.profile / user.preferences / approval.history）
+- `gateway_memory_search` — 长期记忆检索 + 来源 provenance + 召回内容注入隔离（ADR-0033；后端未实现时返回 404，平台降级为 `OPERATION_NOT_FOUND`）
 
 请求 envelope（强制字段）：
 ```json
 {
+  "contractVersion": 1,
   "agent": { "agentGroupId", "groupName", "assistantName" },
   "requester": { "userId", "channelType", "platformId", "threadId" },
   "requesterSource": "session" | "agent-asserted",
@@ -304,7 +306,9 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 }
 ```
 
-**深入**：[docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md) 包含 HMAC 协议、PII 建议、operation 命名规范、memory 模型。
+契约的**唯一真相源**是 zod schema `container/agent-runner/src/mcp-tools/gateway-contract.ts`（散文约定已硬化为可验证契约，ADR-0028）。
+
+**深入**：[docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md) 包含 HMAC 协议、PII 建议、operation 命名规范、memory 模型、conformance 自测脚本。可运行参考实现见 [`examples/reference-gateway/`](../examples/reference-gateway/)。
 
 ### 5.3 Worker 拓扑
 

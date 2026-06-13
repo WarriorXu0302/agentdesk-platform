@@ -87,7 +87,7 @@ groups/<folder>/                            每个 agent_group 的根
 ### 2.1 第一次 setup
 
 ```bash
-git clone <repo> && cd nanoclaw
+git clone <repo> && cd agentdesk-platform
 
 # Host 依赖
 pnpm install --frozen-lockfile

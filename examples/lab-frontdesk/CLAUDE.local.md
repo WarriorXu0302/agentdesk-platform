@@ -185,7 +185,7 @@
 ## 设备 / 服务参数
 
 > 设备地址、broker、tokens 等不在本文件内。
-> 在容器中通过 `process.env` 读取（见 `MultiUserAgentPlatform/.env.local`）；
+> 在容器中通过 `process.env` 读取（由宿主从仓库根 `.env` 注入，见 `.env.example`）；
 > 由 mock 服务（simulation 模式）或真实硬件（production 模式）承担。
 > 端点漂移由 ERP gateway baseUrl 一处统一管理。
 

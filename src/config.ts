@@ -29,8 +29,10 @@ export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
-// Per-checkout image tag so two installs on the same host don't share
-// `nanoclaw-agent:latest` and clobber each other on rebuild.
+// Per-checkout image tag so two installs on the same host don't share a single
+// brand-namespaced image (e.g. `<namespace>-agent-v2-<slug>:latest`) and clobber
+// each other on rebuild. The actual name is derived from BRAND_NAMESPACE + the
+// install slug — see getDefaultContainerImage in install-slug.ts.
 export const CONTAINER_IMAGE_BASE = process.env.CONTAINER_IMAGE_BASE || getContainerImageBase(PROJECT_ROOT);
 export const CONTAINER_IMAGE = process.env.CONTAINER_IMAGE || getDefaultContainerImage(PROJECT_ROOT);
 // Install slug — stamped onto every spawned container via --label so

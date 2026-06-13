@@ -1,8 +1,20 @@
 # Channel Isolation Model
 
-AgentDesk decouples messaging channels from agent groups. When you connect a channel (Discord, Telegram, Slack, GitHub, etc.), you decide how it relates to your existing agents. There are three isolation levels.
+AgentDesk is an enterprise multi-user platform: the primary deployment puts one
+shared bot in front of many employees and keeps **each employee's context
+isolated by default** (see [SPEC.md](SPEC.md) and
+[enterprise-multi-user.md](enterprise-multi-user.md)). The user-scoped session
+modes that deliver that — `per-user` and `per-user-per-thread` — are the
+headline of this doc; see [User-Scoped Sessions](#user-scoped-sessions-the-enterprise-default)
+below.
 
-## The Three Levels
+Underneath that, AgentDesk decouples messaging channels from agent groups: when
+you wire a channel (Feishu, CLI, or an installed adapter) you also decide how it
+relates to your agent groups. That channel ↔ agent-group relationship has three
+isolation levels, described next. The user-scoped modes layer on top of them to
+give per-employee isolation inside a single shared surface.
+
+## The Three Channel ↔ Agent-Group Levels
 
 ### 1. Shared Session
 
@@ -26,11 +38,17 @@ Multiple channels share the same agent (same workspace, memory, personality) but
 
 **What's separate:** The conversation thread. Messages from one channel don't appear in the other channel's session. Each channel has its own context window and conversation history.
 
-**Example:** You have three Telegram chats with your agent — one for a side project, one for personal tasks, one for work. All three share the same agent workspace. If you ask it to remember your API key naming convention in the project chat, it may recall that convention in the work chat too. But the conversations themselves are independent.
+**Example:** One support agent group is wired to several team rooms — one per department. All rooms share the same agent workspace and memory, so a fact stored in one (e.g. a backend operation naming convention) can be recalled in another, but each room's conversation stays independent.
 
-**When to use:** When you're the primary (or sole) participant across channels and you want a unified agent identity. This is the most common setup for personal use across multiple platforms or multiple groups within one platform.
+**When to use:** When the same audience (or a trusted set of operators) spans several surfaces and you want one unified agent identity with shared memory but separate conversation threads.
 
 **Technical:** Multiple messaging groups are wired to the same agent group with `session_mode: 'shared'` (or `'per-thread'`). Each messaging group gets its own session, but they all run in the same agent group folder.
+
+> Note: this level isolates by **channel/room**, not by **sender**. Two
+> different employees writing in the *same* room share one session here. For an
+> enterprise bot where many employees share one surface and must not see each
+> other's context, use the user-scoped modes below — that is the platform
+> default, not this level.
 
 ---
 
@@ -58,24 +76,28 @@ The key question: **Are you okay with any and every piece of information from on
 
 ### Rules of Thumb
 
-| Scenario | Recommended Level |
+| Scenario | Recommended Level / Mode |
 |----------|------------------|
-| Just you, multiple platforms (Telegram + Discord + Slack) | Same agent, separate sessions |
-| Just you, multiple groups on one platform (3 Telegram chats) | Same agent, separate sessions |
-| Webhook channel + chat channel (GitHub + Slack) | Shared session |
-| Channel with friend A and channel with friend B | Separate agent groups |
-| Personal channel and work channel | Separate agent groups |
-| Team channel with different access levels | Separate agent groups |
+| **Shared enterprise bot, many employees, one surface** | **User-scoped: `per-user` / `per-user-per-thread`** (the default — see below) |
+| One agent group fronting several team rooms (same trusted audience) | Same agent, separate sessions |
+| Webhook channel + ops-room chat channel (notifications feed context into chat) | Shared session |
+| Two business units that must never see each other's context | Separate agent groups |
+| Frontdesk desk and a sensitive worker with different access levels | Separate agent groups |
 
 ### When in Doubt
 
-If the participants are the same across channels → same agent group is usually fine.
+If many distinct **end users** share one surface → use a user-scoped mode (`per-user` / `per-user-per-thread`). This is the enterprise default.
 
-If different people are involved → separate agent groups. Information will cross-pollinate through agent memory if you don't.
+If the channels serve the **same trusted audience** → the same agent group is usually fine.
 
-## Enterprise Extension: User-Scoped Sessions
+If a hard confidentiality boundary divides the audiences → separate agent groups. Information will cross-pollinate through agent memory if you don't.
 
-The three levels above assume the main boundary is **channel ↔ agent group**. In a shared enterprise bot, that is often not enough: one bot may sit in a single chat surface while still needing a separate context per sender.
+## User-Scoped Sessions (the enterprise default)
+
+The three levels above isolate by **channel ↔ agent group**. For the platform's
+primary use case — one shared bot in front of many employees — that is not
+enough on its own: one bot may sit in a single chat surface while still needing
+a separate context **per sender**.
 
 AgentDesk supports two user-scoped `session_mode` values for that case:
 
