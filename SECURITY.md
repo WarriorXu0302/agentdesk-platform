@@ -84,8 +84,13 @@ when the dependency tree changes:
 
 | GHSA | Package | Why not applicable |
 |---|---|---|
-| `GHSA-q7rr-3cgh-j5r3` | `@opentelemetry/exporter-prometheus` (transitive, via `auto-instrumentations-node` / `sdk-node`) | "Prometheus exporter process crash via malformed HTTP request." The OTEL Prometheus exporter is **never instantiated** — `/metrics` is served by `prom-client` (`src/metrics.ts`), and host OTEL starts only `NodeSDK` + `OTLPTraceExporter` (`src/observability/init.ts`). Fixing requires a ~162-minor OTEL jump (0.55 → 0.217) that risks the ADR-0026 trace pipeline; tracked as a separate upgrade. |
 | `GHSA-w5hq-g745-h8pq` | `uuid@9` (transitive, via `gaxios` ← OTEL GCP resource detector) | "Missing buffer bounds check in v3/v5/v6 when a buffer is supplied." Only `uuid.v4()` (no buffer argument) is reached on this path, so the vulnerable functions are never invoked. The fix is a major bump (uuid 9 → 11) under `gaxios`, in a GCP-detector path this platform (bare Node / Docker, not GCP) does not exercise. |
+
+`GHSA-q7rr-3cgh-j5r3` (`@opentelemetry/exporter-prometheus`) was previously
+suppressed here; it is now **resolved** by the host OTEL upgrade to the
+0.219 train (`@opentelemetry/exporter-prometheus@0.219.0` carries the fix that
+landed in ≥0.217). The suppression has been removed from
+`package.json` → `pnpm.auditConfig.ignoreGhsas`.
 
 Reachable advisories are remediated via `pnpm.overrides` (currently
 `axios`, `ws`, `qs`, `protobufjs` pinned to patched in-major versions).
