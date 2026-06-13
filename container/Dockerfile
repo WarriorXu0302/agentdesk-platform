@@ -10,12 +10,12 @@
 # never require an image rebuild.
 
 # Supply-chain hardening (ADR-0029): pin the base image by content digest, not
-# just the `node:22-slim` tag. A tag can be silently re-pointed upstream to a
-# different image; a digest cannot. The digest below is the `node:22-slim`
+# just the `node:26-slim` tag. A tag can be silently re-pointed upstream to a
+# different image; a digest cannot. The digest below is the `node:26-slim`
 # image current as of 2026-06. To refresh after an intentional base bump:
-#   docker buildx imagetools inspect node:22-slim   # copy the "Digest:" value
+#   docker buildx imagetools inspect node:26-slim   # copy the "Digest:" value
 # and update the @sha256:... below in the same commit.
-FROM node:22-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
+FROM node:26-slim@sha256:95a34da32a840bd9b3b09a5b773591c16923e350174b1c50e1200c75bf15eaa9
 
 # ---- Build-time arguments ----------------------------------------------------
 # CJK fonts add ~200MB. Opt in only if you render Chinese/Japanese/Korean text.
@@ -98,8 +98,14 @@ ENV PATH="$PNPM_HOME:$PATH"
 # silently skips claude-code's native-binary postinstall and agent-browser's
 # bin chmod — the agent then crashes at runtime with "native binary not
 # installed". Keep this in lockstep with package.json's `packageManager`.
+#
+# Node 25+ unbundled corepack from the official Docker images (it shipped in
+# node:22-slim but is gone from node:26-slim), so `corepack enable` fails with
+# exit 127. Install the pinned pnpm via the still-bundled npm instead — same
+# pinned version, same `pnpm` on PATH. Global CLIs below still land in
+# PNPM_HOME (/pnpm); only pnpm itself now lives in npm's prefix (/usr/local/bin).
 ARG PNPM_VERSION=10.33.0
-RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+RUN npm install -g "pnpm@${PNPM_VERSION}"
 
 RUN echo "only-built-dependencies[]=agent-browser" > /root/.npmrc && \
     echo "only-built-dependencies[]=@anthropic-ai/claude-code" >> /root/.npmrc && \
