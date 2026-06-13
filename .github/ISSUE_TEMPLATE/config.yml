@@ -1,0 +1,7 @@
+# Issue routing. Security vulnerabilities must NOT be filed as public issues —
+# route them to private vulnerability reporting (see SECURITY.md).
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/WarriorXu0302/agentdesk-platform/security/advisories/new
+    about: Do not open a public issue for security problems. Use private vulnerability reporting — see SECURITY.md.
