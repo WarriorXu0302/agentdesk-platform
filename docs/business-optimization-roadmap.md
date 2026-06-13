@@ -221,6 +221,7 @@
 - **工作量 M · 价值 高**
 
 ### 5.5 a2a 委派跳数无平台级审计 ⭐
+> ✅ **已实现**(治理审计补洞 batch 3):`routeAgentMessage`(`src/modules/agent-to-agent/agent-route.ts`)在消息成功写入目标会话后 emit `agent_delegation`(actor=交叉校验后的 origin_user_id,details={from,to,sourceSessionId,targetSessionId,a2aMsgId,spawnDepth})。**仅跨 agent 边**(self-message 系统回环不算委派,不审计)。agent-route.test.ts 加了正/负两个测试。多跳审批链现在在平台层有面包屑。
 - **现状**:`origin_user_id` 跨 a2a 跳传播(`docs/db-central.md §1.8`)已实现,但 `src/delivery.ts:491-505` 路由 a2a 消息时**不 emit `recordEnterpriseAudit`**。多跳审批链(frontdesk → 审批 worker → 财务 worker)只在网关层(gateway_audit)可审,**AgentDesk 委派边界无审计面包屑**。agent 若被攻陷注入假委派,单看 AgentDesk 审计无法发现。
 - **业务影响**:中等。委派跳数无平台级审计,复杂审批链留无中心面包屑,真实合规缺口。
 - **建议**:在 `delivery.ts` a2a 分支(L491-505)路由前 emit `recordEnterpriseAudit({eventType:'agent_delegation', actor:origin_user_id, agentGroupId, details:{target_agent_group_id, target_session_id, message_id, delegation_depth}})`。
@@ -382,7 +383,7 @@
 | 项 | 工作量 | 主题 |
 |---|---|---|
 | 🟡 **5.1 角色授予/撤销审计**(部分,见正文) | S | 治理(合规快赢之王) |
-| **5.5 a2a 委派审计面包屑** | S | 治理 |
+| ✅ **5.5 a2a 委派审计面包屑** | S | 治理 |
 | **5.2 审批决策审计 + 元数据** | S | 治理 |
 | **4.2 知识新鲜度指引** | S | 记忆(文档为主) |
 | **4.3 namespace 可发现性** | S | 记忆(小 schema) |

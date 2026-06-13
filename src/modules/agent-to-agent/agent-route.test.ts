@@ -6,6 +6,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { isSafeAttachmentName, routeAgentMessage } from './agent-route.js';
 import { createDestination } from './db/agent-destinations.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from '../../db/index.js';
+import { getDb } from '../../db/connection.js';
 import { createSession, getSessionsByAgentGroup, updateSession } from '../../db/sessions.js';
 import { a2aOriginRejectedTotal } from '../../metrics.js';
 import { initSessionFolder, inboundDbPath, sessionDir, writeSessionMessage } from '../../session-manager.js';
@@ -205,6 +206,28 @@ describe('routeAgentMessage return-path', () => {
     expect(bRows).toHaveLength(1);
     expect(bRows[0].platform_id).toBe(A);
     expect(bRows[0].source_session_id).toBe(S1.id); // <- the return address
+  });
+
+  it('emits an agent_delegation audit row for cross-agent hops (roadmap 5.5)', async () => {
+    await routeAgentMessage(
+      { id: 'msg-deleg', platform_id: B, content: JSON.stringify({ text: 'do X' }), in_reply_to: null },
+      S1,
+    );
+    const rows = getDb()
+      .prepare("SELECT actor, agent_group_id, details FROM enterprise_audit WHERE event_type = 'agent_delegation'")
+      .all() as Array<{ actor: string | null; agent_group_id: string | null; details: string | null }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].agent_group_id).toBe(A);
+    expect(JSON.parse(rows[0].details!)).toMatchObject({ from: A, to: B, sourceSessionId: S1.id });
+  });
+
+  it('does NOT audit self-messages as delegations (roadmap 5.5)', async () => {
+    await routeAgentMessage(
+      { id: 'msg-self', platform_id: A, content: JSON.stringify({ text: 'note to self' }), in_reply_to: null },
+      S1,
+    );
+    const rows = getDb().prepare("SELECT 1 FROM enterprise_audit WHERE event_type = 'agent_delegation'").all();
+    expect(rows).toHaveLength(0);
   });
 
   it('reply direction: routes back to the originating session, not the newest', async () => {

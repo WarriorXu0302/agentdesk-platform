@@ -24,6 +24,7 @@ import path from 'path';
 import { isSafeAttachmentName } from '../../attachment-safety.js';
 import { readContainerConfig, type A2aSessionMode } from '../../container-config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
+import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { getInboundSourceSessionId, getMostRecentPeerSourceSessionId } from '../../db/session-db.js';
 import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
@@ -327,6 +328,26 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     forwardedFileCount: countForwardedFiles(forwardedContent),
     originUserId,
   });
+  // Audit the delegation hop (roadmap 5.5): the gateway layer audits backend
+  // calls, but the AgentDesk delegation boundary had no breadcrumb — a multi-hop
+  // approval chain (frontdesk → approver → finance worker) was invisible in the
+  // platform's own audit. Cross-agent edges only; self-messages are system
+  // loopbacks, not delegations. Actor is the cross-validated origin user.
+  if (targetAgentGroupId !== session.agent_group_id) {
+    recordEnterpriseAudit({
+      eventType: 'agent_delegation',
+      agentGroupId: session.agent_group_id,
+      actor: originUserId,
+      details: {
+        from: session.agent_group_id,
+        to: targetAgentGroupId,
+        sourceSessionId: session.id,
+        targetSessionId: targetSession.id,
+        a2aMsgId,
+        spawnDepth: session.spawn_depth ?? 0,
+      },
+    });
+  }
   const fresh = getSession(targetSession.id);
   if (fresh) await wakeContainer(fresh);
 }
