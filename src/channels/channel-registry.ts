@@ -26,6 +26,27 @@ export function registerChannelAdapter(name: string, registration: ChannelRegist
   registry.set(name, registration);
 }
 
+/**
+ * Remove a registered channel adapter factory by name. Used by the extension
+ * loader (ADR-0031) to back out an externally loaded adapter that self-registered
+ * on import but then failed the structural contract gate — so a non-conforming
+ * extension never reaches initChannelAdapters().setup(). No-op if absent;
+ * returns whether something was removed.
+ */
+export function unregisterChannelAdapter(name: string): boolean {
+  return registry.delete(name);
+}
+
+/**
+ * Return the registered factory for a channel name (or undefined). Used by the
+ * extension loader to instantiate a freshly self-registered adapter and run it
+ * through the contract gate BEFORE initChannelAdapters() sets it up. Unlike
+ * `__getRegisteredFactoryForTests`, this is a supported runtime accessor.
+ */
+export function getRegisteredFactory(name: string): ChannelRegistration['factory'] | undefined {
+  return registry.get(name)?.factory;
+}
+
 /** Get a live adapter by channel type. */
 export function getChannelAdapter(channelType: string): ChannelAdapter | undefined {
   return activeAdapters.get(channelType);

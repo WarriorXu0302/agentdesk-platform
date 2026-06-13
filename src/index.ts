@@ -69,6 +69,7 @@ import './modules/index.js';
 
 import type { ChannelAdapter, ChannelSetup } from './channels/adapter.js';
 import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from './channels/channel-registry.js';
+import { loadChannelExtensions } from './channels/extension-loader.js';
 
 async function main(): Promise<void> {
   log.info(`${PLATFORM_NAME} starting`);
@@ -105,6 +106,12 @@ async function main(): Promise<void> {
   surfaceOrphanedIngress();
 
   // 3. Channel adapters
+  // 3a. Fork-free channel extensions (ADR-0031) — let operator-controlled
+  //     adapters under EXTENSIONS_DIR self-register BEFORE initChannelAdapters
+  //     so they get set up identically to the in-tree cli/feishu. fail-open:
+  //     a bad extension is logged + skipped, never crashes startup. No
+  //     EXTENSIONS_DIR ⇒ no-op (backward compatible).
+  await loadChannelExtensions();
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
     return {
       onInbound(platformId, threadId, message) {

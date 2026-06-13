@@ -1,0 +1,9 @@
+{
+  "id": "echo-channel",
+  "kind": "channel",
+  "name": "Echo Channel (example)",
+  "channelType": "echo",
+  "capabilities": ["text"],
+  "minHostVersion": "^2.0.0",
+  "entry": "./index.js"
+}

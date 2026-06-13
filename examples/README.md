@@ -33,3 +33,4 @@ pnpm exec tsx scripts/configure-enterprise-gateway.ts \
 | Example | What it demonstrates |
 |---|---|
 | [`lab-frontdesk/`](lab-frontdesk/) | A self-contained frontdesk that talks to a backend gateway directly (no worker pool). Originally a lab-automation assistant; a good template for a single-desk deployment with a rich domain prompt. |
+| [`echo-channel/`](echo-channel/) | A **fork-free channel extension** (ADR-0031): a minimal in-memory channel adapter you drop into `EXTENSIONS_DIR` to add a channel without forking the repo. See also `docs/channels/writing-a-channel.md`. |
