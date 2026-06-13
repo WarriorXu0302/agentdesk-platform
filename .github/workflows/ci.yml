@@ -54,18 +54,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install host deps
+        run: pnpm install --frozen-lockfile
+
+      # Build with the DEFAULT image tag (no CONTAINER_IMAGE_BASE override) so
+      # the tag matches what src/config.ts CONTAINER_IMAGE derives — the
+      # round-trip e2e below resolves the image through that same path.
       - name: Build agent container image
         run: bash container/build.sh
-        env:
-          CONTAINER_IMAGE_BASE: ci-smoke-agent
 
       # Validate the Prometheus alert rules actually parse — a typo'd metric
       # name or bad PromQL otherwise ships silently and the production
       # Prometheus fails to load the rule (the alert never fires). Inlined
-      # promtool (mirrors the obs:rules:check npm script) so it needs only
-      # docker, not the pnpm toolchain this job doesn't set up.
+      # promtool (mirrors the obs:rules:check npm script).
       - name: Alert rule syntax (promtool)
         run: |
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability/prometheus:/work" \
             prom/prometheus:v2.54.1 check rules /work/alerts.yml
+
+      # Real-container round trip on the just-built image: host seeds a session
+      # DB + one inbound message, the mock-provider container polls it over a
+      # Docker mount and writes a reply back to the cross-mounted outbound.db.
+      # Covers the runtime seam the buildContainerArgs/buildMounts unit tests
+      # can't (does the image actually boot + does cross-mount SQLite sync work).
+      - name: Container round-trip e2e (mock provider)
+        run: pnpm exec tsx scripts/e2e-container-roundtrip.ts
