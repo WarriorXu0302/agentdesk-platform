@@ -17,6 +17,13 @@ updates:
       # Collapse low-risk minor/patch bumps into one PR to cut review noise;
       # majors still come as individual PRs so breaking changes are reviewed alone.
       minor-and-patch:
+        # Exclude @opentelemetry/* from the group: these are pre-1.0 (0.x)
+        # experimental packages where a "minor" bump (e.g. 0.55 -> 0.219) is
+        # effectively a breaking major and must NOT ride in with safe patches —
+        # it would silently churn the ADR-0026 trace pipeline. They come as
+        # individual PRs so the OTEL train upgrade is reviewed/verified on its own.
+        exclude-patterns:
+          - '@opentelemetry/*'
         update-types:
           - minor
           - patch
