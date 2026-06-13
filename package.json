@@ -26,6 +26,7 @@
     "obs:rules:check": "docker run --rm --entrypoint promtool -v \"$PWD/infra/observability/prometheus:/work\" prom/prometheus:v2.54.1 check rules /work/alerts.yml",
     "obs:runbook:check": "vitest run scripts/runbook-consistency.test.ts",
     "obs:alertmanager:check": "tsx scripts/check-alertmanager.ts",
+    "audit:export": "tsx scripts/export-audit.ts",
     "container:build": "bash container/build.sh",
     "e2e:container": "tsx scripts/e2e-container-roundtrip.ts",
     "chat": "tsx scripts/chat.ts",

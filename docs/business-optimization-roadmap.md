@@ -223,6 +223,7 @@
 - **工作量 M · 价值 高**
 
 ### 5.4 合规级审计导出 / 保留策略 / 防篡改缺失 ⭐
+> 🟡 **导出已实现**(治理审计 batch 6):`exportAuditForCompliance({since,until,tables,signingKey})`(`src/db/audit-export.ts`)按时间窗读三张审计表、确定性序列化(行按 occurred_at,id 排序 + 对象键排序)、用 `AGENTDESK_AUDIT_EXPORT_KEY` 做 HMAC-SHA256 签名(未设则产出但 UNSIGNED 并告警);CLI `pnpm audit:export [--since --until --tables --out]`;audit-export.test.ts 验窗口过滤/确定性签名/可验证/无 key 降级/子集表。保留策略(2)**已在批E实现**(`AGENTDESK_AUDIT_RETAIN_DAYS`)。SECURITY.md 审计行已更新。**未做**:(3) 审计行防 UPDATE 约束 + (4) purge>10% 告警 + audit_retention_policy 表——需 schema 迁移,单列。
 - **现状**:三张审计表(gateway/enterprise/dm)有 query 和 opt-in purge,但:(1) **无批量签名导出**;(2) **无自动保留策略**(运营者得记得手工 purge);(3) **审计行可被 UPDATE**(SQLite 默认无约束);(4) session DB 用 `journal_mode='DELETE'` 掉电不存活(`docs/db-central.md §3`)。
 - **业务影响**:高。审计员无法可靠导出防篡改格式的审批决策;保留靠人工易错;无掉电数据存活 SLA。SOC2/GDPR 真实合规缺口。
 - **建议**:加 `exportAuditForCompliance(since,until,format,tables)` 生成确定性 CSV/JSON + HMAC-SHA256 签名;建 `audit_retention_policy` 表;host-sweep 按 cron 调 purge(`AGENTDESK_AUDIT_RETENTION_DAYS`);审计 PK 加约束防静默 UPDATE;若 purge 将删 >10% 行则告警(疑似配置错误);文档化 `docs/audit/governance-export.md`。
@@ -407,7 +408,7 @@
 | **2.2 conversation_thread_id** | M | 对话质量(追踪基石) |
 | **2.3 escalation 显式模式 + hook** | M | 对话质量 |
 | **4.1 conversation.summary 落库** | M | 记忆(ADR-0033 欠账) |
-| **5.4 合规审计导出 + 保留** | M | 治理 |
+| 🟡 **5.4 合规审计导出**(✅)+ 保留(✅);防篡改约束未做 | M | 治理 |
 | 🟡 **5.3 审批过期 sweep**(✅)** + 多审批人**(未做) | M | 治理 |
 | ✅ **7.1 失控成本检测** | M | 成本(唯一核心该补的) |
 | 🟡 **4.4 记忆冲突检测**(契约+指引已做;后端示例留运营者) | M | 记忆 |
