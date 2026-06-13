@@ -4,6 +4,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { claudeUsageEvent, type ClaudeResultLike } from './claude-usage.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -320,6 +321,11 @@ export class ClaudeProvider implements AgentProvider {
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'result') {
+          // Emit the turn's aggregate LLM usage so the poll loop creates a
+          // provider.request (LLM) span under this agent.turn (ADR-0026). The
+          // SDK puts usage/modelUsage/duration on the terminal result message.
+          const usageEvent = claudeUsageEvent(message as ClaudeResultLike);
+          if (usageEvent) yield usageEvent;
           const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
           yield { type: 'result', text };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
