@@ -111,7 +111,8 @@
 - **建议**:把策略扩成结构化 `{policy, max_backlog, retention_hours}`;messages_in 加 `accumulated_at`/`was_engaged`;按 group emit backlog 大小 metric;加可选 `archive_accumulated` 动作。
 - **工作量 M · 价值 中**
 
-### 2.7 多意图/话题切换分解(留给 prompt,核心保持克制)
+### 2.7 多意图/话题切换分解(留给 prompt,核心保持克制)— ⏭️ 已三角(归 prompt/网关,核心不实现)
+- **三角结论**:确认**不在平台核心实现**。多意图分解是业务逻辑,属 frontdesk prompt / 网关;低置信澄清(`confidenceAdvisory`,2.4 已可按队伍调阈值)已部分缓解。建议本身要求"先验证是否真需平台改动 vs 更好的 prompt 工程"——故不预先在核心加 `detected_topic_changes[]`/`related_session_ids[]`,保持核心业务无关。若某客户实测确需,再起 ADR。
 - **现状**:`classify-intent.ts:81-223` 设计上强制单一 `recommendedWorker`,低置信(<0.70)时 `confidenceAdvisory` 已 nudge 向 `clarify`(L62-79)。但**无内置多意图分解、无话题切换检测、无跨会话上下文链接**(per-session 上下文是有意为之)。
 - **业务影响**:中等。多意图分解责任落在 LLM prompt 和系统设计上,低置信澄清部分缓解了痛点。
 - **建议**:这是**业务逻辑,更适合放在网关/frontdesk prompt**,核心保持业务无关。若确需:可选地让 classify_intent 接受 `detected_topic_changes[]`,sessions 表加可选 `related_session_ids[]`。但**先验证是否真需要平台改动 vs 更好的 prompt 工程**。
@@ -157,16 +158,18 @@
   - 交叉锚链到 `idempotencyKey` 段与 Execution attestation 段(6.9),锚已核对存在。
 - **工作量 M · 价值 中**
 
-### 3.6 分页 / 列表操作无协议支持(留给运营者)
+### 3.6 分页 / 列表操作无协议支持(留给运营者)— ✅ 已落地(41e1ee0,文档)
 - **现状**:契约有意 payload 无关,`/execute` 是单操作信封。后端**完全可以**定义 `sales.orders.list` 接 `{limit,offset,cursor}` 返 `{results,nextCursor,hasMore}`。`ERP-INTEGRATION-GUIDE.md` 不提分页是因为**分页是应用关注点,不是网关协议关注点**。
 - **业务影响**:运营者实现差才有风险,但平台正确地把它留给后端设计者。
 - **建议**:在 `enterprise-erp-gateway.md` 加**建议性(非规范)** "Recommended list operation patterns" 小节,示范 cursor 分页。后端自由发明自己的方案。这是**运营者侧的事**,非平台缺口。
+- **已实现**:`enterprise-erp-gateway.md` 新增 "Application-design patterns (advisory, operator-owned)" 段下 "Lists & pagination" 小节:cursor 分页请求/响应范例(`limit`+`cursor`→`results`+`nextCursor`+`hasMore`),提示页要小(每页一次往返 + 进 agent 上下文),offset/limit 仅适合小而稳数据集。明确**建议性、后端自由发明**。
 - **工作量 S · 价值 低**
 
-### 3.7 多步工作流编排(留给后端,核心不该做)
+### 3.7 多步工作流编排(留给后端,核心不该做)— ✅ 已落地(41e1ee0,文档,复用 3.5)
 - **现状**:平台不定义工作流原语,`create_order → add_line_items → set_shipping → approve` 要拆成 4 次 `/execute`。但契约**有意业务无关**:后端**完全可以**定义 `sales.order.create_complete` 内部管多步、返单一结果。若要平台强制工作流语义(重试/回滚/状态机),反而**违反业务无关约束**。
 - **业务影响**:中等。运营者设计复合操作或用外部工作流引擎——这**正确地**委托给后端,不是平台责任。
 - **建议**:在 `ERP-INTEGRATION-GUIDE.md` 加一节,指导用复合操作 + idempotencyKey + dryRun preview 在后端内部编排多步。**纯文档,核心不改**。
+- **已实现**:`enterprise-erp-gateway.md` 的 "Application-design patterns" 段新增 "Multi-step operations & workflows" 小节:点明平台无工作流引擎(不跨调用 sequence/retry/rollback),给两个后端侧模式——(1) 复合原子操作 `*.create_complete`(单事务、单 auditId),(2) agent 编排各自幂等 + dryRun + 显式补偿操作。复用 3.5 的 "Transactions, partial failure & compensation" 段(交叉锚链),并申明强加工作流语义会违反业务无关约束。
 - **工作量 L · 价值 低**
 
 ---
@@ -409,13 +412,15 @@
 - **建议**:ContainerConfig 加可选 `cache?:{enabled?, ttlMs?}`;容器侧 Claude provider 读取应用;OTEL span 暴露 hit/miss。
 - **工作量 S · 价值 中**
 
-### 7.3 全局容器并发上限,无 per-tenant 配额(留给网关)
+### 7.3 全局容器并发上限,无 per-tenant 配额(留给网关)— ⏭️ 已三角(归运营者网关,SPEC L20 超核心范围)
+- **三角结论**:确认**不在平台核心实现**。host 级 `MAX_CONCURRENT_CONTAINERS`(防 fork 炸弹)已到位且正确;per-tenant 公平配额是租户策略,按 SPEC.md L20 属运营者网关——在 `/authorize` 按"租户已有 N 个活跃 session 则拒"实现,或在平台前置速率限制器。核心引入 tenant 抽象会违反业务无关约束。
 - **现状**:`MAX_CONCURRENT_CONTAINERS=10`(`config.ts:52`)由 `shouldAdmitWake()`(`container-runner.ts:210-225`)强制——这是**host 级安全机制**(防 fork 炸弹),正确。但**无租户级配额**,一个故障用户可饿死所有人。
 - **业务影响**:host 级保护到位,但运营者无法做公平的 per-tenant 资源分配或 SLA 分层。
 - **建议**:**按 SPEC.md L20 超出核心范围**。运营者应在网关 /authorize 实现 per-tenant 并发限制(租户已有 N 个活跃 session 则拒)或在平台前加速率限制器。**留给运营者**。
 - **工作量 L · 价值 中(归运营者)**
 
-### 7.4 无 per-tenant 计费模型(留给网关)
+### 7.4 无 per-tenant 计费模型(留给网关)— ⏭️ 已三角(归运营者网关,per-group agent_provider 已够多数场景)
+- **三角结论**:确认**不在平台核心实现**。tenant 抽象/计费按 SPEC.md L20 业务无关,属运营者网关:在网关做 tenant/部门映射、按租户返不同 provider hint;单机多业务单元可用 per-group `agent_provider`(推荐拓扑)覆盖大多数需求。核心加 `tenant_config` 表会违反业务无关约束。
 - **现状**:session 带 origin_user_id、有 agent_groups,但**无 tenant 抽象、无 tenant_config 表**,无法 per-tenant 设 LLM provider 或成本预算。这**有意为之**(SPEC.md L20 业务无关)。
 - **业务影响**:单一业务模型部署正常;多业务单元需在网关做租户路由。
 - **建议**:**按设计意图超出核心范围**。运营者在网关做 tenant/部门映射、按租户返不同 provider hint,或用 per-group `agent_provider`(推荐拓扑)。**留给运营者**。

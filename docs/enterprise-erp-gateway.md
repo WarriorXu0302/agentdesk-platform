@@ -738,6 +738,56 @@ Use stable dot-separated names so agent prompts stay portable:
 - `approval.request.submit`
 - `access.user.resolve`
 
+## Application-design patterns (advisory, operator-owned)
+
+The contract is deliberately payload-agnostic: `/execute` is a single-operation
+envelope, and the platform defines **no** list/pagination or workflow
+primitives. That is by design — those are application concerns, and baking them
+into the protocol would couple the platform to a particular backend shape. The
+patterns below are **advisory**: your backend is free to invent its own. They
+exist so an operator doesn't reverse-engineer a convention from scratch.
+
+### Lists & pagination (roadmap 3.6)
+
+Define a normal read operation that takes paging params and returns a page plus
+a continuation token. Cursor-based paging is the most robust (stable under
+concurrent inserts):
+
+```json
+// request
+{ "operation": "sales.orders.list",
+  "input": { "filter": { "status": "open" }, "limit": 50, "cursor": null } }
+// response
+{ "ok": true,
+  "result": { "results": [ /* ... */ ], "nextCursor": "eyJpZCI6...", "hasMore": true } }
+```
+
+The agent pages by passing `nextCursor` back as `cursor` until `hasMore` is
+false. Keep page sizes modest — each page is one gateway round-trip and lands in
+the agent's context. Offset/limit is acceptable for small, stable datasets.
+
+### Multi-step operations & workflows (roadmap 3.7)
+
+The platform has no workflow engine — `create order → add lines → set shipping →
+approve` is four `/execute` calls, and the platform won't sequence, retry, or
+roll them back across calls for you. Two backend-side patterns, in order of
+preference:
+
+1. **Compound operation** — expose one operation (`sales.order.create_complete`)
+   that runs the whole sequence inside a single backend transaction and returns
+   one result. Atomic, one `auditId`, nothing half-applied. Prefer this whenever
+   the steps belong together.
+2. **Agent-sequenced idempotent steps** — when steps must be separate (each
+   needs its own confirmation), make each independently idempotent
+   (`idempotencyKey`) and `dryRun`-previewable, and provide explicit
+   **compensating operations** for rollback. See
+   [Transactions, partial failure & compensation](#transactions-partial-failure--compensation)
+   — the same guidance applies; this section just names the workflow case.
+
+Forcing workflow semantics (a state machine, distributed rollback) into the
+gateway contract would violate the business-agnostic constraint, so it stays in
+your backend or an external workflow engine.
+
 ## Responsibility split
 
 AgentDesk should do:
