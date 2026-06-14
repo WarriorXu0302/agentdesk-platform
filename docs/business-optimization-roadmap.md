@@ -122,7 +122,7 @@
 
 ## 主题三:后端网关契约对真实企业后端的契合度
 
-### 3.1 缺批量/bulk 操作原语 ⭐
+### 3.1 缺批量/bulk 操作原语 ⭐ — 🟡 设计锁定(ADR-0036),实现分 commit 落地中
 - **现状**:契约 `input` 是 `Record<string, unknown>`,`/execute` 只处理单操作(`gateway.ts:655-681`,`docs/ERP-INTEGRATION-GUIDE.md:104-134` 只有单操作示例)。"原子创建 50 个订单"必须拆成 50 次 `/execute`。后端虽可自定义 `bulk_create` 操作,但平台**零指引、零示例、零脚手架**。
 - **业务影响**:**高**。薪资、发票对账、库存同步等真实 ERP 流程常涉及批量。50 次独立调用倍增延迟、撑大审计日志、放大部分失败窗口。
 - **建议**:加**可选** `/bulk_execute` 指引:`POST {operations:[{operation,input,idempotencyKey}], atomic?}` → `{ok, results:[...], partial?}`。保持向后兼容(未实现返回 404 OPERATION_NOT_FOUND)。文档讲清权衡:per-operation 幂等比 per-batch 更安全。
