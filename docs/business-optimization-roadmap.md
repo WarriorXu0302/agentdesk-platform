@@ -73,7 +73,8 @@
 
 ## 主题二:分流派活与对话质量(平台核心的横切能力)
 
-### 2.1 误路由后几乎没有反馈与学习机制 ⭐
+### 2.1 误路由后几乎没有反馈与学习机制 ⭐ — ✅ 已落地(ADR-0040,与 2.5 合并设计,分 4 commit 至 882b2cb)
+- **落地**(recording-only,经 design+对抗评审 workflow):worker 经新 MCP 工具 `report_routing_feedback({kind:'misroute', reason?, suggestedTarget?})` 回报"这条该路到 X 不该到我"。host `handleRoutingFeedback`(镜像 escalate)记一行 `classification_log`(action='routing_feedback' + 新列 `feedback_kind`;worker 的未校验建议存进 `recommended_worker`、reason 存 `reasoning`、`classification_id` 回指 frontdesk 原始 classify 行)+ `enterprise_audit` `agent_routing_feedback` + `routing_feedback_total{kind,reported_by}` 指标。**混淆矩阵**("路到 X / worker 说该 Y")由 classification_log 自 join `classification_id` 得出(SQL 见 `enterprise-multi-user.md`「Routing feedback」段),比指标标签更准且无 cardinality 风险。actor 取 session.owner、kind coerce 闭合枚举、suggestedTarget **绝不解析/ACL/路由**(结构上 handler 无 send 路径,guard 测试守)。**有意未做**:运营者 Grafana 面板(SQL 已给,面板归运营者)+ frontdesk 把 misroute 自动当下次 clarify 提示(新读路径有投毒面,留作后续 ADR)。
 - **现状**:分类日志已实现(`src/modules/classification-log/index.ts`、`src/db/classification-log.ts`),`reconcileClassification`(`src/delivery.ts:1094-1146`)做了 outcome 戳记。但 `src/metrics.ts:110-122` 的 `classification_bypass_total` **只统计技术性 bypass**,没有混淆矩阵;classification_log schema 无 `outcome_feedback`/`reroute_count` 字段;没有"我们路到了 X 但其实该路到 Y"这个业务信号,也无运营者面板。
 - **业务影响**:**高**。规则失效或 prompt 漂移时运营者无信号,只能手工翻日志。多租户/大规模部署下是重大盲区。
 - **建议**:(1) classification_log 加 `outcome_feedback`(软枚举 null/correct/misrouted);(2) 容器内加 MCP 工具让 worker 标记"误路由 + 建议目标";(3) 加混淆矩阵 metric(recommended_worker × actual_outcome);(4) 面板切片"本该我处理却流走的消息"。
@@ -116,7 +117,8 @@
 - **建议**:在 agent_group 或 messaging_group_agent 加可选 `confidence_threshold` 覆盖;classify_intent 接受动态入参。核心保持业务无关(无预设规则),运营者通过 schema 配。
 - **工作量 M · 价值 中** — ✅ **已实现(见上)**
 
-### 2.5 "我改主意了" / 返工(nack)流程无正式支持
+### 2.5 "我改主意了" / 返工(nack)流程无正式支持 — ✅ 已落地(ADR-0040,与 2.1 合并设计,recording-only;reroute 部分**否决**非暂缓)
+- **落地**:同 2.1 的 `report_routing_feedback`,`kind:'nack'` = "我不接这轮"。host 记 `classification_log`(action='routing_feedback', feedback_kind='nack', outcome_ref='feedback:nack')+ `enterprise_audit` + 指标;持续 nack 速率触发 `AgentDeskWorkerNackingPersistently` 告警(配线坏/注入信号,RUNBOOK §3.12)。**关键决策**:对抗评审**否决** active-reroute(不是暂缓)——worker 触发的重投在共享 inbound.db 下身份污染会致跨用户重定向、且开双 return-path 冲突,flag 修不了(详见 ADR-0040 两条结构性不变量违规)。真正的"退回 + 重派"归后端网关(它有完整每租户授权上下文),网关 watch 这些审计行自行重路由。**有意未做**:frontdesk 把 nack 自动当下次 clarify 提示(同 2.1,新读路径有投毒面,留作后续)。
 - **现状**:a2a 支持委派,`resolveTargetSession`(`agent-route.ts:173-212`)有三层会话解析(返回路径/peer 亲和/最新活跃),但**没有 nack/reject API** 让 worker 把消息退回并请求重路由。worker 收到越界请求只能手工回复(丢失结构化路由)或让消息留在自己这里。
 - **业务影响**:中到高。多团队大规模部署下是每日摩擦点,影响 SLA 预期。
 - **建议**:加可选 nack/reject-with-reason:(1) `delivery.ts` 加 `nack_message` 系统动作(reason + 可选 suggested_target);(2) classification_log 记为独立 outcome;(3) frontdesk 把 nack 当下次尝试的澄清提示。可与 2.3 的 escalate 一起设计。
