@@ -104,6 +104,51 @@ pnpm exec tsx scripts/q.ts data/v2.db \
      WHERE event_type='agent_escalation' ORDER BY id DESC LIMIT 20"
 ```
 
+## Routing feedback: misroute / nack (ADR-0040)
+
+When a **worker** receives work that wasn't meant for it, it can tell the
+platform — either "this should have gone to a different worker" (`misroute`) or
+"I'm rejecting/can't handle this turn" (`nack`). This closes the misroute
+feedback gap (you finally get a signal when frontdesk routes wrong) and gives
+rework a structured channel, instead of the worker silently muddling through.
+
+The worker calls `report_routing_feedback` with a `kind` (`misroute|nack`), an
+optional `reason`, and an optional `suggestedTarget`. The platform **records**
+the feedback — nothing more:
+
+- a `classification_log` row with `action='routing_feedback'` and `feedback_kind`
+  (the `suggestedTarget` hint is stored verbatim in `recommended_worker`, the
+  free-text reason in `reasoning`, and `classification_id` correlates back to
+  frontdesk's original classify decision for this request);
+- an `enterprise_audit` `agent_routing_feedback` row (durable governance record,
+  full reason + host-trusted actor);
+- the `agentdesk_routing_feedback_total{kind,reported_by}` metric, so misroute /
+  nack rates per worker are visible.
+
+**What the platform does NOT do** — and why that's correct: it does **not**
+re-route the message. Active reroute was *rejected* (not deferred) in ADR-0040,
+because a worker-triggered re-injection is structurally unsafe inside the trust
+chain (agent-shared `inbound.db` identity pollution would let a prompt-injected
+worker redirect another user's message; and it spawns a conflicting second
+return-path). So `suggestedTarget` is an operator hint only — it is **never**
+resolved to a session, ACL-checked, or routed on. The worker must still reply
+normally / hand the turn back; real reroute is your **backend gateway's** job,
+which reads these records and re-dispatches with full per-tenant authority.
+
+Build the misroute "confusion matrix" (frontdesk recommended X, the worker that
+got it says Y) from `classification_log` — join a `routing_feedback` row to the
+original classify row on `classification_id`:
+
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT fb.occurred_at, orig.recommended_worker AS sent_to,
+          fb.recommended_worker AS worker_says_should_be, fb.feedback_kind, fb.reasoning
+     FROM classification_log fb
+     LEFT JOIN classification_log orig
+       ON orig.classification_id = fb.classification_id AND orig.action != 'routing_feedback'
+    WHERE fb.action='routing_feedback' ORDER BY fb.id DESC LIMIT 20"
+```
+
 ## Session modes for shared bots
 
 - `shared`: one session per chat surface. Best for 1:1 DMs where each user already has a distinct messaging group.

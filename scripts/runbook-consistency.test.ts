@@ -46,15 +46,18 @@ const RUNBOOK_COLUMN_REFERENCES: Record<string, string[]> = {
   messages_out: ['id', 'kind', 'in_reply_to', 'timestamp'],
   // §3.1 decision tree — delivery outcome is host-tracked here, not in messages_out
   delivered: ['message_out_id', 'status'],
-  // §3.3 / §7.1 — classification log
+  // §3.3 / §3.12 / §7.1 — classification log (incl. routing-feedback columns, ADR-0040)
   classification_log: [
     'occurred_at',
     'session_id',
+    'agent_group_id',
     'classification_id',
     'action',
     'recommended_worker',
+    'reasoning',
     'confidence',
     'outcome_ref',
+    'feedback_kind',
   ],
   // §3.5 / §5.2 / §7.1 / §7.2 — gateway audit
   gateway_audit: [

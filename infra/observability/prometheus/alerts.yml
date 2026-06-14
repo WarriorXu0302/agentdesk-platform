@@ -141,6 +141,28 @@ groups:
             path is stamping unverifiable identities. Both require
             investigation. See ADR-0017.
 
+      # Worker routing feedback (ADR-0040): a worker is persistently NACKing the
+      # work it receives. The platform RECORDS nacks but does NOT reroute, so a
+      # sustained per-worker nack rate means the work is being dropped unless the
+      # worker also replies — usually broken routing wiring (frontdesk keeps
+      # mis-delegating to it) or a prompt-injection probe. Threshold is a starting
+      # point; tune per deployment. Misroute feedback is benign signal, analyzed
+      # from classification_log, not alerted.
+      - alert: AgentDeskWorkerNackingPersistently
+        expr: sum by (reported_by) (rate(agentdesk_routing_feedback_total{kind="nack"}[30m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A worker is NACKing its delegated work persistently
+          description: >-
+            agentdesk_routing_feedback_total{kind="nack"} is sustained for
+            {{ $labels.reported_by }}. The platform records nacks but does NOT
+            reroute (ADR-0040) — so this work is dropped unless the worker also
+            replies. Likely broken routing wiring (frontdesk mis-delegating) or a
+            prompt-injection probe. Inspect classification_log for this
+            agent_group_id. See RUNBOOK §3.12.
+
       # Inbound silently parked: envelope persisted to the recovery ledger
       # (ADR-0022) but routeInbound threw — the user's message was accepted but
       # never reached a session. Recoverable only via scripts/replay-inbound.ts.
