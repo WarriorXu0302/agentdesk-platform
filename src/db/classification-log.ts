@@ -20,8 +20,14 @@ export interface ClassificationLogEntry {
   confidence?: number | null;
   candidates?: string[] | null;
   reasoning?: string | null;
-  action: 'delegate' | 'clarify' | 'reject' | 'answer_self';
+  action: 'delegate' | 'clarify' | 'reject' | 'answer_self' | 'escalate';
   outcomeRef?: string | null;
+  // Escalation hook (ADR-0038). Only set when action='escalate'. Both are
+  // untrusted agent-supplied metadata recorded for observability/audit — never
+  // an input to any authz/priority decision. `urgencyLevel` is coerced to a
+  // closed enum at the host boundary before it reaches here.
+  escalationReason?: string | null;
+  urgencyLevel?: string | null;
 }
 
 export function recordClassification(entry: ClassificationLogEntry, now: Date = new Date()): void {
@@ -30,8 +36,9 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
       `INSERT INTO classification_log
          (occurred_at, classification_id, session_id, agent_group_id, user_id,
           channel_type, platform_id, thread_id, user_message,
-          recommended_worker, confidence, candidates, reasoning, action, outcome_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          recommended_worker, confidence, candidates, reasoning, action, outcome_ref,
+          escalation_reason, urgency_level)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       now.toISOString(),
@@ -49,6 +56,8 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
       entry.reasoning ? entry.reasoning.slice(0, 1000) : null,
       entry.action,
       entry.outcomeRef ?? null,
+      entry.escalationReason ? entry.escalationReason.slice(0, 500) : null,
+      entry.urgencyLevel ?? null,
     );
 }
 

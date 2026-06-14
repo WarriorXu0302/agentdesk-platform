@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../db/connection.js';
 import { setRequestIdentity, clearRequestIdentity } from '../request-context.js';
-import { classifyIntent, confidenceAdvisory } from './classify-intent.js';
+import { classifyIntent, confidenceAdvisory, escalateToHuman } from './classify-intent.js';
 
 function seedWorkers(names: string[]): void {
   const stmt = getInboundDb().prepare(
@@ -182,5 +182,34 @@ describe('confidenceAdvisory', () => {
     // Default (no arg) keeps the 0.70 behavior.
     expect(confidenceAdvisory(0.69, 1)).toMatch(/ask_user_question/);
     expect(confidenceAdvisory(0.69, 1)).toContain('0.70');
+  });
+});
+
+describe('escalateToHuman tool handler (ADR-0038)', () => {
+  it('emits an orthogonal escalate system action with reason + urgency + identity', async () => {
+    setRequestIdentity({
+      userId: 'feishu:ou_alice',
+      channelType: 'feishu',
+      platformId: 'feishu:p2p:ou_alice',
+      threadId: null,
+      source: 'session',
+    });
+
+    const result = await escalateToHuman.handler({ reason: 'customer demands a manager', urgency: 'high' });
+    expect(result.isError).toBeUndefined();
+
+    const row = getOutboundDb()
+      .prepare("SELECT content FROM messages_out WHERE kind = 'system' ORDER BY seq DESC LIMIT 1")
+      .get() as { content: string };
+    const payload = JSON.parse(row.content);
+    expect(payload.action).toBe('escalate'); // NOT 'classify_intent' — orthogonal
+    expect(payload.escalation_reason).toBe('customer demands a manager');
+    expect(payload.urgency_level).toBe('high');
+    expect(payload.userId).toBe('feishu:ou_alice');
+  });
+
+  it('requires a non-empty reason', async () => {
+    const result = await escalateToHuman.handler({ urgency: 'low' });
+    expect(result.isError).toBe(true);
   });
 });

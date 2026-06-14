@@ -255,6 +255,20 @@ export const approvalEventsTotal = new client.Counter({
   registers: [registry],
 });
 
+export const escalationTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_escalation_total`,
+  help: 'Explicit AI→human escalations (ADR-0038, roadmap 2.3) — makes handoff rate / SLA visible vs. plain a2a delegation',
+  // `reason`: bucketed escalation reason (free text is bucketed at the host
+  //   boundary to bound cardinality; agent reason text lives in the audit row).
+  // `urgency`: closed enum low|medium|high|critical|unknown (coerced host-side).
+  // `outcome`: recorded (core records the intent; the operator gateway owns the
+  //   actual routing/SLA and may report richer outcomes out-of-band).
+  // Pairs with the enterprise_audit `agent_escalation` rows. Advisory only —
+  // urgency NEVER drives core routing/priority (that is the gateway's job).
+  labelNames: ['reason', 'urgency', 'outcome'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',

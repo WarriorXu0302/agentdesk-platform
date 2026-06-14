@@ -67,6 +67,43 @@ session-level gate is admission control, not a substitute for per-action authz.
 > deliberately not the default, because per-action gateway authz already covers
 > the security-critical case.
 
+## Escalation to a human (ADR-0038)
+
+In a mixed AI/human deployment the frontdesk sometimes needs to hand a request
+*out* of the AI flow to a person. That is distinct from delegating to another
+worker agent, and the platform makes it **explicit and observable** rather than
+letting it look like any other a2a message.
+
+The agent calls the `escalate_to_human` tool with a `reason` and an `urgency`
+(`low|medium|high|critical`). The platform then **records** the escalation —
+nothing more:
+
+- a `classification_log` row with `action='escalate'` (+ `escalation_reason`,
+  `urgency_level`);
+- an `enterprise_audit` `agent_escalation` row (the durable governance record,
+  carrying the full reason + the host-trusted actor);
+- the `agentdesk_escalation_total{reason,urgency,outcome}` metric, so handoff
+  rate and urgency mix are visible (vs. being invisible inside plain a2a).
+
+**What the platform does NOT do** — and why that's correct: it does not route
+the escalation to a specific person, apply queue priority, or run SLA timers.
+Those are business policy and belong to **your backend gateway**, which reads
+the audit row and decides. Critically, `urgency_level` is agent-supplied and
+therefore *untrusted* — it is recorded for observability only and **never**
+drives any core routing or priority decision (a prompt-injected agent must not
+be able to jump a human queue by claiming `urgency='critical'`). The actor on
+the audit row is the host-established session owner, not an agent-claimed id.
+
+To wire the human side, have your gateway/tooling watch for `agent_escalation`
+audit rows (or `action='escalate'` in `classification_log`) and route/page/
+ticket accordingly:
+
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT occurred_at, actor, details FROM enterprise_audit
+     WHERE event_type='agent_escalation' ORDER BY id DESC LIMIT 20"
+```
+
 ## Session modes for shared bots
 
 - `shared`: one session per chat surface. Best for 1:1 DMs where each user already has a distinct messaging group.

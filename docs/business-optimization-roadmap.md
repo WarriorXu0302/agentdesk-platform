@@ -86,10 +86,19 @@
 - **建议**:给 classification_log、messages_in、messages_out 加 `conversation_thread_id`,在 frontdesk classify 时生成,通过 request-context 贯穿所有下游 a2a 跳。这是核心需要的列;之上的"对话时间线"视图可做成下游可观测性模块。
 - **工作量 M · 价值 高**
 
-### 2.3 "Escalation / 转人工"无显式模式和 SLA 保证 ⭐ — 🟡 设计锁定(ADR-0038,经对抗评审),实现分 commit 落地中
+### 2.3 "Escalation / 转人工"无显式模式和 SLA 保证 ⭐ — ✅ 已落地(ADR-0038 + 86ab9ef)
 - **现状**:a2a 路由(`src/modules/agent-to-agent/agent-route.ts`)把所有转交一视同仁,无论是 worker→worker 还是 AI→人。无 `escalation_reason`/`urgency_level`/优先队列概念,`src/metrics.ts` 无 `escalation_total`,无 escalations 审计表。AI 转人工只能复用普通 a2a `send_message`。
 - **业务影响**:**高**。混合 AI/人部署中,升级被当普通转交,易违反 SLA;无升级成功率/响应时间可见性。
 - **建议**:加 `escalate` 动作(与 delegate/clarify 并列)+ `escalation_reason`/`urgency_level`;建 escalations 审计表;emit `escalation_total{reason,urgency,outcome}`。队列优先级属业务逻辑(归网关),但核心应提供 hook:classification_log 的 escalation_reason 字段、a2a 元数据里的 urgency。
+- **已实现**(按 ADR-0038,经 design+对抗评审 workflow;采**正交 system action** 而非扩 classify_intent 枚举,**否决** urgency 驱动核心优先级的平行授权路径):
+  - 容器:新增 `escalate_to_human` MCP 工具(`classify-intent.ts`),发**正交** `action='escalate'` system 行携带 reason + urgency(非 classify_intent 动作值)。
+  - host:`classification-log` 模块加 `handleEscalate`(registerDeliveryAction('escalate'))——按 session.owner_user_id 取可信 actor(同 classify_intent;非跨会话 hop 故无需 origin 交叉校验),`urgency` coerce 到闭合枚举、`reason` bucket 后才作指标 label;写 `classification_log`(action='escalate' + reason/urgency)+ `enterprise_audit` `agent_escalation` + `escalation_total{reason,urgency,outcome}`。**reason/urgency 不可信,只记录,绝不入 authz/路由/优先级**。
+  - 迁移 030:`classification_log` 加可加 nullable 列 `escalation_reason`/`urgency_level`(additive,无 CHECK);**不建新表**(复用 enterprise_audit,per ADR)。
+  - 指标:`escalationTotal`(仿 approvalEventsTotal);consistency 测试为"引用必存在"方向,故无需配 alert(升级率是运营者可调 KPI 非 fail-closed,故不发告警)。
+  - 文档:`enterprise-multi-user.md` 新增 "Escalation to a human" 段(记录什么、路由/优先级归网关、urgency 不可信、查询示例)。
+  - 测试:host `classification-log/index.test.ts`(3 例:记录+审计+信任 session owner、urgency coerce、metric 自增——**本地 vitest 实跑绿**)+ 容器 `classify-intent.test.ts`(2 例:正交 escalate 发射 + reason 必填)。
+  - **有意未做(归网关)**:路由到具体人、队列优先级、SLA 计时、超时再升级——运营者读 `agent_escalation` 审计行/`classification_log` 自行路由。
+  - 验证:host tsc + container tsc 绿、host 全套 **740** passed(含 escalate handler + 迁移 030 实跑)、lint/format 净。
 - **工作量 M · 价值 高**
 
 ### 2.4 置信度阈值硬编码 0.70,无法按队伍/场景调

@@ -249,4 +249,65 @@ export const classifyIntent: McpToolDefinition = {
   },
 };
 
-registerTools([classifyIntent]);
+/**
+ * escalate_to_human (ADR-0038, roadmap 2.3) — a SEPARATE decision from
+ * classify_intent. classify_intent picks a worker; this hands the request OUT of
+ * the AI flow to a person. Emits an orthogonal `escalate` system action (never a
+ * classify_intent action value) carrying reason + urgency. The host records it
+ * (classification_log + enterprise_audit + escalation_total); the operator's
+ * backend owns the actual routing/priority — so the agent must still tell the
+ * user it is handing off.
+ */
+export const escalateToHuman: McpToolDefinition = {
+  tool: {
+    name: 'escalate_to_human',
+    description:
+      'Hand the current request OFF to a human when you cannot safely or competently handle it — distinct from delegating to another worker agent. ' +
+      'Records an explicit, audited escalation (reason + urgency) so operators can track handoff rate and SLA. ' +
+      'The platform records the intent; your operator’s backend decides who receives it and how urgent items are prioritized — so still tell the user you are bringing in a person. ' +
+      'Identity is taken from the active session by the runtime.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Why this needs a human — short and specific. Use your team’s reason vocabulary if one is defined.',
+        },
+        urgency: {
+          type: 'string',
+          enum: ['low', 'medium', 'high', 'critical'],
+          description: 'How time-sensitive the handoff is. Default: medium.',
+        },
+      },
+      required: ['reason'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+    if (!reason) return err('reason is required to escalate');
+    const urgency = typeof args.urgency === 'string' ? args.urgency : 'medium';
+    const identity = getRequestIdentity();
+
+    writeMessageOut({
+      id: generateId(),
+      kind: 'system',
+      content: JSON.stringify({
+        action: 'escalate',
+        userId: identity?.userId ?? null,
+        channelType: identity?.channelType ?? null,
+        platformId: identity?.platformId ?? null,
+        threadId: identity?.threadId ?? null,
+        escalation_reason: reason.slice(0, 500),
+        urgency_level: urgency,
+      }),
+    });
+
+    log(`escalate_to_human: urgency=${urgency} reason="${reason.slice(0, 60)}"`);
+    return ok(
+      `Escalation recorded (urgency: ${urgency}). A person will be brought in per your operator’s routing — let the user know you’re handing off to a human.`,
+    );
+  },
+};
+
+registerTools([classifyIntent, escalateToHuman]);
