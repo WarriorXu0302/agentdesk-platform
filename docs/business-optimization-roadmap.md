@@ -250,7 +250,8 @@
 - **已实现**(纯文档,符合"主要运营者文档"):`enterprise-erp-gateway.md` 的 durable-memory 段新增 "Subject scoping & isolation (the backend's job)" 小节。点明 `subject.type/id` 是 free-form、平台**不校验/不强制**——隔离全是网关责任,误 scope(team 写成 user)无平台告警。给推荐词汇表(org/department/team/contract/user,宽→窄 + id 示例 + 谁可读)+ 网关必须在每次 get/upsert/search 强制的 4 条隔离规则(按 (namespace,subject) 过滤;按 subject scope 授权而非仅认证、拒 agent-asserted 跨主体读;写不自动扩范围;按事实选最小 type)。指出可选在 `/describe` 暴露 scope 策略(平台已支持 namespace catalog 的 scope/writeable,4.2/4.3)。grounded:free-form subject、requesterSource 信任、ADR-0033 召回隔离均已核对。
 - **工作量 M · 价值 中**
 
-### 4.6 知识反馈闭环 / 运营者策展缺失
+### 4.6 知识反馈闭环 / 运营者策展缺失 — ✅ 已落地(ADR-0043,gateway endpoint,分 2 commit 至 9bf94c3)
+- **落地**(经 design+对抗评审 workflow,**驳回**字面建议的 host 表):新增第 7 个网关工具 `gateway_memory_feedback` + `POST /memory/feedback`,让 agent/运营者用 get/search 拿到的 `recordId` 标记某记录 inaccurate/stale/irrelevant/duplicate/needs-correction/other(闭合枚举,未知硬拒)+ 可选 note。**recording-only**:平台只转发、绝不改记录或 authz;**后端拥有反馈语料**(对抗评审驳回 host `knowledge_feedback` 表——会成平行记忆路径,违反"记忆只走网关")。host 侧唯一持久化是既有 `gateway_audit` 调用行(note 不入 input_hash)。沿 ADR-0028 硬化 + ADR-0033 模式;404 优雅降级;`/memory/feedback` 入签名代理 WRITE_PATHS(与工具同 commit)。reference-gateway 实现 + conformance(9 端点全通过含 /memory/feedback)+ instructions/erp-gateway 文档。**有意不加** `correction` 字段(更正走正常 upsert,不开绕过守卫的隐式写路径)。
 - **现状**:`gateway_audit`(`src/db/gateway-audit.ts`)只读记录"谁访问了什么 memory",**无反向通道**让 agent/运营者上报某记录不准/过期/需更正。审计记消费,无质量反馈。
 - **业务影响**:中到高。长寿知识库数据质量随时间退化,坏知识无法回溯标记/更正,运营者失去"哪些记录在惹麻烦"的可见性。
 - **建议**:设计可选 `/memory/feedback`(future ADR):agent 上报不准(recordId/issue/sessionId);加 `knowledge_feedback` 表聚合;运营者据高反馈记录排查更正。**当前版本可暂缓**。
