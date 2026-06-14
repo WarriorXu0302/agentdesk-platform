@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../db/connection.js';
+import { clearCurrentClassificationId, setCurrentClassificationId } from '../current-batch.js';
 import { setRequestIdentity, clearRequestIdentity } from '../request-context.js';
-import { classifyIntent, confidenceAdvisory, escalateToHuman } from './classify-intent.js';
+import { classifyIntent, confidenceAdvisory, escalateToHuman, reportRoutingFeedback } from './classify-intent.js';
 
 function seedWorkers(names: string[]): void {
   const stmt = getInboundDb().prepare(
@@ -211,5 +212,56 @@ describe('escalateToHuman tool handler (ADR-0038)', () => {
   it('requires a non-empty reason', async () => {
     const result = await escalateToHuman.handler({ urgency: 'low' });
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('reportRoutingFeedback tool handler (ADR-0040)', () => {
+  afterEach(() => {
+    clearCurrentClassificationId();
+  });
+
+  it('emits an orthogonal routing_feedback system action with kind + reason + suggested_target + identity', async () => {
+    setRequestIdentity({
+      userId: 'feishu:ou_alice',
+      channelType: 'feishu',
+      platformId: 'feishu:p2p:ou_alice',
+      threadId: null,
+      source: 'session',
+    });
+
+    const result = await reportRoutingFeedback.handler({
+      kind: 'misroute',
+      reason: 'this is an HR question, not finance',
+      suggestedTarget: 'hr-worker',
+    });
+    expect(result.isError).toBeUndefined();
+    // The advisory must tell the worker the platform will NOT reroute.
+    expect(result.content[0]?.text?.toLowerCase()).toContain('not reroute');
+
+    const row = getOutboundDb()
+      .prepare("SELECT content FROM messages_out WHERE kind = 'system' ORDER BY seq DESC LIMIT 1")
+      .get() as { content: string };
+    const payload = JSON.parse(row.content);
+    expect(payload.action).toBe('routing_feedback'); // NOT classify_intent / escalate
+    expect(payload.feedback_kind).toBe('misroute');
+    expect(payload.feedback_reason).toBe('this is an HR question, not finance');
+    expect(payload.suggested_target).toBe('hr-worker');
+    expect(payload.userId).toBe('feishu:ou_alice');
+  });
+
+  it('attaches the current classificationId so the host can correlate to the original classify row', async () => {
+    setCurrentClassificationId('cls-orig-42');
+    await reportRoutingFeedback.handler({ kind: 'nack', reason: 'cannot complete' });
+    const row = getOutboundDb()
+      .prepare("SELECT content FROM messages_out WHERE kind = 'system' ORDER BY seq DESC LIMIT 1")
+      .get() as { content: string };
+    const payload = JSON.parse(row.content);
+    expect(payload.feedback_kind).toBe('nack');
+    expect(payload.classificationId).toBe('cls-orig-42');
+  });
+
+  it('rejects a kind outside {misroute,nack}', async () => {
+    expect((await reportRoutingFeedback.handler({ kind: 'reroute' })).isError).toBe(true);
+    expect((await reportRoutingFeedback.handler({})).isError).toBe(true);
   });
 });

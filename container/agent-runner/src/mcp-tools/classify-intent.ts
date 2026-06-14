@@ -18,7 +18,7 @@
  * delivery-action handler that persists these into classification_log.
  */
 import { getConfig } from '../config.js';
-import { setCurrentClassificationId } from '../current-batch.js';
+import { getCurrentClassificationId, setCurrentClassificationId } from '../current-batch.js';
 import { findByName } from '../destinations.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getRequestIdentity } from '../request-context.js';
@@ -158,8 +158,7 @@ export const classifyIntent: McpToolDefinition = {
     const recommendedWorker =
       typeof args.recommendedWorker === 'string' && args.recommendedWorker.length > 0 ? args.recommendedWorker : null;
     const confidenceRaw = args.confidence;
-    const confidence =
-      typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : Number.NaN;
+    const confidence = typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw) ? confidenceRaw : Number.NaN;
     const candidatesRaw = args.candidates;
     const candidates = Array.isArray(candidatesRaw)
       ? candidatesRaw.filter((c): c is string => typeof c === 'string' && c.length > 0)
@@ -198,9 +197,7 @@ export const classifyIntent: McpToolDefinition = {
     // workers" can't be fooled by the LLM listing recommendedWorker both
     // as top pick and in the candidates array. This also tightens the
     // confidenceAdvisory() branch that triggers on > 1 candidates.
-    const distinctCandidates = Array.from(
-      new Set([...(recommendedWorker ? [recommendedWorker] : []), ...candidates]),
-    );
+    const distinctCandidates = Array.from(new Set([...(recommendedWorker ? [recommendedWorker] : []), ...candidates]));
 
     writeMessageOut({
       id: generateId(),
@@ -271,7 +268,8 @@ export const escalateToHuman: McpToolDefinition = {
       properties: {
         reason: {
           type: 'string',
-          description: 'Why this needs a human — short and specific. Use your team’s reason vocabulary if one is defined.',
+          description:
+            'Why this needs a human — short and specific. Use your team’s reason vocabulary if one is defined.',
         },
         urgency: {
           type: 'string',
@@ -310,4 +308,81 @@ export const escalateToHuman: McpToolDefinition = {
   },
 };
 
-registerTools([classifyIntent, escalateToHuman]);
+/**
+ * report_routing_feedback (ADR-0040, roadmap 2.1 misroute + 2.5 nack) — a worker
+ * tells the platform "this should have gone elsewhere" (misroute) or "I'm
+ * rejecting this turn" (nack). It is a RECORDING signal, not a routing primitive:
+ * the host logs it (classification_log + enterprise_audit + a metric) for
+ * operator dashboards and routing tuning, and does NOT re-send the message
+ * anywhere — active reroute was rejected in ADR-0040 (it belongs in the operator
+ * gateway). So the worker must STILL reply normally / hand the turn back.
+ *
+ * Emits an orthogonal `routing_feedback` system action (never a classify_intent /
+ * escalate value). It attaches the current classificationId (the host runtime
+ * carries it across the a2a hop) so operators can join this feedback back to
+ * frontdesk's original routing decision.
+ */
+export const reportRoutingFeedback: McpToolDefinition = {
+  tool: {
+    name: 'report_routing_feedback',
+    description:
+      'Flag that the request you just received was MISROUTED (should have gone to a different worker) or that you are NACKing it (cannot/should not handle it this turn). ' +
+      'This RECORDS a signal for operators and future routing tuning — it does NOT re-send your message anywhere. ' +
+      'So if you cannot handle the request, you must STILL reply normally (e.g. tell the user/frontdesk, or hand back) — do not assume the platform reroutes it. ' +
+      'Identity is taken from the active session by the runtime.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['misroute', 'nack'],
+          description:
+            "'misroute' = this should have gone to a different worker; 'nack' = I am rejecting/cannot handle this turn.",
+        },
+        reason: {
+          type: 'string',
+          description: 'Why — short and specific. Recorded for operators; never used to route.',
+        },
+        suggestedTarget: {
+          type: 'string',
+          description:
+            'Optional: the worker you think this should have gone to. A HINT for operators only — the platform does NOT resolve or route to it.',
+        },
+      },
+      required: ['kind'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    const kind = typeof args.kind === 'string' ? args.kind : '';
+    if (kind !== 'misroute' && kind !== 'nack') return err("kind must be 'misroute' or 'nack'");
+    const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+    const suggestedTarget = typeof args.suggestedTarget === 'string' ? args.suggestedTarget.trim() : '';
+    const identity = getRequestIdentity();
+
+    writeMessageOut({
+      id: generateId(),
+      kind: 'system',
+      content: JSON.stringify({
+        action: 'routing_feedback',
+        feedback_kind: kind,
+        userId: identity?.userId ?? null,
+        channelType: identity?.channelType ?? null,
+        platformId: identity?.platformId ?? null,
+        threadId: identity?.threadId ?? null,
+        // Correlate back to frontdesk's original classify decision for this work
+        // (host runtime carries the id across the a2a hop). Recording-only hint.
+        classificationId: getCurrentClassificationId(),
+        feedback_reason: reason ? reason.slice(0, 500) : null,
+        suggested_target: suggestedTarget ? suggestedTarget.slice(0, 120) : null,
+      }),
+    });
+
+    log(`report_routing_feedback: kind=${kind} suggested="${suggestedTarget.slice(0, 40)}"`);
+    return ok(
+      `Routing feedback recorded (${kind}). The platform will NOT reroute this — still reply to the user or hand the turn back so the request isn't dropped.`,
+    );
+  },
+};
+
+registerTools([classifyIntent, escalateToHuman, reportRoutingFeedback]);
