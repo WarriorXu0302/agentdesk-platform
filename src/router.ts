@@ -128,16 +128,21 @@ export function setSenderScopeGate(fn: SenderScopeGateFn): void {
 
 /**
  * Message-interceptor hook. Runs at the very top of routeInbound, before
- * messaging-group resolution. When the interceptor returns true the message
+ * messaging-group resolution. When an interceptor returns true the message
  * is consumed and routing stops. Used by the permissions module to capture
- * free-text replies during multi-step approval flows (e.g. agent naming).
+ * free-text replies during multi-step approval flows (e.g. agent naming) and
+ * by the interactive module for the out-of-band cancel command (ADR-0042).
  */
 export type MessageInterceptorFn = (event: InboundEvent) => Promise<boolean>;
 
-let messageInterceptor: MessageInterceptorFn | null = null;
+// Chained: interceptors run in registration order and the FIRST to return true
+// consumes the message. This was a single slot, but more than one module needs
+// a pre-route hook (permissions free-text capture + interactive cancel), and a
+// single slot silently clobbered whichever registered last.
+const messageInterceptors: MessageInterceptorFn[] = [];
 
 export function setMessageInterceptor(fn: MessageInterceptorFn): void {
-  messageInterceptor = fn;
+  messageInterceptors.push(fn);
 }
 
 /**
@@ -273,9 +278,11 @@ export async function routeInbound(event: InboundEvent, opts?: { persistIngress?
 }
 
 async function routeInboundInner(event: InboundEvent): Promise<void> {
-  // Pre-route interceptor — lets modules consume messages before any routing
-  // (e.g. free-text replies during multi-step approval flows).
-  if (messageInterceptor && (await messageInterceptor(event))) return;
+  // Pre-route interceptors — let modules consume messages before any routing
+  // (free-text approval replies, out-of-band cancel). First to claim it wins.
+  for (const interceptor of messageInterceptors) {
+    if (await interceptor(event)) return;
+  }
 
   // 0. Apply the adapter's thread policy. Non-threaded adapters (Telegram,
   //    WhatsApp, iMessage, email) collapse threads to the channel.
