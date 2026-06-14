@@ -22,7 +22,7 @@ import crypto from 'node:crypto';
 import { SIGNING_NONCE_HEADER, SIGNING_SIGNATURE_HEADER, SIGNING_TIMESTAMP_HEADER } from '../branding.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getConfig, type BackendGatewayConfig, type RunnerConfig } from '../config.js';
-import { getRequestIdentity } from '../request-context.js';
+import { getRequestIdentity, type RequestIdentity } from '../request-context.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -862,6 +862,64 @@ export async function handleGatewayMemoryUpsert(
   if (!result.ok) return gatewayErr(result);
   log(`gateway_memory_upsert: ${namespace} for ${subject.subject.type}:${subject.subject.id} (${requesterSource})`);
   return ok(result.text);
+}
+
+/**
+ * Flush a context-compaction summary to durable memory (roadmap 4.1, ADR-0041 —
+ * closes the deferral in ADR-0033). Called fire-and-forget by the poll-loop when
+ * a provider surfaces a compaction summary, so the agent can later recall what
+ * was compacted away (`gateway_memory_search` over conversation.summary).
+ *
+ * Detached + best-effort: NEVER throws, NEVER blocks the turn. Distinct from the
+ * MCP tool path in two deliberate ways:
+ *
+ *   1. Identity is SNAPSHOTTED by the caller and passed in — we do NOT call
+ *      getRequestIdentity() / resolveRequester() here. This runs detached, and
+ *      the poll-loop's per-turn `finally` may have already cleared the request
+ *      identity by the time our async body executes. The caller captures the
+ *      identity object synchronously in the compacted handler and hands it over.
+ *   2. The summary is nested under `value.autoSummary` (not a flat value) so a
+ *      merge:true upsert can't clobber agent-written facts in the same namespace.
+ *
+ * No-op unless memoryMode==='gateway' and we have a user subject. Rides the
+ * EXISTING /memory/upsert WRITE_PATH (host signing proxy, ADR-0034) via
+ * callGateway — no new memory path, no host change. Graceful degradation: a
+ * backend without /memory/upsert (404) or a missing gateway is logged, not thrown.
+ */
+export async function flushCompactionSummary(
+  summary: string,
+  identity: RequestIdentity | null,
+  config: RunnerConfig,
+): Promise<void> {
+  if (config.memoryMode !== 'gateway') return;
+  const userId = identity?.userId ?? null;
+  if (!userId) return; // no subject to attribute the summary to — skip silently
+  const trimmed = summary.trim();
+  if (!trimmed) return;
+
+  const requester: RequesterContext = {};
+  if (identity?.channelType) requester.channelType = identity.channelType;
+  if (identity?.platformId) requester.platformId = identity.platformId;
+  requester.userId = userId;
+  requester.threadId = identity?.threadId ?? null;
+  const requesterSource: RequesterSource = identity?.source ?? 'agent-asserted';
+
+  const runtime = toolRuntimeConfigFromRunner(config);
+  const result = await callGateway(runtime, '/memory/upsert', {
+    agent: agentBlock(runtime),
+    requester,
+    requesterSource,
+    namespace: 'conversation.summary',
+    subject: { type: 'user', id: userId },
+    value: { autoSummary: trimmed },
+    merge: true,
+    context: { source: 'compaction' },
+  });
+  if (!result.ok) {
+    log(`conversation.summary flush skipped (${result.code}): ${result.message}`);
+    return;
+  }
+  log(`conversation.summary flushed for user:${userId}`);
 }
 
 export const erpDescribe: McpToolDefinition = {

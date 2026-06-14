@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import type { BackendGatewayConfig } from '../config.js';
+import type { BackendGatewayConfig, RunnerConfig } from '../config.js';
 import { closeSessionDb, getOutboundDb, initTestSessionDb } from '../db/connection.js';
 import {
   clearRequestIdentity,
@@ -25,6 +25,7 @@ import {
   handleGatewayMemorySearch,
   handleGatewayMemoryUpsert,
   handleGatewayTaskStatus,
+  flushCompactionSummary,
 } from './gateway.js';
 import {
   CONTRACT_VERSION,
@@ -1009,5 +1010,88 @@ describe('memory search: optional conflict metadata (roadmap 4.4)', () => {
 
   it('stays backward-compatible: results without conflict fields are valid', () => {
     expect(memorySearchResponseSchema.safeParse({ ok: true, results: [{ value: 1 }] }).success).toBe(true);
+  });
+});
+
+describe('flushCompactionSummary (roadmap 4.1, ADR-0041)', () => {
+  function gatewayConfig(memoryMode: 'gateway' | 'workspace' = 'gateway'): RunnerConfig {
+    return {
+      assistantName: 'Frontdesk',
+      groupName: 'AgentDesk Frontdesk',
+      agentGroupId: 'ag-frontdesk',
+      backendGateway: { baseUrl: 'https://erp-gateway.example' },
+      memoryMode,
+    } as unknown as RunnerConfig;
+  }
+
+  it('upserts conversation.summary under value.autoSummary for the captured user', async () => {
+    let path: string | undefined;
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      path = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    await flushCompactionSummary('user asked about Q3 budget; decided to defer', sessionIdentity(), gatewayConfig());
+
+    expect(path).toContain('/memory/upsert');
+    expect(body).toMatchObject({
+      namespace: 'conversation.summary',
+      subject: { type: 'user', id: 'feishu:ou_123' },
+      value: { autoSummary: 'user asked about Q3 budget; decided to defer' },
+      merge: true,
+      requesterSource: 'session',
+      requester: { userId: 'feishu:ou_123' },
+    });
+  });
+
+  it('is a no-op when memoryMode is not gateway', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    await flushCompactionSummary('x', sessionIdentity(), gatewayConfig('workspace'));
+    expect(called).toBe(false);
+  });
+
+  it('is a no-op when there is no user subject', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    await flushCompactionSummary('x', sessionIdentity({ userId: null }), gatewayConfig());
+    expect(called).toBe(false);
+  });
+
+  it('is a no-op for an empty/whitespace summary', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    await flushCompactionSummary('   ', sessionIdentity(), gatewayConfig());
+    expect(called).toBe(false);
+  });
+
+  it('never throws when the backend rejects (404 -> graceful no-op)', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+    // Must resolve, not reject — the poll-loop fires this fire-and-forget.
+    await flushCompactionSummary('something', sessionIdentity(), gatewayConfig());
+  });
+
+  it('uses the CAPTURED identity snapshot, not the live per-turn identity', async () => {
+    // Simulate the poll-loop having already cleared the per-turn identity by the
+    // time the detached flush runs: the snapshot passed in must still win.
+    clearRequestIdentity();
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    await flushCompactionSummary('snap', sessionIdentity({ userId: 'feishu:ou_snap' }), gatewayConfig());
+    expect((body as { subject?: { id?: string } })?.subject?.id).toBe('feishu:ou_snap');
   });
 });

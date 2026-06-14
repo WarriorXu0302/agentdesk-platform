@@ -109,8 +109,15 @@ export type ProviderEvent =
    * the live query so the agent doesn't drop `<message to="…">` wrapping
    * after compaction. Distinct from `result` so it doesn't mark the turn
    * completed or get dispatched as a chat message. See qwibitai/nanoclaw#2325.
+   *
+   * `summary` (optional): the actual compaction summary text, when the provider
+   * can surface it (ADR-0041, roadmap 4.1). The poll-loop fire-and-forgets it to
+   * durable gateway memory (conversation.summary) so the agent can recall what
+   * was compacted away. `text` stays the human-readable status line. Providers
+   * that can't expose a summary (e.g. Claude's SDK exposes only token counts)
+   * omit it and the flush is a no-op — no fabricated summary is ever written.
    */
-  | { type: 'compacted'; text: string }
+  | { type: 'compacted'; text: string; summary?: string }
   /**
    * Per-LLM-call usage report. Emitted after each successful API call so the
    * poll-loop can record cost/latency to outbound.db (kind='llm-usage') and

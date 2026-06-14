@@ -335,6 +335,10 @@ export class ClaudeProvider implements AgentProvider {
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
           const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
           const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
+          // No `summary` field: the Claude Agent SDK compacts internally and
+          // exposes only pre_tokens, not the summary text — so the poll-loop's
+          // conversation.summary flush (ADR-0041) is a no-op for Claude. We do
+          // NOT fabricate a summary or spend an extra model call to make one.
           yield { type: 'compacted', text: `Context compacted${detail}.` };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
           const tn = message as { summary?: string };

@@ -992,7 +992,7 @@ export class OpenAIProvider implements AgentProvider {
             // done. Ordering here keeps that contract: query alive, turn not
             // yet completed.
             if (turn.compacted) {
-              yield { type: 'compacted', text: turn.compacted.text };
+              yield { type: 'compacted', text: turn.compacted.text, summary: turn.compacted.summary };
             }
             for (const progress of turn.progressMessages) {
               yield { type: 'progress', message: progress };
@@ -1081,7 +1081,7 @@ export class OpenAIProvider implements AgentProvider {
     continuation: string;
     text: string | null;
     progressMessages: string[];
-    compacted?: { text: string };
+    compacted?: { text: string; summary?: string };
     usages: UsageRecord[];
   }> {
     if (!this.apiKey && !this.credentialViaProxy) {
@@ -1102,7 +1102,7 @@ export class OpenAIProvider implements AgentProvider {
     // reach the compaction size check below so the old window can be
     // summarized rather than sliced away.
     let transcript = appendTranscript(restored.transcript, [userMessageInput(params.prompt)]);
-    let compacted: { text: string } | undefined;
+    let compacted: { text: string; summary?: string } | undefined;
 
     // Summary-based context compaction. Evaluate the transcript size after the
     // new prompt is appended but before the first API call. If we're over the
@@ -1113,7 +1113,10 @@ export class OpenAIProvider implements AgentProvider {
       const result = await this.runCompaction(transcript, params.instructions, usages, params.signal);
       if (result) {
         transcript = result.transcript;
-        compacted = { text: `Context compacted (${preCompactSize}→${result.postChars} chars)` };
+        compacted = {
+          text: `Context compacted (${preCompactSize}→${result.postChars} chars)`,
+          summary: result.summary,
+        };
         // Local compaction forks history from whatever the server stored under
         // previous_response_id: continuing to send it would re-inject the full
         // pre-compaction context server-side. Force stateless full replay.
@@ -1284,7 +1287,7 @@ export class OpenAIProvider implements AgentProvider {
     instructions: string | undefined,
     usages: UsageRecord[],
     signal: AbortSignal,
-  ): Promise<{ transcript: JsonObject[]; postChars: number } | undefined> {
+  ): Promise<{ transcript: JsonObject[]; postChars: number; summary: string } | undefined> {
     const boundary = computeCompactionBoundary(transcript, KEEP_RECENT_ITEMS, KEEP_RECENT_CHARS);
     if (boundary <= 0) {
       // Nothing safely separable (e.g. the whole transcript is one tool run).
@@ -1310,7 +1313,9 @@ export class OpenAIProvider implements AgentProvider {
       if (totalTranscriptChars(next) > MAX_REPLAY_TRANSCRIPT_CHARS) {
         next = trimTranscript(next);
       }
-      return { transcript: next, postChars: totalTranscriptChars(next) };
+      // Surface the summary so the poll-loop can flush it to durable memory
+      // (ADR-0041). Free of extra cost — it's the text compaction already spent.
+      return { transcript: next, postChars: totalTranscriptChars(next), summary };
     } catch (err) {
       if (signal.aborted) throw err;
       log(`Context compaction failed; falling back to hard trim: ${err instanceof Error ? err.message : String(err)}`);

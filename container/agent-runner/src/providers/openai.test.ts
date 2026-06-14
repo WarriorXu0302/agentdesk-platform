@@ -480,6 +480,10 @@ describe('OpenAIProvider', () => {
 
     const compacted = events[compactedIdx];
     expect(compacted.type === 'compacted' && compacted.text).toContain('Context compacted');
+    // The compaction summary rides the event so the poll-loop can flush it to
+    // durable memory (ADR-0041). It's the same text compaction already spent —
+    // no extra model call.
+    expect(compacted.type === 'compacted' && compacted.summary).toBe('SUMMARY OF OLD WINDOW');
 
     const result = events.find((e) => e.type === 'result');
     expect(result).toEqual({ type: 'result', text: 'after compaction' });
