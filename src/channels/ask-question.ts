@@ -7,6 +7,17 @@
  * and rendering.
  */
 
+/**
+ * Sentinel `selectedOption` value used when a pending question is resolved by an
+ * out-of-band cancel (ADR-0042, roadmap 6.6) rather than a real answer. It rides
+ * the SAME `question_response` path a button click uses, so no new container
+ * contract is needed; the container returns it to the agent and the convention
+ * in `container/CLAUDE.md` tells the agent it means "user withdrew the request —
+ * stop and roll back, do not retry". The accompanying `cancelled: true` field is
+ * additive (older readers ignore it).
+ */
+export const CANCEL_SENTINEL = '__cancelled__';
+
 export interface OptionInput {
   label: string;
   selectedLabel?: string;

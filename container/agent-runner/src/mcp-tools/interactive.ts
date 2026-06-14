@@ -42,7 +42,8 @@ export const askUserQuestion: McpToolDefinition = {
       "The chosen option's `value` is what comes back to you as the tool result, so use distinct values to capture a structured answer in ONE round-trip — don't approve/reject and then ask a second question for the reason. " +
       'For an approval, prefer concrete reject options that already encode the reason and remediation, e.g. ' +
       '[{label:"Approve",value:"approve"}, {label:"Reject — amount looks wrong",value:"reject:amount"}, {label:"Reject — needs manager sign-off",value:"reject:needs-manager"}]. ' +
-      'Put any "what to fix" guidance in the `question` text. Only fall back to a free-text follow-up when the reasons are genuinely open-ended.',
+      'Put any "what to fix" guidance in the `question` text. Only fall back to a free-text follow-up when the reasons are genuinely open-ended. ' +
+      'If the result is `__cancelled__`, the user withdrew the request out-of-band (e.g. typed /cancel) — STOP, do not proceed or retry, and roll back anything already started.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -135,6 +136,17 @@ export const askUserQuestion: McpToolDefinition = {
         const parsed = JSON.parse(response.content);
         // Mark the response as completed via processing_ack (outbound.db)
         markCompleted([response.id]);
+
+        // Out-of-band cancel (ADR-0042): the host resolved this question with a
+        // `__cancelled__` sentinel + `cancelled:true` because the user withdrew
+        // it. Return an unambiguous, instructive string so the model stops and
+        // rolls back instead of treating the sentinel as a real answer.
+        if (parsed.cancelled === true || parsed.selectedOption === '__cancelled__') {
+          log(`ask_user_question cancelled: ${questionId}`);
+          return ok(
+            '__cancelled__ — the user withdrew this request. Stop and roll back if needed; do not proceed or retry.',
+          );
+        }
 
         log(`ask_user_question response: ${questionId} → ${parsed.selectedOption}`);
         return ok(parsed.selectedOption);

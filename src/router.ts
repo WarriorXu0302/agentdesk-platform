@@ -77,6 +77,18 @@ export function setSenderResolver(fn: SenderResolverFn): void {
 }
 
 /**
+ * Resolve the host-established sender identity for an inbound event using the
+ * registered resolver (the permissions module's user-upsert), or null if none
+ * is registered / the sender can't be identified. Exposed so a pre-route
+ * interceptor (e.g. the interactive cancel, ADR-0042) can scope an action to the
+ * sender WITHOUT trusting any agent/sender-claimed field — same resolver the
+ * router itself uses for delivery.
+ */
+export function resolveSender(event: InboundEvent): string | null {
+  return senderResolver ? senderResolver(event) : null;
+}
+
+/**
  * Access-gate hook. Runs after agent resolution.
  *
  * The permissions module registers this; without it, core defaults to

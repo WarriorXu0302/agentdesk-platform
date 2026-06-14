@@ -249,6 +249,29 @@ export function deletePendingQuestion(questionId: string): void {
   getDb().prepare('DELETE FROM pending_questions WHERE question_id = ?').run(questionId);
 }
 
+/**
+ * Pending questions an out-of-band cancel from `userId` is allowed to resolve
+ * (ADR-0042, roadmap 6.6). Scoped by the session's host-established
+ * `owner_user_id` — so a user can only cancel their OWN pending question.
+ *
+ * This is the entire cross-user safety mechanism: in shared / per-thread /
+ * agent-shared sessions `owner_user_id` is NULL, so the JOIN matches zero rows
+ * and cancel is a structural no-op there (no guard code, nothing to bypass). A
+ * NULL `userId` (unresolved sender) likewise matches nothing. Cancel is thus
+ * supported only in per-user / per-user-per-thread sessions until a per-asker
+ * column is added (see ADR-0042).
+ */
+export function findCancelablePendingQuestions(userId: string): PendingQuestion[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT pq.* FROM pending_questions pq
+         JOIN sessions s ON s.id = pq.session_id
+        WHERE s.owner_user_id = ? AND s.status = 'active'`,
+    )
+    .all(userId) as Array<Omit<PendingQuestion, 'options'> & { options_json: string }>;
+  return rows.map(({ options_json, ...rest }) => ({ ...rest, options: JSON.parse(options_json) }));
+}
+
 // ── Pending Approvals ──
 
 /**

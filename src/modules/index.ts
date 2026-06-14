@@ -20,6 +20,10 @@ import './approvals/index.js';
 import './interactive/index.js';
 import './scheduling/index.js';
 import './permissions/index.js';
+// Cancel interceptor (ADR-0042) loads AFTER permissions so the permissions
+// free-text name-capture interceptor keeps priority; cancel only claims exact
+// whole-message cancel tokens for a sender who has a pending question.
+import './interactive/cancel.js';
 import './agent-to-agent/index.js';
 import './self-mod/index.js';
 import './gateway-audit/index.js';
