@@ -384,7 +384,8 @@
 - **建议**:抽 i18n(`i18n/feishu.json` en/zh);从 Feishu 事件检测 `user.locale` 或 `FEISHU_SYSTEM_LOCALE`;卡构建器接 locale 参数本地化按钮("Approve"→"确认")。host 侧责任。
 - **工作量 M · 价值 中**
 
-### 6.6 无显式取消/撤回待处理请求
+### 6.6 无显式取消/撤回待处理请求 — ✅ 已落地(ADR-0042,带外取消命令;commit 1641994)
+- **落地**(经 design+对抗评审 workflow):用户键入**精确整条** token(`/cancel`/`cancel`/`取消`/`停止`)即可止住误发的 ask_user_question/审批卡。host pre-route 拦截器(`src/modules/interactive/cancel.ts`)用 host 建立的 sender 身份查 `findCancelablePendingQuestions`(`JOIN sessions ON owner_user_id=?`),经**与按钮点击相同**的 `question_response` 线用 `__cancelled__` sentinel(+ additive `cancelled:true`)解析用户**自己**的待处理问题,container `ask_user_question` 经既有成功路径 `ok(sentinel)` 返回(**非** err(),避免 retry 混淆),工具描述告诉 agent 据此停止/回滚。**跨用户隔离结构性**:shared/agent-shared 会话 owner 为 NULL → 零命中 → 取消在那里 no-op,一个用户永不能取消他人请求(无守卫代码)。前置重构:`setMessageInterceptor` 单槽→链式数组(否则覆盖 permissions 拦截器,day-1 回归)。保守:仅精确 token + 仅当发送者确有待处理问题才消费,否则透传;错误降级透传。建议(1)文档化(已由工具描述覆盖)+(3)带外取消命令**已做**。**有意未做**:(2)扩 schema 加 `role:'cancel'` 渲染红按钮(渠道层 nice-to-have,价值低);pending_questions 的 TTL 清扫(既有缺口,建议后续给 host-sweep 加 expireStalePendingQuestions);shared 会话取消(owner NULL,待加 per-asker 列)。
 - **现状**:ask_question 选项 schema(`channels/ask-question.ts`、`primitives.ts:397-413`)只有 label/value/selectedLabel,**无 cancel 语义**。agent **可**在 options 里塞 Cancel 按钮,但无渠道级取消、无文档化模式、无带外取消命令。
 - **业务影响**:中等。误发请求(错单号/错收件人)无法即时止住,得等 agent 完成再请求回滚,审批工作流尤其糟。
 - **建议**:(1) 文档化 agent 可在 payload 塞 Cancel 选项(已支持);(2) 可选扩 schema 加 `role:'cancel'` 标记(渲染红按钮);(3) 实现会话级取消命令('cancel'/'/cancel'/'取消')标记 pending_question 为 cancelled(需 host 小支持)。
