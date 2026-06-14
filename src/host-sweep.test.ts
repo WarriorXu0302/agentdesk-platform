@@ -8,7 +8,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDb, initTestDb, runMigrations } from './db/index.js';
 import { deleteOrphanProcessingClaims, getProcessingClaims } from './db/session-db.js';
-import { createPendingApproval, expireStalePendingApprovals, getPendingApproval } from './db/sessions.js';
+import { createAgentGroup } from './db/agent-groups.js';
+import {
+  createPendingApproval,
+  createPendingQuestion,
+  createSession,
+  deleteStalePendingQuestions,
+  expireStalePendingApprovals,
+  getPendingApproval,
+  getPendingQuestion,
+} from './db/sessions.js';
 import { OUTBOUND_SCHEMA } from './db/schema.js';
 import {
   ABSOLUTE_CEILING_MS,
@@ -415,5 +424,63 @@ describe('expireStalePendingApprovals — dangling-approval reaper (roadmap 5.3)
     // 'done-1' was pending and gets expired on the first call; assert a second
     // call is a no-op (idempotent — already non-pending).
     expect(expireStalePendingApprovals(0)).toHaveLength(0);
+  });
+});
+
+describe('deleteStalePendingQuestions — orphaned-question reaper (ADR-0042 follow-up)', () => {
+  beforeEach(() => {
+    runMigrations(initTestDb());
+    createAgentGroup({
+      id: 'ag-1',
+      name: 'A',
+      folder: 'a',
+      agent_provider: null,
+      created_at: new Date().toISOString(),
+    });
+    createSession({
+      id: 's-1',
+      agent_group_id: 'ag-1',
+      messaging_group_id: null,
+      thread_id: null,
+      owner_user_id: 'feishu:ou_a',
+      root_session_id: 's-1',
+      agent_provider: null,
+      status: 'active',
+      container_status: 'idle',
+      last_active: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    });
+  });
+  afterEach(() => closeDb());
+
+  function question(id: string, createdAt: string): void {
+    createPendingQuestion({
+      question_id: id,
+      session_id: 's-1',
+      message_out_id: `mo-${id}`,
+      platform_id: 'p1',
+      channel_type: 'feishu',
+      thread_id: null,
+      title: 'Q',
+      options: [{ label: 'a', selectedLabel: 'a', value: 'a' }],
+      created_at: createdAt,
+    });
+  }
+
+  it('prunes only rows past the cutoff and leaves recent ones', () => {
+    question('old-1', new Date(Date.now() - 10 * 24 * 60 * 60_000).toISOString());
+    question('recent-1', new Date().toISOString());
+
+    const pruned = deleteStalePendingQuestions(7 * 24 * 60 * 60_000);
+
+    expect(pruned).toBe(1);
+    expect(getPendingQuestion('old-1')).toBeUndefined();
+    expect(getPendingQuestion('recent-1')).toBeDefined();
+  });
+
+  it('returns 0 when nothing is stale', () => {
+    question('recent-1', new Date().toISOString());
+    expect(deleteStalePendingQuestions(7 * 24 * 60 * 60_000)).toBe(0);
+    expect(getPendingQuestion('recent-1')).toBeDefined();
   });
 });

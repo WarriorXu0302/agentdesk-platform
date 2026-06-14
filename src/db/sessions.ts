@@ -250,6 +250,19 @@ export function deletePendingQuestion(questionId: string): void {
 }
 
 /**
+ * Prune pending_questions rows older than `olderThanMs` (ADR-0042 follow-up).
+ * Unlike approvals these rows carry no status — they're deleted on answer or
+ * cancel — so an unanswered question (whose container poll timed out long ago,
+ * default 300s) would otherwise leave an orphaned row forever. The host sweep
+ * calls this; returns the number of rows deleted. Caller gates it (default-off
+ * at 0 days disables).
+ */
+export function deleteStalePendingQuestions(olderThanMs: number, now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString();
+  return getDb().prepare('DELETE FROM pending_questions WHERE created_at < ?').run(cutoff).changes;
+}
+
+/**
  * Pending questions an out-of-band cancel from `userId` is allowed to resolve
  * (ADR-0042, roadmap 6.6). Scoped by the session's host-established
  * `owner_user_id` — so a user can only cancel their OWN pending question.

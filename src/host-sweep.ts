@@ -36,7 +36,7 @@ import { purgeStaleProxyTokens } from './db/gateway-proxy-token.js';
 import { purgeGatewayAudit } from './db/gateway-audit.js';
 import { purgeClassificationLog } from './db/classification-log.js';
 import { purgeEnterpriseAudit, recordEnterpriseAudit } from './db/enterprise-audit.js';
-import { expireStalePendingApprovals } from './db/sessions.js';
+import { deleteStalePendingQuestions, expireStalePendingApprovals } from './db/sessions.js';
 import { purgeDmAudit } from './db/dm-audit.js';
 import { getDb, hasTable } from './db/connection.js';
 import {
@@ -104,6 +104,17 @@ const COST_WINDOW_SEC = 300;
 // forever (roadmap 5.3). Expire pending approvals older than this many days so
 // they can't dangle indefinitely. Default 7; 0 disables the sweep.
 const APPROVAL_EXPIRY_DAYS = Math.max(0, parseInt(process.env.AGENTDESK_APPROVAL_EXPIRY_DAYS || '7', 10) || 0);
+
+// Pending interactive questions (ask_user_question) carry no status and are only
+// deleted on answer/cancel — an unanswered one (whose container poll timed out
+// at its 300s default long ago) leaves an orphaned pending_questions row forever
+// (ADR-0042 follow-up). Prune rows older than this many days. Default 7 (far
+// beyond any realistic question lifetime, so an in-flight question is never
+// pruned); 0 disables the sweep.
+const PENDING_QUESTION_RETAIN_DAYS = Math.max(
+  0,
+  parseInt(process.env.AGENTDESK_PENDING_QUESTION_RETAIN_DAYS || '7', 10) || 0,
+);
 
 /**
  * Sum `totalTokens` across this session's `llm-usage` rows in outbound.db
@@ -277,6 +288,19 @@ async function sweep(): Promise<void> {
       if (expired.length > 0) log.info('Expired stale pending approvals', { count: expired.length });
     } catch (err) {
       log.warn('Pending-approval expiry sweep failed', { err });
+    }
+  }
+
+  // Prune orphaned pending interactive questions (ADR-0042 follow-up) — these
+  // have no status, so an unanswered question's row would dangle forever.
+  if (PENDING_QUESTION_RETAIN_DAYS > 0) {
+    try {
+      const pruned = deleteStalePendingQuestions(PENDING_QUESTION_RETAIN_DAYS * 24 * 60 * 60_000);
+      if (pruned > 0) {
+        log.info('Pruned orphaned pending questions', { count: pruned, retainDays: PENDING_QUESTION_RETAIN_DAYS });
+      }
+    } catch (err) {
+      log.warn('Pending-question prune sweep failed', { err });
     }
   }
 
