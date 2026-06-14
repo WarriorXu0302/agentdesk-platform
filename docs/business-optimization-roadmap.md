@@ -79,7 +79,7 @@
 - **建议**:(1) classification_log 加 `outcome_feedback`(软枚举 null/correct/misrouted);(2) 容器内加 MCP 工具让 worker 标记"误路由 + 建议目标";(3) 加混淆矩阵 metric(recommended_worker × actual_outcome);(4) 面板切片"本该我处理却流走的消息"。
 - **工作量 M · 价值 高**
 
-### 2.2 跨 worker 对话链缺统一 `conversation_thread_id` ⭐
+### 2.2 跨 worker 对话链缺统一 `conversation_thread_id` ⭐ — 🟡 设计锁定(ADR-0039,经对抗评审 SHIP IT),分 4 commit 落地中
 > ⏸️ **评估后留作专项(需 ADR + 多 commit)**:这是 load-bearing 运行时契约变更——`conversation_thread_id` 要贯穿约 10 个文件(= `origin_user_id` 传播面),涉及①中央迁移(classification_log 加列)②session DB 迁移函数(messages_in/out 加列,走 migrateMessagesInTable 的 ALTER-on-open 模式覆盖在飞会话)③在对话起点生成④跨 a2a 跳传播(镜像 `origin_user_id` 的 writeSessionMessage 透传)。触及三库单写写路径 + a2a 身份传播这两条 load-bearing 路径,CLAUDE.md 要求契约变更同步文档,且不该在一次自主 pass 里赶工。**建议路径**:先写 ADR 定 schema + 传播契约,再分 commit(迁移 → 传播 → 测试),按 `origin_user_id` 已验证的模式做。**没有有意义的「安全小切片」**:单 classify 的 thread id ≈ 已有的 classification_id,价值全在多跳传播(即风险所在)。
 - **现状**:无贯穿 frontdesk classify → worker A → worker B → 回复的顶层线程 id。classification_log 记单次事件,messages_in 按 session 记入站,a2a 用 `source_session_id` + `in_reply_to`。**三张表都没有 conversation 级别标识**。要追踪一个请求的完整链路需多表 join + 时序重建。
 - **业务影响**:**高**。运营者无法快速回答"请求 X 现在在哪""这次多跳花了多久"。SLA 追踪和问题诊断要靠人肉翻日志。
