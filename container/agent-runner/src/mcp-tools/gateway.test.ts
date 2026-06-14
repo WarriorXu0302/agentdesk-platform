@@ -22,6 +22,7 @@ import {
   handleGatewayDescribe,
   handleGatewayExecute,
   handleGatewayMemoryGet,
+  handleGatewayMemoryFeedback,
   handleGatewayMemorySearch,
   handleGatewayMemoryUpsert,
   handleGatewayTaskStatus,
@@ -1093,5 +1094,85 @@ describe('flushCompactionSummary (roadmap 4.1, ADR-0041)', () => {
     }) as typeof fetch;
     await flushCompactionSummary('snap', sessionIdentity({ userId: 'feishu:ou_snap' }), gatewayConfig());
     expect((body as { subject?: { id?: string } })?.subject?.id).toBe('feishu:ou_snap');
+  });
+});
+
+describe('gateway_memory_feedback (ADR-0043, roadmap 4.6)', () => {
+  it('posts feedback to /memory/feedback with recordId/issue/note + session identity', async () => {
+    setRequestIdentity(sessionIdentity());
+    let url: string | undefined;
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, accepted: true, feedbackId: 'fb-1' }), { status: 200 });
+    }) as typeof fetch;
+
+    const r = await handleGatewayMemoryFeedback(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      namespace: 'user.profile',
+      recordId: 'rec-42',
+      issue: 'stale',
+      note: 'phone number changed last week',
+    });
+
+    expect(r.isError).toBeUndefined();
+    expect(url).toBe('https://erp-gateway.example/memory/feedback');
+    expect(body).toMatchObject({
+      contractVersion: CONTRACT_VERSION,
+      namespace: 'user.profile',
+      subject: { type: 'user', id: 'feishu:ou_123' },
+      recordId: 'rec-42',
+      issue: 'stale',
+      note: 'phone number changed last week',
+      requesterSource: 'session',
+    });
+  });
+
+  it('rejects an unknown issue (closed enum — no coercion)', async () => {
+    setRequestIdentity(sessionIdentity());
+    const r = await handleGatewayMemoryFeedback(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      namespace: 'user.profile',
+      recordId: 'rec-42',
+      issue: 'totally-made-up',
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toMatch(/issue must be one of/);
+  });
+
+  it('requires recordId', async () => {
+    setRequestIdentity(sessionIdentity());
+    const r = await handleGatewayMemoryFeedback(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      namespace: 'user.profile',
+      issue: 'inaccurate',
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toMatch(/recordId is required/);
+  });
+
+  it('omits note when not provided', async () => {
+    setRequestIdentity(sessionIdentity());
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    await handleGatewayMemoryFeedback(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      namespace: 'user.profile',
+      recordId: 'rec-9',
+      issue: 'duplicate',
+    });
+    expect(body && 'note' in body).toBe(false);
+  });
+
+  it('degrades gracefully to OPERATION_NOT_FOUND when the backend has not implemented it', async () => {
+    setRequestIdentity(sessionIdentity());
+    globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+    const r = await handleGatewayMemoryFeedback(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      namespace: 'user.profile',
+      recordId: 'rec-1',
+      issue: 'other',
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toMatch(/OPERATION_NOT_FOUND/);
   });
 });

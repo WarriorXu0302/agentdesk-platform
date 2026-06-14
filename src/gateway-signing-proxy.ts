@@ -63,7 +63,10 @@ const HOST_ALIAS = 'host.docker.internal';
 export const READ_PATHS = ['/describe', '/authorize', '/task/status', '/memory/get', '/memory/search'] as const;
 // /bulk_execute (ADR-0036) mutates, so it is write-scoped — same trust tier as
 // /execute. Proxy-mode containers get a write token covering it.
-export const WRITE_PATHS = ['/execute', '/bulk_execute', '/memory/upsert'] as const;
+// /memory/feedback (ADR-0043) writes a feedback record to the backend corpus, so
+// it is write-scoped (added with its tool/handler in the same change to avoid a
+// window where the tool exists but the proxy 403s it).
+export const WRITE_PATHS = ['/execute', '/bulk_execute', '/memory/upsert', '/memory/feedback'] as const;
 export const ALL_GATEWAY_PATHS: readonly string[] = [...READ_PATHS, ...WRITE_PATHS];
 
 const REQUESTER_SOURCES = new Set(['session', 'agent-asserted']);

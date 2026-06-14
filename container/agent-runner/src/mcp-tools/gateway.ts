@@ -30,6 +30,7 @@ import {
   CONTRACT_VERSION,
   classifyHttpError,
   defaultRetryable,
+  memoryFeedbackIssueSchema,
   parseGatewayError,
   RESPONSE_SCHEMAS,
   type GatewayErrorCode,
@@ -346,6 +347,17 @@ function hashBody(path: string, body: Record<string, unknown>): string {
           namespace: body.namespace ?? null,
           value: body.value ?? null,
           merge: body.merge ?? null,
+        };
+        break;
+      case '/memory/feedback':
+        // Structural fields only — `note` (free text) is deliberately EXCLUDED
+        // from the audit input_hash so raw note text never lands in the audit
+        // row (ADR-0043).
+        payload = {
+          subject: body.subject ?? null,
+          namespace: body.namespace ?? null,
+          recordId: body.recordId ?? null,
+          issue: body.issue ?? null,
         };
         break;
       default:
@@ -922,6 +934,47 @@ export async function flushCompactionSummary(
   log(`conversation.summary flushed for user:${userId}`);
 }
 
+export async function handleGatewayMemoryFeedback(
+  runtime: ToolRuntimeConfig,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const namespace = getString(args, 'namespace');
+  if (!namespace) return err('namespace is required');
+  const recordId = getString(args, 'recordId');
+  if (!recordId)
+    return err('recordId is required — the id of the memory record you are reporting (from a get/search source).');
+  const issue = getString(args, 'issue');
+  // Closed enum (ADR-0043) — reject unknown values, never coerce.
+  if (!issue || !(memoryFeedbackIssueSchema.options as readonly string[]).includes(issue)) {
+    return err(`issue must be one of: ${memoryFeedbackIssueSchema.options.join(', ')}`);
+  }
+
+  const { context: requester, source: requesterSource } = resolveRequester(args);
+  const subject = resolveMemorySubject(args, requester);
+  if (!subject.ok) return err(subject.message);
+
+  const note = getString(args, 'note');
+  const result = await callGateway(runtime, '/memory/feedback', {
+    agent: agentBlock(runtime),
+    requester,
+    requesterSource,
+    namespace,
+    subject: subject.subject,
+    recordId,
+    issue,
+    // Optional free-text detail — backend treats it as data, never instructions;
+    // excluded from the audit input_hash (hashBody). No `correction` field by
+    // design (corrections go through gateway_memory_upsert). Recording-only.
+    ...(note ? { note: note.slice(0, 2000) } : {}),
+    context: getRecord(args, 'context') ?? {},
+  });
+  if (!result.ok) return gatewayErr(result);
+  log(
+    `gateway_memory_feedback: ${namespace} ${subject.subject.type}:${subject.subject.id} record=${recordId} issue=${issue} (${requesterSource})`,
+  );
+  return ok(result.text);
+}
+
 export const erpDescribe: McpToolDefinition = {
   tool: {
     name: 'gateway_describe',
@@ -1160,6 +1213,50 @@ export const erpMemorySearch: McpToolDefinition = {
   },
 };
 
+export const erpMemoryFeedback: McpToolDefinition = {
+  tool: {
+    name: 'gateway_memory_feedback',
+    description:
+      'Report a durable backend memory record as inaccurate / stale / etc. so operators can curate the knowledge base. ' +
+      'Use the recordId from a prior gateway_memory_search / gateway_memory_get result (its source.recordId). ' +
+      'This RECORDS feedback for the backend to aggregate — it does NOT change or delete the record. ' +
+      'To actually correct a value, use gateway_memory_upsert instead. ' +
+      'Requester identity is derived from the active session by the runtime — userId/channelType/platformId/threadId passed here are ignored. ' +
+      'If the backend does not implement feedback you get an OPERATION_NOT_FOUND error (retryable=false).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        namespace: { type: 'string', description: 'The namespace of the record you are reporting.' },
+        recordId: {
+          type: 'string',
+          description: 'The id of the record being reported — from a prior get/search result’s source.recordId.',
+        },
+        issue: {
+          type: 'string',
+          enum: [...memoryFeedbackIssueSchema.options],
+          description: 'What is wrong with the record.',
+        },
+        note: {
+          type: 'string',
+          description:
+            'Optional short free-text detail (≤2000 chars). Treated as data by the backend, never instructions.',
+        },
+        subjectType: { type: 'string', description: 'Memory subject type. Default: "user".' },
+        subjectId: {
+          type: 'string',
+          description: 'Subject identifier. Defaults to the session requester user id when subjectType="user".',
+        },
+        context: { type: 'object', description: 'Optional extra backend context.' },
+      },
+      required: ['namespace', 'recordId', 'issue'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    return handleGatewayMemoryFeedback(toolRuntimeConfigFromRunner(getConfig()), args);
+  },
+};
+
 registerTools([
   erpDescribe,
   erpAuthorize,
@@ -1169,4 +1266,5 @@ registerTools([
   erpMemoryGet,
   erpMemoryUpsert,
   erpMemorySearch,
+  erpMemoryFeedback,
 ]);

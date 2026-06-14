@@ -215,6 +215,44 @@ export const memorySearchRequestSchema = z.object({
   context: z.record(z.string(), z.unknown()),
 });
 
+/**
+ * Knowledge feedback issue kinds (ADR-0043, roadmap 4.6). CLOSED enum — an
+ * unknown value is a hard validation error (NOT coerced), so the agent can't
+ * invent issue types and operators see schema drift (ADR-0028 discipline).
+ */
+export const memoryFeedbackIssueSchema = z.enum([
+  'inaccurate',
+  'stale',
+  'irrelevant',
+  'duplicate',
+  'needs-correction',
+  'other',
+]);
+
+/**
+ * Knowledge feedback request (ADR-0043). The agent/operator reports a recalled
+ * memory record as inaccurate/stale/etc. so the BACKEND — which owns the memory
+ * corpus — can aggregate it for operator curation. Recording-only: the platform
+ * never mutates a record or authz on feedback. `recordId` is the provenance id
+ * from a prior get/search (`memorySourceSchema.recordId`); the backend MUST gate
+ * on the requester's subject scope before acting. `note` is optional free text
+ * the backend treats as data (never instructions) and is EXCLUDED from the audit
+ * input_hash (see hashBody). Mirrors memory/upsert's shape (no idempotencyKey —
+ * memory writes aren't idempotency-keyed in this contract). Deliberately NO
+ * `correction` field: a correction goes through the normal `gateway_memory_upsert`
+ * so it keeps that path's idempotency + subject-scoping, instead of an implicit
+ * write smuggled through feedback.
+ */
+export const memoryFeedbackRequestSchema = z.object({
+  ...envelopeBase,
+  namespace: z.string().min(1),
+  subject: memorySubjectSchema,
+  recordId: z.string().min(1),
+  issue: memoryFeedbackIssueSchema,
+  note: z.string().max(2000).optional(),
+  context: z.record(z.string(), z.unknown()),
+});
+
 /** Path → request schema. Single lookup the conformance runner reuses. */
 export const REQUEST_SCHEMAS = {
   '/describe': describeRequestSchema,
@@ -225,6 +263,7 @@ export const REQUEST_SCHEMAS = {
   '/memory/get': memoryGetRequestSchema,
   '/memory/upsert': memoryUpsertRequestSchema,
   '/memory/search': memorySearchRequestSchema,
+  '/memory/feedback': memoryFeedbackRequestSchema,
 } as const;
 
 export type GatewayPath = keyof typeof REQUEST_SCHEMAS;
@@ -432,6 +471,21 @@ export const memorySearchResponseSchema = z
   })
   .passthrough();
 
+/**
+ * Knowledge feedback response (ADR-0043). A backend ack — not recalled data, so
+ * it is NOT wrapped in the untrusted-memory fence. All fields optional/passthrough
+ * so a backend shapes the ack freely (or returns an empty body).
+ */
+export const memoryFeedbackResponseSchema = z
+  .object({
+    ...responseEnvelope,
+    ok: z.boolean().optional(),
+    accepted: z.boolean().optional(),
+    feedbackId: z.string().optional(),
+    source: memorySourceSchema.optional(),
+  })
+  .passthrough();
+
 /** Path → response schema. */
 export const RESPONSE_SCHEMAS = {
   '/describe': describeResponseSchema,
@@ -442,6 +496,7 @@ export const RESPONSE_SCHEMAS = {
   '/memory/get': memoryGetResponseSchema,
   '/memory/upsert': memoryUpsertResponseSchema,
   '/memory/search': memorySearchResponseSchema,
+  '/memory/feedback': memoryFeedbackResponseSchema,
 } as const;
 
 // ---------------------------------------------------------------------------

@@ -71,8 +71,10 @@ ack(非召回内容),**不**包 untrustedMemory 围栏。
 - **Neutral / Trade-offs**:
   - recordId 伪造:读 gateway_audit 的攻击者可能为没取过的记录提交貌似合理的反馈;**后端必须**按
     subject-scope 归属 gate,平台无法强制(同 ADR-0033 provenance 不重开身份链的让步)。
-  - 幂等键跨操作复用:reference-gateway 的 dedup Map 必须**按 path 分桶**(本 ADR 一并修其原全局 Map),
-    否则同 key 跨 upsert/feedback 会误去重错操作。
+  - **无 idempotencyKey**(刻意):feedback **镜像 `memory/upsert`**——本仓的 memory 写(get/upsert/
+    search)都不带 idempotencyKey(只有 `/execute`/`bulk_execute` 业务变更带)。gateway 工具调用不经
+    投递层重试,重复风险低;后端如需去重,`subject+recordId+issue` 是天然键。这也使对抗评审提到的
+    "reference-gateway 全局幂等 Map 跨操作误去重"风险**不适用**(feedback 不参与幂等 Map)。
 
 ## Implementation Notes
 
@@ -83,8 +85,8 @@ ack(非召回内容),**不**包 untrustedMemory 围栏。
   - `container/agent-runner/src/mcp-tools/gateway.ts` —— `handleGatewayMemoryFeedback` + `erpMemoryFeedback`
     工具(第 7 个);`registerTools`。**同一 commit**:`src/gateway-signing-proxy.ts` `WRITE_PATHS` 加
     `/memory/feedback`。
-  - `examples/reference-gateway/server.mjs` —— `/memory/feedback` 参考实现(per-record feedback Map,
-    **path-scoped 幂等**修全局 Map);conformance sample。
+  - `examples/reference-gateway/server.mjs` —— `/memory/feedback` 参考实现(per-record/per-subject
+    feedback 聚合,无 idempotencyKey,同 upsert);conformance sample。
   - `container/agent-runner/src/mcp-tools/gateway.instructions.md` + `docs/enterprise-erp-gateway.md` ——
     工具/端点文档 + "反馈是 recording-only、后端拥有语料、note 是数据非指令"。
   - 测试:`gateway.test.ts`(feedback body 形状、additionalProperties:false、issue 枚举拒未知、
