@@ -481,6 +481,22 @@ function stripThinkTags(text: string): string {
     .trim();
 }
 
+/**
+ * True when `content` (a parsed outbound message body) is a roster opt-in
+ * ("roster.optin") consent card — by either the render trigger the Feishu
+ * adapter keys on (`type === 'roster_invite'`) or the embedded grant payload
+ * (`optIn.kind === 'roster.optin'`). Used by deliverMessage to fail closed on a
+ * container-forged opt-in card reaching the polled delivery path (the legitimate
+ * builder never does). Robust to non-object / null content.
+ */
+function isForgedRosterOptInCard(content: unknown): boolean {
+  if (!content || typeof content !== 'object') return false;
+  const c = content as Record<string, unknown>;
+  if (c.type === 'roster_invite') return true;
+  const optIn = c.optIn;
+  return !!optIn && typeof optIn === 'object' && (optIn as Record<string, unknown>).kind === 'roster.optin';
+}
+
 async function deliverMessage(
   msg: {
     id: string;
@@ -541,6 +557,37 @@ async function deliverMessage(
     // to the channel-destination ACL path.
     if (msg.kind === 'roster') {
       return await deliverRosterMessage(msg, session, content);
+    }
+
+    // Anti-forgery (ADR-0023/0044): a roster opt-in ("roster.optin") consent
+    // card mints a LIVE grant on the recipient's click WITHOUT re-deriving its
+    // scope/audience/expiry (the LOAD-BEARING INVARIANT documented in
+    // roster-invite.ts), so its card-BUILD path must stay host-exclusive. The
+    // ONLY legitimate builder, handleRosterInvite, posts the card via a DIRECT
+    // adapter.deliver call (kind='roster.invite') and NEVER writes a
+    // messages_out row — so it never reaches this polled path. Therefore ANY
+    // container-authored outbound row that carries a roster opt-in card here is
+    // a forgery attempt: a compromised container could otherwise plant a
+    // host-looking opt-in card naming an arbitrary victim, with attacker-chosen
+    // scope/agent-group/maxSends/expiry, bypassing every invite-gate guard
+    // (membership, per-(scope,member) dedup, rate limit, 24h TTL). Fail closed,
+    // regardless of the per-group flag — the consent/mint path does not gate on
+    // it, so the forgery works even when roster DM is disabled.
+    if (isForgedRosterOptInCard(content)) {
+      rosterDmRejectedTotal.labels('forged_optin_card').inc();
+      recordDmAudit({
+        scopeId: hostScopeForSession(session),
+        agentGroupId: session.agent_group_id,
+        sessionId: session.id,
+        dmPlatformId: msg.platform_id,
+        messageOutId: msg.id,
+        decision: 'rejected',
+        reason: 'forged_optin_card',
+      });
+      throw new Error(
+        `roster-dm: refusing a container-authored roster opt-in card on a kind='${msg.kind}' row — ` +
+          `opt-in cards are host-built only (ADR-0044); use invite_to_roster`,
+      );
     }
 
     // Permission check: the source agent must be allowed to deliver to this
@@ -1029,12 +1076,18 @@ async function deliverRosterMessage(
       // the retry / marks failed exactly as before.
       throw err;
     }
-    // An EXPLICIT (non-timeout) failure means the send definitively did not
-    // land. Roll the reservation back (sends_used-1, rate/deploy un-bump,
-    // un-revoke if THIS reservation auto-revoked the grant, drop the marker) so
-    // ADR-0016's retry re-reserves cleanly on a later tick and a flaky channel
-    // never prematurely exhausts max_sends.
-    rollbackRosterReservation(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+    // An EXPLICIT (non-timeout) failure means THIS attempt's send did not land.
+    // Roll back ONLY when THIS tick freshly created the reservation. If the
+    // reservation was a STANDING one carried over from a prior attempt
+    // (reservation.fresh === false) — e.g. an earlier tick TIMED OUT and kept it
+    // because a timeout is at-least-once — that earlier attempt may have already
+    // delivered downstream. Rolling it back would un-count a delivered DM,
+    // un-revoke the grant, and drop the idempotency marker, so the next tick
+    // re-reserves fresh and sends a DUPLICATE (R5 / invariant 6). Treat a
+    // carried-over reservation like the timeout branch: keep it and just rethrow.
+    if (reservation.fresh) {
+      rollbackRosterReservation(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+    }
     throw err;
   }
 

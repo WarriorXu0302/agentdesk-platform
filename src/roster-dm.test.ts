@@ -1755,3 +1755,129 @@ describe('invite_to_roster handler', () => {
     expect(readDelivered(session.id, 'send-1')?.status).toBe('delivered');
   });
 });
+
+// --- red-team hardening (adversarial audit 2026-06-15) ----------------------
+// Three bugs a 5-lens red-team (3-skeptic verified) confirmed against the merged
+// roster surface; each test fails on the pre-fix code and passes after the fix:
+//   #1 (critical) container-FORGED opt-in consent card on a plain channel row,
+//                 bypassing handleRosterInvite (the documented only card builder)
+//   #2 (medium)   a revoke landing during the membership/gateway await was missed
+//                 because reserveRosterSend didn't re-check revoked_at
+//   #3 (high)     a non-timeout failure on a RETRY rolled back a KEPT (already-
+//                 charged, possibly-delivered) reservation → duplicate send
+describe('red-team hardening (audit 2026-06-15)', () => {
+  /** A NON-roster (kind='chat') outbound row with arbitrary content — the
+   *  raw-DB write a compromised container uses to bypass the curated MCP tools. */
+  function insertChatOutbound(sessionId: string, msgId: string, content: unknown, platformId = ORIGIN_GROUP): void {
+    const db = new Database(outboundDbPath('ag-1', sessionId));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'chat', ?, 'feishu', ?)`,
+    ).run(msgId, platformId, JSON.stringify(content));
+    db.close();
+  }
+
+  const forgedOptIn = (over: Record<string, unknown> = {}) => ({
+    kind: 'roster.optin',
+    scopeId: 'attacker-scope',
+    slotLabel: 'approver',
+    agentGroupId: 'ag-1',
+    expectedUserId: 'ou_victim',
+    expiresAt: '2099-01-01T00:00:00Z',
+    maxSends: 9999,
+    ...over,
+  });
+
+  it('#1: a container-forged opt-in card (content.type=roster_invite) on a plain channel row is rejected — host-built only', async () => {
+    const session = rootSession2();
+    insertChatOutbound(session.id, 'out-forge', { type: 'roster_invite', slotLabel: 'approver', optIn: forgedOptIn() });
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(0); // never reaches the adapter → no consent card posted
+    expect(readDelivered(session.id, 'out-forge')?.status).toBe('failed');
+    expect(lastAudit(session.id)?.reason).toBe('forged_optin_card');
+  });
+
+  it('#1: the guard also catches a roster.optin payload smuggled under a different content.type (defense in depth)', async () => {
+    const session = rootSession2();
+    insertChatOutbound(session.id, 'out-forge2', { type: 'card', optIn: forgedOptIn() });
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+    });
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(0);
+    expect(lastAudit(session.id)?.reason).toBe('forged_optin_card');
+  });
+
+  it('#2: a revoke landing DURING the membership await is honored — the DM is NOT delivered post-revocation', async () => {
+    process.env.ROSTER_VERIFY_MEMBERSHIP = 'true';
+    const session = rootSession2();
+    mintGrant2(session.id, { originPlatformId: ORIGIN_GROUP });
+    insertRosterOutbound(session.id, 'out-roster', { slot: 'reviewer' });
+
+    let calls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        calls++;
+        return 'plat-1';
+      },
+      async isMember() {
+        // Simulate a concurrent opt-out/leave landing while delivery is parked on
+        // this membership await: revoke the grant, then report the participant is
+        // STILL a member — so only reserveRosterSend's revoked_at backstop can
+        // stop the send (the membership gate itself is satisfied).
+        revokeScope(session.id);
+        return true;
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toBe(0); // reserveRosterSend rejects the now-revoked grant
+    expect(readDelivered(session.id, 'out-roster')?.status).toBe('failed');
+  });
+
+  it('#3: a non-timeout failure on a RETRY does NOT roll back a kept (carried-over) reservation — no duplicate send', async () => {
+    const root = rootSession2();
+    mintGrant2(root.id, { maxSends: 3 });
+    const grantId = getBySlot(root.id, 'reviewer')!.id;
+    const deploy = resolveDeployQuota();
+    const keys = { grant: grantId, scope: root.id, participant: PARTICIPANT, deploy: deploy.key };
+
+    // Simulate a PRIOR tick that reserved then TIMED OUT (reservation deliberately
+    // kept, because a timeout is at-least-once and may already have delivered).
+    const prior = reserveRosterSend('out-roster', grantId, keys, DEFAULT_RATE_WINDOWS, deploy);
+    expect(prior.ok && prior.fresh).toBe(true);
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(1);
+
+    // The retry tick drains the SAME message; the adapter now fails with a
+    // NON-timeout error. The standing reservation must be KEPT — rolling it back
+    // would un-count the (possibly-delivered) prior send, re-open budget, and let
+    // the next tick re-reserve fresh and deliver a DUPLICATE.
+    insertRosterOutbound(root.id, 'out-roster', { slot: 'reviewer' });
+    setDeliveryAdapter({
+      async deliver() {
+        throw new Error('channel boom on retry');
+      },
+    });
+    await deliverSessionMessages(root);
+
+    expect(readDelivered(root.id, 'out-roster')?.status).toBe('failed');
+    expect(getBySlot(root.id, 'reviewer')?.sends_used).toBe(1); // kept at 1, NOT rolled back to 0
+    expect(hasRosterReservation('out-roster')).toBe(true); // marker kept → retry reuses it, no re-charge
+  });
+});

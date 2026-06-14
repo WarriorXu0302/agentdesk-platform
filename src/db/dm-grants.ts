@@ -658,6 +658,17 @@ export function reserveRosterSend(
     if (hasRosterReservation(messageOutId)) return { ok: true, fresh: false };
 
     // 1. Per-grant max_sends — conditional atomic increment + auto-revoke.
+    //    `revoked_at IS NULL` in the WHERE is the revocation backstop: the
+    //    authoritative liveness gate (checkGrantLive) runs earlier in
+    //    deliverRosterMessage, but with ROSTER_GATEWAY_AUTHORITY /
+    //    ROSTER_VERIFY_MEMBERSHIP enabled an await (network round-trip) sits
+    //    between that gate and this reservation, during which a concurrent
+    //    opt-out / leave / scope-finish can set revoked_at. Folding the check
+    //    into this serialized UPDATE rejects an already-revoked grant atomically
+    //    (changes!==1 → abort) so a revoke landing mid-delivery is honored at the
+    //    delivery instant. The WHERE sees the pre-UPDATE row, so the first
+    //    reservation that hits the cap still passes (revoked_at NULL) and is the
+    //    one that auto-revokes via the CASE.
     const changed = db
       .prepare(
         `UPDATE dm_grants
@@ -666,11 +677,12 @@ export function reserveRosterSend(
                  WHEN max_sends > 0 AND sends_used + 1 >= max_sends THEN COALESCE(revoked_at, ?)
                  ELSE revoked_at
                END
-         WHERE id = ? AND (max_sends <= 0 OR sends_used < max_sends)`,
+         WHERE id = ? AND revoked_at IS NULL AND (max_sends <= 0 OR sends_used < max_sends)`,
       )
       .run(nowIso, grantId).changes;
     if (changed !== 1) {
-      // Over the cap (or grant vanished) → abort; rollback discards any partial.
+      // Over the cap, revoked mid-flight, or grant vanished → abort; rollback
+      // discards any partial.
       throw new ReserveAbort('max_sends');
     }
 
