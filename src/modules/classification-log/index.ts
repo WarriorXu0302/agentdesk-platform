@@ -17,7 +17,12 @@ import { registerDeliveryAction } from '../../delivery.js';
 import { recordClassification, type ClassificationLogEntry } from '../../db/classification-log.js';
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { log } from '../../log.js';
-import { classificationLogFailuresTotal, classificationsTotal, escalationTotal } from '../../metrics.js';
+import {
+  classificationLogFailuresTotal,
+  classificationsTotal,
+  escalationTotal,
+  routingFeedbackTotal,
+} from '../../metrics.js';
 import type { Session } from '../../types.js';
 
 const ACTIONS: ReadonlyArray<ClassificationLogEntry['action']> = ['delegate', 'clarify', 'reject', 'answer_self'];
@@ -27,6 +32,13 @@ const URGENCY_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 /** Coerce agent-supplied urgency to a closed enum at the host boundary (ADR-0038). */
 function coerceUrgency(raw: unknown): string {
   return typeof raw === 'string' && URGENCY_LEVELS.has(raw) ? raw : 'unknown';
+}
+
+const FEEDBACK_KINDS = new Set(['misroute', 'nack']);
+
+/** Coerce worker-supplied routing-feedback kind to a closed enum at the host boundary (ADR-0040). */
+function coerceFeedbackKind(raw: unknown): string {
+  return typeof raw === 'string' && FEEDBACK_KINDS.has(raw) ? raw : 'unknown';
 }
 
 /**
@@ -201,3 +213,92 @@ async function handleEscalate(content: Record<string, unknown>, session: Session
 }
 
 registerDeliveryAction('escalate', handleEscalate);
+
+/**
+ * Worker routing feedback (ADR-0040, roadmap 2.1 misroute + 2.5 nack). A worker
+ * emits a SEPARATE `routing_feedback` system action (orthogonal to classify_intent
+ * and escalate — never a routing decision value) carrying kind (misroute|nack) +
+ * an optional free-text reason + an optional suggested-target hint. The host
+ * RECORDS it: a classification_log row (action='routing_feedback'), an
+ * enterprise_audit `agent_routing_feedback` breadcrumb, and the
+ * routing_feedback_total metric.
+ *
+ * Core does NOT re-route — that was REJECTED in ADR-0040 (agent-shared inbound.db
+ * identity pollution + double return-path), so real reroute is the operator
+ * gateway's job. This handler has NO send/inbound write path by construction:
+ * worker-claimed fields are untrusted, the actor is the host-established session
+ * owner, kind is coerced to a closed enum, and the suggested-target is stored
+ * verbatim for operator dashboards but NEVER resolved/authz-checked/routed.
+ */
+async function handleRoutingFeedback(content: Record<string, unknown>, session: Session): Promise<void> {
+  // Trust the host-established session owner over any agent-claimed userId —
+  // same rule as escalate / classify_intent. routing_feedback is a decision
+  // WITHIN the worker's own session (a system action on its own outbound.db),
+  // not a cross-session a2a hop, so origin cross-validation does not apply.
+  const claimedUserId = readString(content, 'userId') ?? null;
+  const trustedUserId = session.owner_user_id ?? claimedUserId ?? null;
+  if (claimedUserId && session.owner_user_id && claimedUserId !== session.owner_user_id) {
+    log.warn('routing_feedback userId mismatch — trusting session owner', {
+      sessionId: session.id,
+      claimed: claimedUserId,
+      session: session.owner_user_id,
+    });
+  }
+
+  const kind = coerceFeedbackKind(content.feedback_kind);
+  const reason = readString(content, 'feedback_reason') ?? null;
+  // Worker's "should have gone to X" hint — recorded verbatim, NEVER validated
+  // against destinations / resolved to a session / used to route (ADR-0040).
+  const suggestedTarget = readString(content, 'suggested_target') ?? null;
+  // Correlation back to frontdesk's original classify row (host runtime attaches
+  // it across the a2a hop). Untrusted hint for an operator join only — never used
+  // in linkOutcome, never mutates the original row.
+  const misroutedClassificationId = readString(content, 'classificationId') ?? null;
+
+  const entry: ClassificationLogEntry = {
+    classificationId: misroutedClassificationId,
+    sessionId: session.id,
+    agentGroupId: session.agent_group_id,
+    userId: trustedUserId,
+    channelType: readString(content, 'channelType') ?? null,
+    platformId: readString(content, 'platformId') ?? null,
+    threadId: readString(content, 'threadId') ?? null,
+    // Reuse recommended_worker as the verbatim, UNVALIDATED suggested-target hint.
+    recommendedWorker: suggestedTarget ? suggestedTarget.slice(0, 120) : null,
+    reasoning: reason,
+    action: 'routing_feedback',
+    // Recording-only is terminal — no further outbound — so self-stamp the
+    // outcome (mirrors escalate's 'escalated' and classify's 'self:reject').
+    outcomeRef: `feedback:${kind}`,
+    feedbackKind: kind,
+    conversationThreadId: session.conversation_thread_id ?? null,
+  };
+
+  try {
+    recordClassification(entry);
+  } catch (err) {
+    classificationLogFailuresTotal.labels('write_error').inc();
+    log.error('routing_feedback classification_log write failed', { sessionId: session.id, err });
+    // Still emit the audit + metric below — the governance breadcrumb shouldn't
+    // depend on the analytics-table write succeeding.
+  }
+
+  recordEnterpriseAudit({
+    eventType: 'agent_routing_feedback',
+    agentGroupId: session.agent_group_id,
+    actor: trustedUserId,
+    details: {
+      kind,
+      reason,
+      suggestedTarget,
+      misroutedClassificationId,
+      sourceSessionId: session.id,
+    },
+  });
+
+  // `reported_by` = the worker group that raised the feedback (bounded). The
+  // suggested-target is deliberately NOT a label — it lives in the row above.
+  routingFeedbackTotal.inc({ kind, reported_by: session.agent_group_id ?? 'unknown' });
+}
+
+registerDeliveryAction('routing_feedback', handleRoutingFeedback);

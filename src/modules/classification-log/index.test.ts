@@ -212,3 +212,102 @@ describe('escalate delivery action (ADR-0038)', () => {
     expect(await sum()).toBeGreaterThan(before);
   });
 });
+
+describe('routing_feedback delivery action (ADR-0040, roadmap 2.1/2.5)', () => {
+  function auditRows(): Array<{ actor: string | null; details: string | null }> {
+    return getDb()
+      .prepare("SELECT actor, details FROM enterprise_audit WHERE event_type = 'agent_routing_feedback'")
+      .all() as Array<{ actor: string | null; details: string | null }>;
+  }
+
+  it('records a misroute row + agent_routing_feedback audit, trusting the session owner', async () => {
+    const handler = captured.get('routing_feedback');
+    expect(handler).toBeDefined();
+    const sess = session();
+    sess.agent_group_id = 'ag-finance-worker';
+    sess.owner_user_id = 'feishu:ou_alice';
+
+    await handler!(
+      {
+        action: 'routing_feedback',
+        userId: 'feishu:ou_forged',
+        feedback_kind: 'misroute',
+        feedback_reason: 'this is an HR question, not finance',
+        suggested_target: 'hr-worker',
+        classificationId: 'cls-orig-7',
+      },
+      sess,
+      {} as never,
+    );
+
+    const row = queryClassificationLog()[0]!;
+    expect(row.action).toBe('routing_feedback');
+    expect(row.feedback_kind).toBe('misroute');
+    expect(row.reasoning).toBe('this is an HR question, not finance');
+    expect(row.recommended_worker).toBe('hr-worker'); // verbatim suggested-target hint
+    expect(row.classification_id).toBe('cls-orig-7'); // correlation back to the original classify row
+    expect(row.outcome_ref).toBe('feedback:misroute'); // terminal self-stamp
+    expect(row.user_id).toBe('feishu:ou_alice'); // session owner, not the forged claim
+    expect(row.agent_group_id).toBe('ag-finance-worker'); // the worker that reported
+
+    const audit = auditRows();
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBe('feishu:ou_alice');
+    expect(JSON.parse(audit[0].details!)).toMatchObject({
+      kind: 'misroute',
+      suggestedTarget: 'hr-worker',
+      misroutedClassificationId: 'cls-orig-7',
+    });
+  });
+
+  it('coerces an out-of-enum feedback_kind to "unknown" (host boundary)', async () => {
+    const handler = captured.get('routing_feedback')!;
+    await handler({ action: 'routing_feedback', feedback_kind: 'DROP TABLE' }, session(), {} as never);
+    const row = queryClassificationLog()[0]!;
+    expect(row.feedback_kind).toBe('unknown');
+    expect(row.outcome_ref).toBe('feedback:unknown');
+  });
+
+  it('records a nack with self-stamped outcome', async () => {
+    const handler = captured.get('routing_feedback')!;
+    await handler(
+      { action: 'routing_feedback', feedback_kind: 'nack', feedback_reason: 'cannot complete this turn' },
+      session(),
+      {} as never,
+    );
+    const row = queryClassificationLog()[0]!;
+    expect(row.feedback_kind).toBe('nack');
+    expect(row.outcome_ref).toBe('feedback:nack');
+  });
+
+  it('stores suggested_target verbatim WITHOUT validating it against destinations (ADR-0040)', async () => {
+    const handler = captured.get('routing_feedback')!;
+    // A target this worker (or anyone) cannot reach — the host must NOT reject,
+    // resolve, or route on it; it is an operator-facing hint only.
+    await handler(
+      { action: 'routing_feedback', feedback_kind: 'misroute', suggested_target: 'totally-made-up-worker-xyz' },
+      session(),
+      {} as never,
+    );
+    expect(queryClassificationLog()[0]!.recommended_worker).toBe('totally-made-up-worker-xyz');
+  });
+
+  it('increments routing_feedback_total{kind,reported_by}', async () => {
+    const { routingFeedbackTotal } = await import('../../metrics.js');
+    const sum = async () => (await routingFeedbackTotal.get()).values.reduce((s, v) => s + v.value, 0);
+    const before = await sum();
+    const handler = captured.get('routing_feedback')!;
+    await handler({ action: 'routing_feedback', feedback_kind: 'misroute' }, session(), {} as never);
+    expect(await sum()).toBeGreaterThan(before);
+  });
+
+  it('is provably recording-only: the module references no send/route/inbound-write primitive', async () => {
+    // ADR-0040: the handler must have NO reroute path — active reroute was
+    // rejected. Guard structurally so a future edit that wires routing in fails.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+    for (const forbidden of ['routeAgentMessage', 'writeSessionMessage', 'writeMessageOut', 'resolveTargetSession']) {
+      expect(src.includes(forbidden)).toBe(false);
+    }
+  });
+});

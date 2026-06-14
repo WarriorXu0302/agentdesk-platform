@@ -269,6 +269,22 @@ export const escalationTotal = new client.Counter({
   registers: [registry],
 });
 
+export const routingFeedbackTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_routing_feedback_total`,
+  help: 'Worker routing feedback (ADR-0040, roadmap 2.1 misroute + 2.5 nack) — makes misroute/nack rate visible; the misroute confusion matrix is built from classification_log SQL, not this metric',
+  // `kind`: closed enum misroute|nack|unknown (coerced host-side).
+  // `reported_by`: the worker agent_group_id that raised the feedback — bounded
+  //   to the operator's configured agent-group set (like a2a metrics use a group
+  //   id, not a free string).
+  // Deliberately NO `suggested`/reason label: the worker's suggested-target is
+  // free text and even bucketed can blow up cardinality; its full value lives in
+  // classification_log.recommended_worker for dashboard queries (ADR-0040).
+  // Advisory only — feedback NEVER drives core routing (real reroute is the
+  // operator gateway's job; active reroute was rejected in ADR-0040).
+  labelNames: ['kind', 'reported_by'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',
