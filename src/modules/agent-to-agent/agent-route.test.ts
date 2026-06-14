@@ -7,7 +7,7 @@ import { isSafeAttachmentName, routeAgentMessage } from './agent-route.js';
 import { createDestination } from './db/agent-destinations.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from '../../db/index.js';
 import { getDb } from '../../db/connection.js';
-import { createSession, getSessionsByAgentGroup, updateSession } from '../../db/sessions.js';
+import { createSession, getSession, getSessionsByAgentGroup, updateSession } from '../../db/sessions.js';
 import { a2aOriginRejectedTotal } from '../../metrics.js';
 import { initSessionFolder, inboundDbPath, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
@@ -50,7 +50,7 @@ function readInbound(agentGroupId: string, sessionId: string) {
   const db = new Database(inboundDbPath(agentGroupId, sessionId), { readonly: true });
   const rows = db
     .prepare(
-      'SELECT id, platform_id, channel_type, content, source_session_id, origin_user_id FROM messages_in ORDER BY seq',
+      'SELECT id, platform_id, channel_type, content, source_session_id, origin_user_id, conversation_thread_id FROM messages_in ORDER BY seq',
     )
     .all() as Array<{
     id: string;
@@ -59,6 +59,7 @@ function readInbound(agentGroupId: string, sessionId: string) {
     content: string;
     source_session_id: string | null;
     origin_user_id: string | null;
+    conversation_thread_id: string | null;
   }>;
   db.close();
   return rows;
@@ -582,6 +583,47 @@ describe('routeAgentMessage return-path', () => {
     const a2aRow = aRows.find((r) => r.channel_type === 'agent');
     expect(a2aRow).toBeDefined();
     expect(a2aRow!.origin_user_id).toBe('feishu:ou_employee');
+  });
+
+  it('propagates conversation_thread_id to the target inbound row AND the target session (ADR-0039)', async () => {
+    // Seed S1 (source) with a threaded inbound row, exactly as the router's
+    // channel ingress (commit 2/4) would mint + stamp it.
+    writeSessionMessage(A, S1.id, {
+      id: 'chat-threaded',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: 'feishu:p2p:ou_e',
+      channelType: 'feishu',
+      threadId: null,
+      content: JSON.stringify({ senderId: 'ou_e', text: 'start' }),
+      conversationThreadId: 'conv-trace-1',
+    });
+
+    await routeAgentMessage(
+      { id: 'a-to-b', platform_id: B, content: JSON.stringify({ text: 'delegate' }), in_reply_to: null },
+      S1,
+    );
+
+    const bRows = readInbound(B, SB.id);
+    expect(bRows).toHaveLength(1);
+    // (a) the target inbound row carries the thread id — so the chain is traceable,
+    expect(bRows[0].conversation_thread_id).toBe('conv-trace-1');
+    // (b) and the target SESSION row is stamped — so B's own classify_intent
+    // records the same id and B is a valid source for its own downstream hops.
+    expect(getSession(SB.id)?.conversation_thread_id).toBe('conv-trace-1');
+  });
+
+  it('a2a propagation is null-safe when the source has no thread id (in-flight/pre-migration)', async () => {
+    // No threaded inbound seeded on S1 — routing must still succeed, leaving the
+    // target row NULL (never throws, never an observability-only feature blocking
+    // message flow — ADR-0039).
+    await routeAgentMessage(
+      { id: 'a-to-b-nothread', platform_id: B, content: JSON.stringify({ text: 'delegate' }), in_reply_to: null },
+      S1,
+    );
+    const bRows = readInbound(B, SB.id);
+    expect(bRows).toHaveLength(1);
+    expect(bRows[0].conversation_thread_id).toBeNull();
   });
 
   it('peer-affinity fallback: with no in_reply_to, routes to most recent peer-source session', async () => {

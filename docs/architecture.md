@@ -108,6 +108,19 @@ Gateway requests carry both the resolved `requester` block and an explicit
 apply a stricter policy to unauthenticated requests (typically: reject
 writes when the source is agent-asserted).
 
+3. **conversation_thread_id traversal (ADR-0039).** A separate, host-owned
+   correlation id is minted on a root (frontdesk) session at channel ingress
+   and stored on `sessions.conversation_thread_id`. It is propagated across a2a
+   hops alongside `origin_user_id` (agent-route reads it from the source
+   session's inbound.db — authoritative per-message — and stamps it on the
+   target's `messages_in` row and session), and recorded on `classification_log`,
+   so one request's full fan-out (frontdesk → worker A → worker B) shares one id
+   and is traceable end-to-end. **Unlike `origin_user_id`, it is purely
+   correlational**: it is never used for any authz/routing/priority decision and
+   the container never supplies it (no forgeable emit path). Routing stays bound
+   to `platform_id` / `source_session_id` / `root_session_id`; identity stays the
+   host-validated `origin_user_id`. NULL on pre-migration / channel-only rows.
+
 ## Channel Adapters
 
 Channel adapters are responsible for:

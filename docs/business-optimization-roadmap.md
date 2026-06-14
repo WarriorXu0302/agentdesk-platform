@@ -79,11 +79,19 @@
 - **建议**:(1) classification_log 加 `outcome_feedback`(软枚举 null/correct/misrouted);(2) 容器内加 MCP 工具让 worker 标记"误路由 + 建议目标";(3) 加混淆矩阵 metric(recommended_worker × actual_outcome);(4) 面板切片"本该我处理却流走的消息"。
 - **工作量 M · 价值 高**
 
-### 2.2 跨 worker 对话链缺统一 `conversation_thread_id` ⭐ — 🟡 设计锁定(ADR-0039,经对抗评审 SHIP IT),分 4 commit 落地中
+### 2.2 跨 worker 对话链缺统一 `conversation_thread_id` ⭐ — ✅ 已落地(ADR-0039,分 4 commit)
 > ⏸️ **评估后留作专项(需 ADR + 多 commit)**:这是 load-bearing 运行时契约变更——`conversation_thread_id` 要贯穿约 10 个文件(= `origin_user_id` 传播面),涉及①中央迁移(classification_log 加列)②session DB 迁移函数(messages_in/out 加列,走 migrateMessagesInTable 的 ALTER-on-open 模式覆盖在飞会话)③在对话起点生成④跨 a2a 跳传播(镜像 `origin_user_id` 的 writeSessionMessage 透传)。触及三库单写写路径 + a2a 身份传播这两条 load-bearing 路径,CLAUDE.md 要求契约变更同步文档,且不该在一次自主 pass 里赶工。**建议路径**:先写 ADR 定 schema + 传播契约,再分 commit(迁移 → 传播 → 测试),按 `origin_user_id` 已验证的模式做。**没有有意义的「安全小切片」**:单 classify 的 thread id ≈ 已有的 classification_id,价值全在多跳传播(即风险所在)。
 - **现状**:无贯穿 frontdesk classify → worker A → worker B → 回复的顶层线程 id。classification_log 记单次事件,messages_in 按 session 记入站,a2a 用 `source_session_id` + `in_reply_to`。**三张表都没有 conversation 级别标识**。要追踪一个请求的完整链路需多表 join + 时序重建。
 - **业务影响**:**高**。运营者无法快速回答"请求 X 现在在哪""这次多跳花了多久"。SLA 追踪和问题诊断要靠人肉翻日志。
 - **建议**:给 classification_log、messages_in、messages_out 加 `conversation_thread_id`,在 frontdesk classify 时生成,通过 request-context 贯穿所有下游 a2a 跳。这是核心需要的列;之上的"对话时间线"视图可做成下游可观测性模块。
+- **已实现**(按 ADR-0039,经 design+对抗评审 workflow SHIP IT,分 4 个独立可验证 commit):
+  - **关键纠偏**:评审否决了 explorer "container 供给 thread_id"(镜像 origin_user_id emit-time stamp)的方案——会开 **trace-poisoning** 面(prompt-injected agent 伪造 thread_id 拼接会话)+ 跨仓 blocker。改为 **100% host-owned**:container 永不触碰,**不进 messages_out**。还核实了 `root_session_id` 默认 agent-shared 模式不跨 hop,缺口真实。
+  - **commit 1** (schema):`messages_in.conversation_thread_id`(+ 索引)+ 迁移 031(classification_log 真 ALTER + 索引;session-DB marker)+ `migrateMessagesInTable` ALTER-on-open 覆盖在飞 inbound.db。无 writer,全 NULL。
+  - **commit 2** (mint+record):迁移 032 `sessions.conversation_thread_id`;`resolveSession` 仅对 root 会话 mint `conv-<ts>-<rand>`(a2a 子会话靠传播,不重 mint);`writeSessionMessage`/`insertMessage` 加 host 供给的 `conversationThreadId` 参;router channel ingress 盖到 messages_in;`handleClassifyIntent`/`handleEscalate` 从 **host session**(非 agent payload)读并记入 classification_log。
+  - **commit 3** (a2a 传播):`latestConversationThreadId`(读源 inbound.db,authoritative per-message,链式贯穿多跳)+ `setSessionConversationThreadId`(盖目标 session 行,使其 classify 与下游 hop 正确);agent-route 在既有 origin 交叉校验**之后**读取、转发到目标 messages_in + 盖目标 session 行。**不碰** messages_out/resolveTargetSession/hasDestination/spawn-depth。null-safe,绝不抛。
+  - **commit 4** (测试+守则+文档):agent-route 传播集成测试(thread_id 到目标 inbound + session 行;源无 thread → null-safe)+ classify 记录测试 + **guard 测试**(断言 `conversation_thread_id` 永不作 equality lookup/authz key,只允 SET);`architecture.md` 身份模型段补传播说明(明确纯关联、永不 authz、container 不供给)。
+  - **load-bearing 不变量**:纯关联、永不入 authz/路由(guard 测试 + 结构上路由绑 platform_id/source_session_id);host-owned 不碰 container 写的 outbound.db(三库单写);nullable + best-effort 绝不阻断消息流;迁移覆盖在飞会话。
+  - 验证:host tsc 绿、host 全套 **744** passed(含迁移 031/032 + 传播集成测试实跑)、guard 绿、lint/format 净。整个特性纯 host 侧,本地可完整验证。
 - **工作量 M · 价值 高**
 
 ### 2.3 "Escalation / 转人工"无显式模式和 SLA 保证 ⭐ — ✅ 已落地(ADR-0038 + 86ab9ef)
