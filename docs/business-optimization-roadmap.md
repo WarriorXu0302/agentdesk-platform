@@ -320,7 +320,9 @@
 - **未采纳**:可配阈值 env `AGENTDESK_POLICY_VIOLATION_THRESHOLD`——与既有告警风格(静态 `for:` + rate 阈值)不一致且对低价值项过度工程,改阈值直接改 alerts.yml 即可。
 - **工作量 S · 价值 低**
 
-### 5.9 审批无角色路由(所有审批人同一两按钮 UI)
+### 5.9 审批无角色路由(所有审批人同一两按钮 UI)— ⏭️ 已三角(角色路由归运营者网关;经 design+对抗评审 workflow)
+- **决定**:角色模型(谁是 finance-reviewer)+ 条件策略(成本>$1k 需财务批)是**业务策略 = 网关/运营者territory**(SPEC L20;同 7.3/7.5),平台核心不硬编码角色 taxonomy。**对抗评审**确认安全的核心切片很薄:`pickApprover(agentGroupId, ctx?)` 可选**网关委派**(仿 roster-gateway `authorizeDm`,HMAC 签名、结果与 host 角色候选**取交集**只缩不扩、不可达时审计回退;入 READ_PATHS),把业务角色路由交给运营者网关而核心永不知道"finance-approver"含义。`customApprovals/roles/criteria` 必须来自运营者配置/网关、**绝不 agent 自报**(否则成可伪造平行授权路,ADR-0038 Option D 先例)。**当前无运营者需求,按 roadmap "除非客户紧迫否则可延后" 暂缓**;设计已记录(见 workflow design-approval-role-routing 合成)待需求出现再落地。
+- **🔒 评审副产物(已派单 task_55b7fda7)**:审批卡当前**未带 `expectedUserId`**,故 `cardActionOperatorAllowed`(feishu.ts,空 expectedUserId 直接放行)对审批卡**从不触发**——与显式 member-scoped 的 roster 同意卡不一致(fail-closed 身份链缺口)。实际暴露被"卡只进审批人私聊 DM"缓解,属纵深防御硬化。修复需把选定审批人 id 线程进卡(注意:`target.userId` 是 namespaced `feishu:ou_xxx`,须按 channel normalize 成 operator open_id 格式,否则会**拒掉合法审批人、弄坏审批**)——已作为独立聚焦任务派出,不在本上下文末尾仓促改 load-bearing 路径。
 - **现状**:`APPROVAL_OPTIONS` 硬编码两按钮(`src/modules/approvals/primitive.ts:36-39`),`pickApprover`(L76-93)返扁平优先列表无角色上下文。无法按动作类型路由到专门审批人(安全审查/财务审查)或条件审批("成本>$1k 需财务批")。
 - **业务影响**:中等。所有审批用同一两选项界面,无视风险;无法按风险路由或条件审批。
 - **建议**:扩 `RequestApprovalOptions` 含可选 `customApprovals:[{action,criteria?,roles?}]`;`pickApprover` 接 roleFilter;动态生成卡选项。需角色扩展,是较大特性,**除非客户紧迫否则可延后**。
