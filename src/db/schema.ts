@@ -195,9 +195,18 @@ CREATE TABLE IF NOT EXISTS messages_in (
   -- than falling back to agent-asserted identity. NULL on channel-side
   -- inbound (senderId embedded in content is authoritative) and on
   -- pre-migration rows.
-  origin_user_id TEXT
+  origin_user_id TEXT,
+  -- Top-level conversation correlation id (ADR-0039, roadmap 2.2). Stable for
+  -- the whole multi-hop request (frontdesk → worker A → worker B), so operators
+  -- can trace a request end-to-end and measure multi-hop latency. HOST-owned and
+  -- PURE CORRELATION: never an input to any authz/routing/priority decision.
+  -- NULL on channel-side inbound before a thread is minted and on pre-migration
+  -- rows. The container never supplies this (unlike origin_user_id) — the host
+  -- stamps it from the source session, so there is no forgeable emit path.
+  conversation_thread_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_in_series ON messages_in(series_id);
+CREATE INDEX IF NOT EXISTS idx_messages_in_conversation ON messages_in(conversation_thread_id);
 
 -- Host tracks delivery outcomes for messages_out IDs.
 -- Avoids writing to outbound.db (container-owned).

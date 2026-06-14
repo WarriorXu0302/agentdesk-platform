@@ -514,6 +514,15 @@ export function migrateMessagesInTable(db: Database.Database): void {
     // user id is already in the content payload) and on pre-migration rows.
     db.prepare('ALTER TABLE messages_in ADD COLUMN origin_user_id TEXT').run();
   }
+  if (!cols.has('conversation_thread_id')) {
+    // Top-level conversation correlation id (ADR-0039). Host-owned, pure
+    // correlation — minted once at conversation start and propagated across
+    // a2a hops by the host. This ALTER-on-open covers in-flight inbound.db
+    // files (the central migration 031 only records the marker). NULL on
+    // pre-migration rows; never used for any authz/routing decision.
+    db.prepare('ALTER TABLE messages_in ADD COLUMN conversation_thread_id TEXT').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_in_conversation ON messages_in(conversation_thread_id)').run();
+  }
 }
 
 /**
