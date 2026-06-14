@@ -373,7 +373,7 @@
 - **建议**:卡投递(L934)包 try-catch,失败 fallback 到 `buildMarkdownCard` 含显式选项("请回复:Approve | Reject"),编号列出所有选项 + 原问题文本;记卡失败原因供运营者排查。渠道适配器责任,不需容器改动。
 - **工作量 S · 价值 中**
 
-### 6.5 系统消息/卡片无多语言支持 — ✅ 已落地(c5ae1a0,平台卡片串 i18n;按钮/错误串与 per-user locale 留作后续)
+### 6.5 系统消息/卡片无多语言支持 — ✅ 已落地(5a95d25,平台卡片串 i18n;按钮/错误串与 per-user locale 留作后续)
 - **落地**:新增 `src/channels/feishu/i18n.ts`(静态 catalog en/zh + `feishuLocale()` 读 `FEISHU_SYSTEM_LOCALE` 默认 `en` + `t(key,locale)` 英文兜底)。本地化了三处平台自发串:卡片标题 "Question"→"请选择"(`feishu.ts`)、过期通知(`feishu.ts`)、回复提示(`primitives.ts` 加可选 `replyHint` 参,保持纯函数;调用方传 `t('card.replyHint')`)。`.env.example` 记 `FEISHU_SYSTEM_LOCALE`;`i18n.test.ts` 覆盖 en/zh/zh-CN/未知 locale 兜底/显式 locale 覆盖。**有意只做确定性最小集**:agent 消息内容仍归 agent;按钮标签、错误串(签名校验)、从事件 `user.locale` 的逐用户检测留作后续增强(见 `i18n.ts` 头注)。
 - **现状**:`feishu.ts:919`("Question" 标题)、`progress-status/index.ts:19`、`primitives.ts:440-469`、错误消息(`feishu.ts:341,352,369`)**全硬编码英文**。无 locale 检测、无 i18n。
 - **业务影响**:中等。Feishu 主市场是中文组织,用户收到英文系统提示("Question"/"Invalid signature"),agent 回复可中文——割裂的混语言体验。
