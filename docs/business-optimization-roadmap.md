@@ -56,7 +56,8 @@
 - **有意未做(避免冗余)**:未建 Express/Fastify/Hono 三套独立骨架 —— 零依赖 reference-gateway 本身已是可运行模板,三套骨架只是同一份 handler 逻辑换 router 语法,价值低且增加维护面。kickstart 指南明确指出移植是机械工作并给出 Express 范例;Fastify/Hono 仅 router/body-parser 语法不同。如运营者实际需要再补。
 - **工作量 M · 价值 高**
 
-### 1.5 缺主流通道(Slack 等)参考实现
+### 1.5 缺主流通道(Slack 等)参考实现 — ⏭️ 不做(用户 2026-06-14 决定)
+- **决定**:平台 owner 明确不啃 Slack 参考通道。ADR-0031(fork-free 扩展加载)+ `docs/channels/writing-a-channel.md` + `examples/echo-channel/` 已让"不改主仓接通道"可行;一个完整 Slack 参考是 nice-to-have,不在本轮 polish 范围。如有运营者实际需要再建 `examples/slack-channel/`。
 - **现状**:`docs/channels/writing-a-channel.md` + ADR-0031(fork-free 扩展加载)已让"不改主仓接通道"成为可能,`examples/echo-channel/` 是可运行极简示例。但 echo-channel 是 in-memory,**不足以作为有真实 webhook/认证的 Slack 通道的参考**。
 - **业务影响**:中等。已用 Slack 的企业接入成本上升,但 ADR-0031 已大幅降低成本,缺的只是"一个完整 Slack 参考",不是整个能力。
 - **建议**:建 `examples/slack-channel/`(完整 webhook 验证 + 事件解析 + 回复)或 `docs/channels/slack-channel.md`(对标 `docs/feishu-channel.md`)。让接入从"理解接口 + 手写 2-4h"降到"copy + 改配置 30min"。
