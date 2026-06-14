@@ -439,13 +439,16 @@ export function buildAskQuestionFallbackText(params: {
   title: string;
   question: string;
   options: NormalizedQuestionOption[];
+  // Localized "reply with the option number" hint (roadmap 6.5). The caller
+  // resolves the locale (this module stays pure); defaults to English.
+  replyHint?: string;
 }): string {
   const lines = [
     params.question.trim() || params.title.trim(),
     '',
     ...params.options.map((o, i) => `${i + 1}. ${o.label}`),
     '',
-    'Reply with the option number or its text.',
+    params.replyHint ?? 'Reply with the option number or its text.',
   ];
   return lines.join('\n');
 }

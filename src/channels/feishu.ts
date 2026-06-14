@@ -71,6 +71,7 @@ import {
   verifyFeishuSignature,
 } from './feishu/primitives.js';
 import { captureDirectedCardConsent, captureP2pIngressConsent, parseRosterOptIn } from './feishu/roster-consent.js';
+import { t } from './feishu/i18n.js';
 import { optOutParticipant, parseRosterOptOut } from '../roster-dm.js';
 import { revokeGrantsForLeaver } from '../db/dm-grants.js';
 import { hasTable } from '../db/connection.js';
@@ -651,7 +652,7 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
             resolveReceiveTarget(cardChatId),
             'text',
             JSON.stringify({
-              text: 'This request has expired and can no longer be actioned. Please ask the assistant to send it again.',
+              text: t('card.expired'),
             }),
             null,
           );
@@ -942,7 +943,8 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
       const target = resolveReceiveTarget(platformId);
 
       if (content.type === 'ask_question' && typeof content.questionId === 'string') {
-        const title = typeof content.title === 'string' && content.title.trim() ? content.title.trim() : 'Question';
+        const title =
+          typeof content.title === 'string' && content.title.trim() ? content.title.trim() : t('card.question.title');
         const question = typeof content.question === 'string' ? content.question : '';
         const options = normalizeOptions(content.options);
         if (options.length === 0) {
@@ -968,7 +970,12 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
             questionId: content.questionId,
             err,
           });
-          const fallbackText = buildAskQuestionFallbackText({ title, question, options });
+          const fallbackText = buildAskQuestionFallbackText({
+            title,
+            question,
+            options,
+            replyHint: t('card.replyHint'),
+          });
           return createMessage(target, 'text', JSON.stringify({ text: fallbackText }), threadId);
         }
       }
