@@ -86,7 +86,7 @@
 - **建议**:给 classification_log、messages_in、messages_out 加 `conversation_thread_id`,在 frontdesk classify 时生成,通过 request-context 贯穿所有下游 a2a 跳。这是核心需要的列;之上的"对话时间线"视图可做成下游可观测性模块。
 - **工作量 M · 价值 高**
 
-### 2.3 "Escalation / 转人工"无显式模式和 SLA 保证 ⭐
+### 2.3 "Escalation / 转人工"无显式模式和 SLA 保证 ⭐ — 🟡 设计锁定(ADR-0038,经对抗评审),实现分 commit 落地中
 - **现状**:a2a 路由(`src/modules/agent-to-agent/agent-route.ts`)把所有转交一视同仁,无论是 worker→worker 还是 AI→人。无 `escalation_reason`/`urgency_level`/优先队列概念,`src/metrics.ts` 无 `escalation_total`,无 escalations 审计表。AI 转人工只能复用普通 a2a `send_message`。
 - **业务影响**:**高**。混合 AI/人部署中,升级被当普通转交,易违反 SLA;无升级成功率/响应时间可见性。
 - **建议**:加 `escalate` 动作(与 delegate/clarify 并列)+ `escalation_reason`/`urgency_level`;建 escalations 审计表;emit `escalation_total{reason,urgency,outcome}`。队列优先级属业务逻辑(归网关),但核心应提供 hook:classification_log 的 escalation_reason 字段、a2a 元数据里的 urgency。
