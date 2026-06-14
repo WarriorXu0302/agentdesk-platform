@@ -183,6 +183,25 @@ export function listLiveGrantsForParticipant(participantOpenId: string): DmGrant
 }
 
 /**
+ * Live grants in a scope — backs the agent-facing slot-discovery projection
+ * (ADR-0044). Filters out revoked / expired / max-sends-reached using the SAME
+ * liveness conditions as `checkGrantLive` (revoked_at, parseSqliteUtc expiry,
+ * max_sends), so what the agent sees as a usable slot is exactly what the
+ * delivery gate would accept. `now` is host time (never container time). Unlike
+ * `listGrantsForScope` (returns ALL, incl. dead grants), every row here is
+ * deliverable right now.
+ */
+export function listLiveGrantsForScope(scopeId: string, now: Date = new Date()): DmGrantRow[] {
+  const ms = now.getTime();
+  return listGrantsForScope(scopeId).filter(
+    (g) =>
+      !g.revoked_at &&
+      (!g.expires_at || parseSqliteUtc(g.expires_at) > ms) &&
+      (g.max_sends === 0 || g.sends_used < g.max_sends),
+  );
+}
+
+/**
  * Is this grant deliverable right now? Re-evaluated inside the delivery
  * critical section before EVERY adapter call (incl. each retry) and again
  * before markDelivered (R5). Returns a reason on rejection for the audit row.

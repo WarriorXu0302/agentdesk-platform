@@ -65,6 +65,7 @@ import {
   getBySlot,
   getByParticipant,
   checkGrantLive,
+  listLiveGrantsForScope,
   revokeScope,
   revokeGrantsForLeaver,
   checkRateKeys,
@@ -1358,5 +1359,50 @@ describe('reserve-before-send (#1 concurrency, #4 timeout)', () => {
     expect(getBySlot('scope-Y', 'reviewer')?.sends_used).toBe(0);
     expect(getBySlot('scope-Y', 'reviewer')?.revoked_at ?? null).toBeNull();
     expect(checkGrantLive('scope-Y', 'reviewer').ok).toBe(true);
+  });
+});
+
+// --- listLiveGrantsForScope (ADR-0044 agent slot discovery) ----------------
+describe('listLiveGrantsForScope', () => {
+  const base = {
+    agentGroupId: 'ag-1',
+    consentSource: 'directed-card' as const,
+    consentInboundMsgId: 'm-consent',
+  };
+  function grant(scopeId: string, slot: string, openId: string, extra: Record<string, unknown> = {}): void {
+    insertDmGrant({
+      ...base,
+      scopeId,
+      slotLabel: slot,
+      participantOpenId: openId,
+      dmPlatformId: `feishu:p2p:${openId}`,
+      ...extra,
+    });
+  }
+
+  it('returns only deliverable slots — excludes revoked / expired / other-scope', () => {
+    grant('scope-A', 'approver', 'ou_live');
+    grant('scope-A', 'stale', 'ou_exp', { expiresAt: new Date(Date.now() - 60_000).toISOString() });
+    grant('scope-A', 'gone', 'ou_rev');
+    // revoke the 'gone' slot directly (test-local)
+    getDb()
+      .prepare('UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND slot_label = ?')
+      .run(new Date().toISOString(), 'scope-A', 'gone');
+    grant('scope-OTHER', 'approver', 'ou_other'); // scope isolation
+
+    const live = listLiveGrantsForScope('scope-A');
+    expect(live.map((g) => g.slot_label).sort()).toEqual(['approver']);
+    // matches the delivery gate's own liveness verdict
+    expect(checkGrantLive('scope-A', 'approver').ok).toBe(true);
+    expect(checkGrantLive('scope-A', 'stale').ok).toBe(false);
+    expect(checkGrantLive('scope-A', 'gone').ok).toBe(false);
+  });
+
+  it('excludes a grant whose max_sends is exhausted', () => {
+    grant('scope-M', 'capped', 'ou_cap', { maxSends: 1 });
+    getDb()
+      .prepare('UPDATE dm_grants SET sends_used = max_sends WHERE scope_id = ? AND slot_label = ?')
+      .run('scope-M', 'capped');
+    expect(listLiveGrantsForScope('scope-M')).toHaveLength(0);
   });
 });
