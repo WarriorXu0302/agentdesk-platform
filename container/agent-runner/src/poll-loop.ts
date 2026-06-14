@@ -10,6 +10,8 @@ import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { a2aOriginUserId } from './a2a-origin.js';
+import { getConfig } from './config.js';
+import { flushCompactionSummary } from './mcp-tools/gateway.js';
 import {
   clearCurrentClassificationId,
   clearCurrentInReplyTo,
@@ -707,6 +709,23 @@ async function runQuery(
             `[system] Context was just compacted. Reminder: you have ${destinations.length} destinations (${names}). ` +
               `Use <message to="name"> blocks to address them. Bare text goes to the scratchpad fallback only.`,
           );
+        }
+        // Flush the compaction summary to durable gateway memory (ADR-0041,
+        // roadmap 4.1) so the agent can later recall what was compacted away.
+        // Snapshot the per-turn identity NOW (synchronously) — the flush is
+        // detached and may outlive the turn's identity-clear in the finally.
+        // Fire-and-forget: never awaited (won't block the turn). getConfig() is
+        // resolved INSIDE the promise chain because it throws when the config
+        // singleton isn't loaded (some test contexts) — folding it in means any
+        // such throw becomes a caught rejection, never disrupting the event loop.
+        // No-op when the provider exposed no summary (e.g. Claude) or
+        // memoryMode!=gateway. See flushCompactionSummary for the gates.
+        if (event.summary) {
+          const summaryText = event.summary;
+          const identitySnapshot = getRequestIdentity();
+          void Promise.resolve()
+            .then(() => flushCompactionSummary(summaryText, identitySnapshot, getConfig()))
+            .catch((e) => log(`conversation.summary flush error: ${e instanceof Error ? e.message : String(e)}`));
         }
       } else if (event.type === 'usage') {
         // provider.request (LLM) span (ADR-0026). Each usage event marks one

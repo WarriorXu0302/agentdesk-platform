@@ -383,7 +383,15 @@ class CompactingProvider {
       yield { type: 'activity' as const };
       yield { type: 'init' as const, continuation: 'compaction-test-session' };
       yield { type: 'activity' as const };
-      yield { type: 'compacted' as const, text: 'Context compacted (50,000 tokens compacted).' };
+      // Carry a `summary` so the poll-loop's conversation.summary flush branch
+      // (ADR-0041) is exercised. No config is loaded in this harness, so
+      // getConfig() throws inside the flush — which MUST be caught (folded into
+      // the promise chain) and never disrupt the loop or the reminder below.
+      yield {
+        type: 'compacted' as const,
+        text: 'Context compacted (50,000 tokens compacted).',
+        summary: 'Summarized the earlier turns.',
+      };
 
       // Wait for poll-loop to push the reminder (or end / abort)
       await new Promise<void>((resolve) => {
