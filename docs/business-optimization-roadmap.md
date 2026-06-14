@@ -213,7 +213,8 @@
 
 ## 主题四:记忆与业务知识(平台 hook + 文档)
 
-### 4.1 上下文压缩后未自动落库到 `conversation.summary` ⭐
+### 4.1 上下文压缩后未自动落库到 `conversation.summary` ⭐ — ✅ 已落地(ADR-0041,cost-neutral / OpenAI-only,分 2 commit 至 cf37056)
+- **落地**(经 design+对抗评审 workflow,合成 ship cost-neutral、驳回额外摘要调用):核实出 provider 非对称——`compacted` 事件的 `text` 只是状态串非摘要;OpenAI 压缩时内部已生成摘要(`summarizeOldWindow`)但没透出;Claude SDK 内部压缩、只暴露 `pre_tokens`、**无摘要文本**。实现:`compacted` 事件加可选 `summary`,OpenAI 透出压缩本就花的摘要(零额外模型调用),poll-loop **fire-and-forget** 经既有 `/memory/upsert` 签名代理 WRITE_PATH 落 `value.autoSummary`(merge,不覆盖 agent 事实);Claude flush 是 no-op(不伪造、不额外调模型)。对抗评审两条强制修正:身份**同步快照**传入(detached flush 可能晚于 turn identity-clear)、`getConfig()` 折进 promise 链(throw 变可捕获,绝不打断事件循环)。`gateway.instructions.md` 加指引让 agent 失忆时搜 `conversation.summary`(闭合读侧)。**有意未做**:Claude 摘要(SDK 不暴露,记 gap 待后续);OpenAI 硬裁剪兜底无摘要(v1 接受)。
 - **现状**:上下文压缩已实现(ADR-0033、ADR-0024),poll-loop(`poll-loop.ts:686-707`)正确处理 `compacted` 事件并注入路由提醒,但**不调用 `gateway_memory_upsert` 落库压缩摘要**。ADR-0033 L88-89、L115 明确把这一步 defer 成独立批次,**至今未实现**。
 - **业务影响**:**高**。长对话压缩后上下文即蒸发,agent 无法回忆上轮决策/事实,打破"agent 记得"的心智模型。
 - **建议**:实现 defer 的 summary flush:`compacted` 事件后异步(不阻塞当前轮)调 `gateway_memory_upsert(namespace='conversation.summary')`,写入关键决策/用户偏好/待办。注意与消息投递不竞争。这是明确的独立工程任务,非设计缺陷。
