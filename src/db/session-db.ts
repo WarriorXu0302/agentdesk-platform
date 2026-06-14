@@ -99,6 +99,58 @@ export function replaceDestinations(db: Database.Database, entries: DestinationR
 }
 
 // ---------------------------------------------------------------------------
+// roster_slots (agent-facing slot-discovery projection, ADR-0044 Stage 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * One projected roster slot. IDENTITY-FREE BY CONSTRUCTION: the only fields are
+ * the slot label and two liveness hints. Never carries participant_open_id /
+ * dm_platform_id / scope_id — the agent must only ever see a slot label.
+ */
+export interface RosterSlotRow {
+  slot_label: string;
+  /** Sends left before max_sends auto-revokes; null when uncapped. */
+  sends_remaining: number | null;
+  /** ISO-8601 UTC absolute expiry, or null when the grant never expires. */
+  expires_at: string | null;
+}
+
+/**
+ * Ensure the roster_slots table exists on a pre-existing inbound.db. INBOUND_SCHEMA
+ * carries the table for fresh sessions, but ensureSchema only runs at session
+ * creation — older session DBs never re-run it. Mirrors migrateDeliveredTable /
+ * migrateMessagesInTable (idempotent ALTER-on-open), here a CREATE-IF-NOT-EXISTS
+ * since roster_slots is a whole new table rather than a new column.
+ */
+export function migrateInboundRosterSlots(db: Database.Database): void {
+  db.prepare(
+    `CREATE TABLE IF NOT EXISTS roster_slots (
+       slot_label      TEXT PRIMARY KEY,
+       sends_remaining INTEGER,
+       expires_at      TEXT
+     )`,
+  ).run();
+}
+
+/**
+ * Replace the whole roster_slots projection in one transaction (DELETE+INSERT).
+ * The full-replace is what makes a since-revoked / since-expired slot disappear
+ * on the next wake: callers pass ONLY the live slots, so anything missing from
+ * `slots` is dropped. Passing an empty array clears the projection.
+ */
+export function replaceRosterSlots(db: Database.Database, slots: RosterSlotRow[]): void {
+  const tx = db.transaction((rows: RosterSlotRow[]) => {
+    db.prepare('DELETE FROM roster_slots').run();
+    const stmt = db.prepare(
+      `INSERT INTO roster_slots (slot_label, sends_remaining, expires_at)
+       VALUES (@slot_label, @sends_remaining, @expires_at)`,
+    );
+    for (const row of rows) stmt.run(row);
+  });
+  tx(slots);
+}
+
+// ---------------------------------------------------------------------------
 // messages_in
 // ---------------------------------------------------------------------------
 

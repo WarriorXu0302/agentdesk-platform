@@ -241,6 +241,23 @@ CREATE TABLE IF NOT EXISTS session_routing (
   platform_id  TEXT,
   thread_id    TEXT
 );
+
+-- Agent-facing roster-DM slot discovery projection (ADR-0044 Stage 1).
+-- Host DELETE+INSERTs this on every container wake (ONLY when ALLOW_ROSTER_DM
+-- is on for the group) from the scope's LIVE grants, so the agent can learn
+-- WHICH slots it may DM via send_roster_dm. Deliberately projects ZERO identity
+-- fields — no participant_open_id, no dm_platform_id — so the agent only ever
+-- sees a slot LABEL, never the consented person's id (R3 slot indirection). The
+-- scope_id is never written here either; it stays on the trusted host side.
+-- May be stale within a container lifetime (a grant revoked mid-turn); the
+-- send-time checkGrantLive re-check (ADR-0023 R5) is the authoritative gate.
+CREATE TABLE IF NOT EXISTS roster_slots (
+  slot_label      TEXT PRIMARY KEY,
+  -- Remaining sends before max_sends auto-revokes the grant; NULL = uncapped.
+  sends_remaining INTEGER,
+  -- Absolute grant expiry (ISO-8601 UTC) or NULL when the grant never expires.
+  expires_at      TEXT
+);
 `;
 
 /** Container-owned: outbound messages + processing acknowledgments. */

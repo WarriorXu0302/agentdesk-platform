@@ -61,6 +61,7 @@ import {
   sessionDir,
   writeSessionRouting,
 } from './session-manager.js';
+import { writeRosterSlots } from './roster-dm.js';
 import type { AgentGroup, Session } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
@@ -261,6 +262,10 @@ async function spawnContainer(session: Session): Promise<void> {
         writeDestinations(agentGroup.id, session.id);
       }
       writeSessionRouting(agentGroup.id, session.id);
+      // Project the live roster-DM slots so the agent can discover which slots
+      // it may DM (ADR-0044 Stage 1). Internally flag-gated: a no-op (writes
+      // nothing) unless ALLOW_ROSTER_DM is on for this group.
+      writeRosterSlots(agentGroup.id, session.id);
 
       // Read container config once — threaded through provider resolution,
       // buildMounts, and buildContainerArgs so we don't re-read the file.

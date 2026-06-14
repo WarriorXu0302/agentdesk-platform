@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { closeSessionDb, getInboundDb, initTestSessionDb } from './db/connection.js';
-import { buildSystemPromptAddendum } from './destinations.js';
+import { buildSystemPromptAddendum, getLiveRosterSlots } from './destinations.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -70,5 +70,47 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('Do not store durable user');
     expect(prompt).toContain('gateway_memory_get');
     expect(prompt).toContain('gateway_memory_upsert');
+  });
+});
+
+describe('buildSystemPromptAddendum — roster slots (ADR-0044 Stage 1 discovery)', () => {
+  function seedSlot(slotLabel: string, sendsRemaining: number | null, expiresAt: string | null): void {
+    getInboundDb()
+      .prepare('INSERT INTO roster_slots (slot_label, sends_remaining, expires_at) VALUES (?, ?, ?)')
+      .run(slotLabel, sendsRemaining, expiresAt);
+  }
+
+  it('lists projected slot labels and never any identity field', () => {
+    seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
+    seedSlot('approver', 2, '2026-07-01T00:00:00.000Z');
+    seedSlot('ops-lead', null, null);
+
+    const prompt = buildSystemPromptAddendum('Casa');
+
+    expect(prompt).toContain('Roster slots you can DM');
+    expect(prompt).toContain('`approver`');
+    expect(prompt).toContain('`ops-lead`');
+    expect(prompt).toContain('2 send(s) left');
+    expect(prompt).toContain('expires 2026-07-01T00:00:00.000Z');
+    // The agent must NEVER see anything that identifies the person behind a slot.
+    expect(prompt).not.toContain('ou_');
+    expect(prompt).not.toContain('feishu:p2p');
+    expect(prompt).not.toContain('open_id');
+  });
+
+  it('omits the roster section entirely when there are no live slots', () => {
+    seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
+
+    const prompt = buildSystemPromptAddendum('Casa');
+
+    expect(prompt).not.toContain('Roster slots you can DM');
+  });
+
+  it('getLiveRosterSlots projects only labels + liveness hints (no identity columns)', () => {
+    seedSlot('approver', 1, null);
+    const slots = getLiveRosterSlots();
+    expect(slots).toEqual([{ slotLabel: 'approver', sendsRemaining: 1, expiresAt: null }]);
+    // Identity-free by construction: the row carries exactly three keys.
+    expect(Object.keys(slots[0]).sort()).toEqual(['expiresAt', 'sendsRemaining', 'slotLabel']);
   });
 });

@@ -225,6 +225,11 @@ export function initTestSessionDb(): { inbound: Database; outbound: Database } {
       platform_id     TEXT,
       agent_group_id  TEXT
     );
+    CREATE TABLE roster_slots (
+      slot_label      TEXT PRIMARY KEY,
+      sends_remaining INTEGER,
+      expires_at      TEXT
+    );
   `);
 
   _outbound = new Database(':memory:');

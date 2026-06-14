@@ -82,6 +82,7 @@ import {
   looksLikeRawPlatformId,
   parseRosterOptOut,
   optOutParticipant,
+  writeRosterSlots,
 } from './roster-dm.js';
 import { authorizeDm } from './roster-gateway.js';
 import { captureP2pIngressConsent, captureDirectedCardConsent } from './channels/feishu/roster-consent.js';
@@ -1404,5 +1405,140 @@ describe('listLiveGrantsForScope', () => {
       .prepare('UPDATE dm_grants SET sends_used = max_sends WHERE scope_id = ? AND slot_label = ?')
       .run('scope-M', 'capped');
     expect(listLiveGrantsForScope('scope-M')).toHaveLength(0);
+  });
+});
+
+// --- writeRosterSlots (ADR-0044 Stage 1 discovery projection) ---------------
+describe('writeRosterSlots', () => {
+  interface SlotRow {
+    slot_label: string;
+    sends_remaining: number | null;
+    expires_at: string | null;
+  }
+  function readRosterSlots(sessionId: string): SlotRow[] {
+    const db = new Database(inboundDbPath('ag-1', sessionId));
+    try {
+      return db.prepare('SELECT * FROM roster_slots ORDER BY slot_label').all() as SlotRow[];
+    } catch {
+      return []; // table absent
+    } finally {
+      db.close();
+    }
+  }
+  // A second participant — the UNIQUE(scope_id, participant_open_id) constraint
+  // means each scope holds at most one slot per participant, so multi-slot
+  // fixtures need distinct open_ids.
+  const PARTICIPANT_2 = 'ou_participant_2';
+  function rootSession(): Session {
+    const { session } = resolveSession('ag-1', null, null, 'agent-shared');
+    return session;
+  }
+
+  it('projects only LIVE slots, with zero identity fields, scope-isolated', () => {
+    const session = rootSession();
+    const scope = session.id;
+    // live, uncapped
+    insertDmGrant({
+      scopeId: scope,
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm1',
+    });
+    // live, capped 5, 2 used → 3 remaining
+    insertDmGrant({
+      scopeId: scope,
+      agentGroupId: 'ag-1',
+      slotLabel: 'ops',
+      participantOpenId: PARTICIPANT_2,
+      dmPlatformId: `feishu:p2p:${PARTICIPANT_2}`,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm2',
+      maxSends: 5,
+    });
+    getDb().prepare('UPDATE dm_grants SET sends_used = 2 WHERE scope_id = ? AND slot_label = ?').run(scope, 'ops');
+    // revoked
+    insertDmGrant({
+      scopeId: scope,
+      agentGroupId: 'ag-1',
+      slotLabel: 'gone',
+      participantOpenId: 'ou_rev',
+      dmPlatformId: 'feishu:p2p:ou_rev',
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm3',
+    });
+    getDb()
+      .prepare('UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND slot_label = ?')
+      .run(now(), scope, 'gone');
+    // expired
+    insertDmGrant({
+      scopeId: scope,
+      agentGroupId: 'ag-1',
+      slotLabel: 'stale',
+      participantOpenId: 'ou_exp',
+      dmPlatformId: 'feishu:p2p:ou_exp',
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm4',
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    // different scope — must not leak in
+    insertDmGrant({
+      scopeId: 'scope-OTHER',
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: 'ou_other',
+      dmPlatformId: 'feishu:p2p:ou_other',
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm5',
+    });
+
+    writeRosterSlots('ag-1', session.id);
+
+    const rows = readRosterSlots(session.id);
+    expect(rows.map((r) => r.slot_label)).toEqual(['approver', 'ops']);
+    expect(rows.find((r) => r.slot_label === 'approver')?.sends_remaining).toBeNull(); // uncapped
+    expect(rows.find((r) => r.slot_label === 'ops')?.sends_remaining).toBe(3); // 5 - 2
+    // ZERO identity fields — the row has EXACTLY these three columns.
+    expect(Object.keys(rows[0]).sort()).toEqual(['expires_at', 'sends_remaining', 'slot_label']);
+    const serialized = JSON.stringify(rows);
+    expect(serialized).not.toContain('ou_');
+    expect(serialized).not.toContain('feishu:p2p');
+  });
+
+  it('flag OFF writes nothing (empty projection even with a live grant)', () => {
+    mockRosterEnabled = false;
+    const session = rootSession();
+    insertDmGrant({
+      scopeId: session.id,
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm1',
+    });
+    writeRosterSlots('ag-1', session.id);
+    expect(readRosterSlots(session.id)).toHaveLength(0);
+  });
+
+  it('re-projecting on the next wake drops a since-revoked slot', () => {
+    const session = rootSession();
+    insertDmGrant({
+      scopeId: session.id,
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: PARTICIPANT,
+      dmPlatformId: DM_PLATFORM,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'm1',
+    });
+    writeRosterSlots('ag-1', session.id);
+    expect(readRosterSlots(session.id).map((r) => r.slot_label)).toEqual(['approver']);
+    // Grant revoked between wakes — the full DELETE+INSERT replace drops it.
+    revokeScope(session.id);
+    writeRosterSlots('ag-1', session.id);
+    expect(readRosterSlots(session.id)).toHaveLength(0);
   });
 });

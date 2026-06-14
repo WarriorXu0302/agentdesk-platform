@@ -108,6 +108,11 @@ export function buildSystemPromptAddendum(assistantName?: string, memoryMode?: M
 
   sections.push(buildDestinationsSection());
 
+  const rosterSlots = getLiveRosterSlots();
+  if (rosterSlots.length > 0) {
+    sections.push(buildRosterSlotsSection(rosterSlots));
+  }
+
   return sections.join('\n\n');
 }
 
@@ -147,5 +152,62 @@ function buildDestinationsSection(): string {
   lines.push(
     'To send a message mid-response (e.g., an acknowledgment before a long task), call the `send_message` MCP tool with the `to` parameter set to a destination name.',
   );
+  return lines.join('\n');
+}
+
+/**
+ * A roster-DM slot the agent may DM (ADR-0044 Stage 1). IDENTITY-FREE: the host
+ * projection deliberately carries no open_id / platform_id, so this type can
+ * only ever name a slot LABEL plus two liveness hints — there is no field
+ * through which the recipient's identity could reach the agent.
+ */
+export interface RosterSlotEntry {
+  slotLabel: string;
+  /** Sends left before the grant auto-revokes; null when uncapped. */
+  sendsRemaining: number | null;
+  /** ISO-8601 UTC absolute expiry, or null when the grant never expires. */
+  expiresAt: string | null;
+}
+
+/**
+ * Read the host-written roster_slots projection (ADR-0044 Stage 1). The host
+ * DELETE+INSERTs this on every wake when roster DM is enabled for the group;
+ * when it isn't (or on an older inbound.db that predates the table) the table is
+ * absent and we return [] so no roster section is added. The cached singleton is
+ * fine — like destinations, the host writes this once at spawn.
+ */
+export function getLiveRosterSlots(): RosterSlotEntry[] {
+  try {
+    const rows = getInboundDb()
+      .prepare('SELECT slot_label, sends_remaining, expires_at FROM roster_slots ORDER BY slot_label')
+      .all() as Array<{ slot_label: string; sends_remaining: number | null; expires_at: string | null }>;
+    return rows.map((r) => ({
+      slotLabel: r.slot_label,
+      sendsRemaining: r.sends_remaining,
+      expiresAt: r.expires_at,
+    }));
+  } catch {
+    // Table absent (roster DM off, or pre-migration inbound.db) — no slots.
+    return [];
+  }
+}
+
+function buildRosterSlotsSection(slots: RosterSlotEntry[]): string {
+  const lines = [
+    '## Roster slots you can DM',
+    '',
+    'These people have CONSENTED to receive a direct private message from you for this conversation. ' +
+      'Address them by their roster **slot label** with the `send_roster_dm` MCP tool — you cannot pick a person ' +
+      'directly, and you are never shown who is behind a slot. The platform resolves the slot to the consented ' +
+      'recipient, enforces consent/revocation/rate limits, and may reject a send if consent was withdrawn.',
+    '',
+  ];
+  for (const slot of slots) {
+    const hints: string[] = [];
+    if (slot.sendsRemaining !== null) hints.push(`${slot.sendsRemaining} send(s) left`);
+    if (slot.expiresAt) hints.push(`expires ${slot.expiresAt}`);
+    const suffix = hints.length > 0 ? ` (${hints.join(', ')})` : '';
+    lines.push(`- \`${slot.slotLabel}\`${suffix}`);
+  }
   return lines.join('\n');
 }

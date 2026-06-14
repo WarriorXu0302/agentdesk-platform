@@ -19,6 +19,8 @@
  *
  * No business logic, no backend calls — this is platform-core security glue.
  */
+import fs from 'fs';
+
 import { readContainerConfig } from './container-config.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getSession } from './db/sessions.js';
@@ -27,7 +29,10 @@ import {
   revokeScope as revokeScopeGrants,
   revokeParticipantInScope,
   listLiveGrantsForParticipant,
+  listLiveGrantsForScope,
 } from './db/dm-grants.js';
+import { migrateInboundRosterSlots, replaceRosterSlots } from './db/session-db.js';
+import { inboundDbPath, openInboundDb } from './session-manager.js';
 import { readEnvFile } from './env.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
@@ -100,6 +105,55 @@ export function isRootSessionModeForRosterDm(agentGroupId: string): boolean {
  */
 export function hostScopeForSession(session: Session): string {
   return session.root_session_id ?? session.id;
+}
+
+/**
+ * Project this session's LIVE roster-DM grants into inbound.db's roster_slots
+ * table so the agent can discover which slots it may DM (ADR-0044 Stage 1, the
+ * "discover" leg of the host-mediated send/discover/invite triple). Mirrors the
+ * a2a writeDestinations() wake-refresh writer, and is called right alongside it
+ * (container-runner.ts spawnContainer) on every wake.
+ *
+ * Host-mediated and fail-closed:
+ *   - Writes NOTHING unless ALLOW_ROSTER_DM is on for the group, so a deployment
+ *     that never opted in never even creates the projection.
+ *   - scope_id is derived HOST-side from the Session row (hostScopeForSession)
+ *     and is NEVER written into inbound.db — only the trusted host knows it (R4).
+ *   - Projects ONLY {slot_label, sends_remaining, expires_at}. There is NO
+ *     identity column: the grant holds participant_open_id / dm_platform_id, but
+ *     those stay on the host. The agent sees a slot LABEL and nothing that lets
+ *     it reconstruct the recipient (R3 slot indirection).
+ *
+ * Full DELETE+INSERT replace, so a grant revoked / expired / max-sends-reached
+ * since the last wake simply isn't in listLiveGrantsForScope and drops out of
+ * the projection. The projection can still be stale within one container
+ * lifetime (a grant revoked mid-turn); the send-time checkGrantLive re-check
+ * (R5) is the authoritative gate, not this hint.
+ */
+export function writeRosterSlots(agentGroupId: string, sessionId: string): void {
+  if (!rosterDmEnabledForGroup(agentGroupId)) return;
+
+  const dbPath = inboundDbPath(agentGroupId, sessionId);
+  if (!fs.existsSync(dbPath)) return;
+
+  const session = getSession(sessionId);
+  if (!session) return;
+
+  const scopeId = hostScopeForSession(session);
+  const slots = listLiveGrantsForScope(scopeId).map((g) => ({
+    slot_label: g.slot_label,
+    sends_remaining: g.max_sends === 0 ? null : g.max_sends - g.sends_used,
+    expires_at: g.expires_at,
+  }));
+
+  const db = openInboundDb(agentGroupId, sessionId);
+  try {
+    migrateInboundRosterSlots(db);
+    replaceRosterSlots(db, slots);
+  } finally {
+    db.close();
+  }
+  log.debug('Roster slots projected', { sessionId, count: slots.length });
 }
 
 /**
