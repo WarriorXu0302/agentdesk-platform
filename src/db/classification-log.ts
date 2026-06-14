@@ -16,11 +16,16 @@ export interface ClassificationLogEntry {
   platformId?: string | null;
   threadId?: string | null;
   userMessage?: string | null;
+  // For action='delegate'|'clarify' this is frontdesk's ACL-validated worker
+  // recommendation. For action='routing_feedback' (ADR-0040) it is REUSED to
+  // carry the worker's UNVALIDATED suggested-target hint (where it thinks the
+  // message belonged) — recorded only, never resolved/authz-checked/routed.
+  // Downstream analytics MUST filter by `action` to keep the two semantics apart.
   recommendedWorker?: string | null;
   confidence?: number | null;
   candidates?: string[] | null;
   reasoning?: string | null;
-  action: 'delegate' | 'clarify' | 'reject' | 'answer_self' | 'escalate';
+  action: 'delegate' | 'clarify' | 'reject' | 'answer_self' | 'escalate' | 'routing_feedback';
   outcomeRef?: string | null;
   // Escalation hook (ADR-0038). Only set when action='escalate'. Both are
   // untrusted agent-supplied metadata recorded for observability/audit — never
@@ -28,6 +33,11 @@ export interface ClassificationLogEntry {
   // closed enum at the host boundary before it reaches here.
   escalationReason?: string | null;
   urgencyLevel?: string | null;
+  // Worker routing feedback (ADR-0040). Only set when action='routing_feedback'.
+  // Coerced to a closed enum (misroute|nack|unknown) at the host boundary before
+  // it reaches here. The worker's free-text reason reuses `reasoning` and its
+  // suggested-target hint reuses `recommendedWorker` (see note above).
+  feedbackKind?: string | null;
   // Top-level conversation correlation id (ADR-0039). Read from the host session
   // (not the agent payload), so a multi-hop chain shares one id. NULL until a
   // thread is minted. Pure correlation — never an authz/routing input.
@@ -41,8 +51,8 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
          (occurred_at, classification_id, session_id, agent_group_id, user_id,
           channel_type, platform_id, thread_id, user_message,
           recommended_worker, confidence, candidates, reasoning, action, outcome_ref,
-          escalation_reason, urgency_level, conversation_thread_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          escalation_reason, urgency_level, conversation_thread_id, feedback_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       now.toISOString(),
@@ -63,6 +73,7 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
       entry.escalationReason ? entry.escalationReason.slice(0, 500) : null,
       entry.urgencyLevel ?? null,
       entry.conversationThreadId ?? null,
+      entry.feedbackKind ?? null,
     );
 }
 
