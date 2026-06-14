@@ -103,6 +103,9 @@ async function handleClassifyIntent(content: Record<string, unknown>, session: S
     reasoning: readString(content, 'reasoning') ?? null,
     action,
     outcomeRef: readString(content, 'outcomeRef') ?? null,
+    // Conversation thread id from the host session (ADR-0039) — not the agent
+    // payload — so a multi-hop chain shares one id. NULL until a thread is minted.
+    conversationThreadId: session.conversation_thread_id ?? null,
   };
 
   // For actions that produce no further outbound (reject / answer_self),
@@ -168,6 +171,7 @@ async function handleEscalate(content: Record<string, unknown>, session: Session
     outcomeRef: 'escalated',
     escalationReason: reason,
     urgencyLevel: urgency,
+    conversationThreadId: session.conversation_thread_id ?? null,
   };
 
   try {

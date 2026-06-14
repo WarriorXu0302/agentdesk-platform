@@ -28,6 +28,10 @@ export interface ClassificationLogEntry {
   // closed enum at the host boundary before it reaches here.
   escalationReason?: string | null;
   urgencyLevel?: string | null;
+  // Top-level conversation correlation id (ADR-0039). Read from the host session
+  // (not the agent payload), so a multi-hop chain shares one id. NULL until a
+  // thread is minted. Pure correlation — never an authz/routing input.
+  conversationThreadId?: string | null;
 }
 
 export function recordClassification(entry: ClassificationLogEntry, now: Date = new Date()): void {
@@ -37,8 +41,8 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
          (occurred_at, classification_id, session_id, agent_group_id, user_id,
           channel_type, platform_id, thread_id, user_message,
           recommended_worker, confidence, candidates, reasoning, action, outcome_ref,
-          escalation_reason, urgency_level)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          escalation_reason, urgency_level, conversation_thread_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       now.toISOString(),
@@ -58,6 +62,7 @@ export function recordClassification(entry: ClassificationLogEntry, now: Date = 
       entry.outcomeRef ?? null,
       entry.escalationReason ? entry.escalationReason.slice(0, 500) : null,
       entry.urgencyLevel ?? null,
+      entry.conversationThreadId ?? null,
     );
 }
 

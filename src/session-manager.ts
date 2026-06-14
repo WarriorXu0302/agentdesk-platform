@@ -161,6 +161,10 @@ export function resolveSession(
     thread_id: lookupThreadId,
     owner_user_id: rootSessionId ? ownerUserId : isUserScopedSessionMode(sessionMode) ? ownerUserId : null,
     root_session_id: rootSessionId ?? id,
+    // Mint the conversation thread id ONLY on a root (frontdesk) session — a
+    // child a2a session (rootSessionId set) inherits it via propagation
+    // (ADR-0039 commit 3/4), so minting here would shatter the thread.
+    conversation_thread_id: rootSessionId ? null : `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     agent_provider: null,
     status: 'active',
     container_status: 'stopped',
@@ -276,6 +280,12 @@ export function writeSessionMessage(
      * NULL on channel-side inbound (senderId already embedded in content).
      */
     originUserId?: string | null;
+    /**
+     * Top-level conversation correlation id (ADR-0039). Host-supplied; minted on
+     * a root session at ingress, propagated to a2a children. NULL on channel
+     * inbound before a thread exists. Never an authz/routing input.
+     */
+    conversationThreadId?: string | null;
   },
 ): void {
   // Extract base64 attachment data, save to inbox, replace with file paths
@@ -296,6 +306,7 @@ export function writeSessionMessage(
       trigger: message.trigger ?? 1,
       sourceSessionId: message.sourceSessionId ?? null,
       originUserId: message.originUserId ?? null,
+      conversationThreadId: message.conversationThreadId ?? null,
     });
   } finally {
     db.close();

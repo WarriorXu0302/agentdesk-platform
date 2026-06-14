@@ -144,16 +144,23 @@ export function insertMessage(
      * content payload's senderId).
      */
     originUserId?: string | null;
+    /**
+     * Top-level conversation correlation id (ADR-0039). HOST-supplied — minted
+     * on a root session and propagated to a2a children. Pure correlation, never
+     * an authz/routing input. NULL on pre-thread / pre-migration rows.
+     */
+    conversationThreadId?: string | null;
   },
 ): void {
   db.prepare(
-    `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content, process_after, recurrence, series_id, trigger, source_session_id, origin_user_id)
-     VALUES (@id, @seq, @kind, @timestamp, 'pending', @platformId, @channelType, @threadId, @content, @processAfter, @recurrence, @id, @trigger, @sourceSessionId, @originUserId)`,
+    `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content, process_after, recurrence, series_id, trigger, source_session_id, origin_user_id, conversation_thread_id)
+     VALUES (@id, @seq, @kind, @timestamp, 'pending', @platformId, @channelType, @threadId, @content, @processAfter, @recurrence, @id, @trigger, @sourceSessionId, @originUserId, @conversationThreadId)`,
   ).run({
     ...message,
     trigger: message.trigger ?? 1,
     sourceSessionId: message.sourceSessionId ?? null,
     originUserId: message.originUserId ?? null,
+    conversationThreadId: message.conversationThreadId ?? null,
     seq: nextEvenSeq(db),
   });
 }

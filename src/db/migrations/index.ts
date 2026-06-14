@@ -28,6 +28,7 @@ import { migration028 } from './028-dm-grant-origin.js';
 import { migration029 } from './029-gateway-signing-proxy.js';
 import { migration030 } from './030-escalation-fields.js';
 import { migration031 } from './031-conversation-thread-id.js';
+import { migration032 } from './032-session-conversation-thread.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -67,6 +68,7 @@ const migrations: Migration[] = [
   migration029,
   migration030,
   migration031,
+  migration032,
 ];
 
 export function runMigrations(db: Database.Database): void {

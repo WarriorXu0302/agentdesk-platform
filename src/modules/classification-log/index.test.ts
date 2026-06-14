@@ -112,6 +112,26 @@ describe('classify_intent delivery action', () => {
     expect(row.user_id).toBe('feishu:ou_real');
   });
 
+  it('records the session conversation_thread_id (ADR-0039), not an agent-claimed one', async () => {
+    const handler = captured.get('classify_intent')!;
+    const sess = session();
+    sess.conversation_thread_id = 'conv-abc';
+    await handler(
+      // even if the agent tries to supply a different thread id, the host
+      // records the session's (host-owned) value.
+      {
+        action: 'classify_intent',
+        userMessage: 'hi',
+        confidence: 0.8,
+        action_taken: 'delegate',
+        conversation_thread_id: 'conv-FORGED',
+      },
+      sess,
+      {} as never,
+    );
+    expect(queryClassificationLog()[0]!.conversation_thread_id).toBe('conv-abc');
+  });
+
   it('persists channel/platform/thread fields from the payload', async () => {
     const handler = captured.get('classify_intent')!;
     await handler(

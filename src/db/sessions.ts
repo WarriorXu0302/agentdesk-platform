@@ -6,14 +6,15 @@ import { getDb, hasTable } from './connection.js';
 export function createSession(session: Session): void {
   getDb()
     .prepare(
-      `INSERT INTO sessions (id, agent_group_id, messaging_group_id, thread_id, owner_user_id, root_session_id, agent_provider, status, container_status, last_active, archived_at, spawn_depth, created_at)
-       VALUES (@id, @agent_group_id, @messaging_group_id, @thread_id, @owner_user_id, @root_session_id, @agent_provider, @status, @container_status, @last_active, @archived_at, @spawn_depth, @created_at)`,
+      `INSERT INTO sessions (id, agent_group_id, messaging_group_id, thread_id, owner_user_id, root_session_id, agent_provider, status, container_status, last_active, archived_at, spawn_depth, conversation_thread_id, created_at)
+       VALUES (@id, @agent_group_id, @messaging_group_id, @thread_id, @owner_user_id, @root_session_id, @agent_provider, @status, @container_status, @last_active, @archived_at, @spawn_depth, @conversation_thread_id, @created_at)`,
     )
     .run({
       ...session,
       root_session_id: session.root_session_id ?? session.id,
       archived_at: session.archived_at ?? null,
       spawn_depth: session.spawn_depth ?? 0,
+      conversation_thread_id: session.conversation_thread_id ?? null,
     });
 }
 

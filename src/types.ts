@@ -122,6 +122,13 @@ export interface Session {
    * creating a brand-new worker session for every message hop.
    */
   root_session_id?: string | null;
+  /**
+   * Top-level conversation correlation id (ADR-0039). Minted on a root session
+   * at channel ingress and propagated to a2a worker sessions, so a multi-hop
+   * request can be traced end-to-end. Pure correlation — never an authz/routing
+   * input. NULL on pre-migration sessions and before a thread is minted.
+   */
+  conversation_thread_id?: string | null;
   agent_provider: string | null;
   /**
    * Lifecycle state for the session:
