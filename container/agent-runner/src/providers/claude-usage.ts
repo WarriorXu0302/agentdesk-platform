@@ -52,8 +52,9 @@ export function claudeUsageEvent(message: ClaudeResultLike): UsageEvent | null {
   const u = (hasUsage ? usage : {}) as Record<string, unknown>;
   // Prompt tokens include the cache read/creation halves — they were all part
   // of the input the model processed.
-  const inputTokens =
-    nonNegInt(u.input_tokens) + nonNegInt(u.cache_read_input_tokens) + nonNegInt(u.cache_creation_input_tokens);
+  const cacheReadTokens = nonNegInt(u.cache_read_input_tokens);
+  const cacheCreationTokens = nonNegInt(u.cache_creation_input_tokens);
+  const inputTokens = nonNegInt(u.input_tokens) + cacheReadTokens + cacheCreationTokens;
   const outputTokens = nonNegInt(u.output_tokens);
   const durationMs = nonNegInt(message.duration_api_ms) || nonNegInt(message.duration_ms);
 
@@ -66,5 +67,9 @@ export function claudeUsageEvent(message: ClaudeResultLike): UsageEvent | null {
     transport: 'claude-agent-sdk',
   };
   if (durationMs > 0) event.durationMs = durationMs;
+  // Surface cache halves for the provider.request span (roadmap 7.2) so cache
+  // hit (read) / miss (creation) is visible. Only when non-zero.
+  if (cacheReadTokens > 0) event.cacheReadTokens = cacheReadTokens;
+  if (cacheCreationTokens > 0) event.cacheCreationTokens = cacheCreationTokens;
   return event;
 }

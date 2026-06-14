@@ -22,9 +22,19 @@ describe('claudeUsageEvent (ADR-0026 Claude LLM span)', () => {
     expect(event!.inputTokens).toBe(1200 + 800 + 100);
     expect(event!.outputTokens).toBe(340);
     expect(event!.totalTokens).toBe(2100 + 340);
+    // …and the halves are also surfaced separately for cache hit/miss (7.2)
+    expect(event!.cacheReadTokens).toBe(800);
+    expect(event!.cacheCreationTokens).toBe(100);
     // prefers duration_api_ms over duration_ms
     expect(event!.durationMs).toBe(4200);
     expect(event!.transport).toBe('claude-agent-sdk');
+  });
+
+  it('omits cache token fields when the SDK reports no cache usage', () => {
+    const event = claudeUsageEvent({ usage: { input_tokens: 500, output_tokens: 50 } });
+    expect(event!.inputTokens).toBe(500);
+    expect(event!.cacheReadTokens).toBeUndefined();
+    expect(event!.cacheCreationTokens).toBeUndefined();
   });
 
   it('falls back to duration_ms when duration_api_ms is absent', () => {

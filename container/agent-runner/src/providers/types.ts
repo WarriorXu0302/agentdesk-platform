@@ -142,6 +142,13 @@ export type ProviderEvent =
       totalTokens?: number;
       durationMs?: number;
       transport?: string;
+      // Prompt-cache visibility (roadmap 7.2). The cached-prompt-read and
+      // cache-write token halves, surfaced separately from `inputTokens` (which
+      // already folds them in) so the provider.request span can expose cache
+      // hit/miss — operators couldn't otherwise see cache effectiveness. Set
+      // only when the provider reports them (Claude does); undefined otherwise.
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
       inputMessages?: LlmMessage[];
       outputText?: string;
     };

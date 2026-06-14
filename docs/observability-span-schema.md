@@ -338,6 +338,8 @@ LLM spans 必须是 Phoenix 可读的 model invocation boundary。
 - `llm.token_count.prompt`
 - `llm.token_count.completion`
 - `llm.token_count.total`
+- `llm.token_count.prompt_details.cache_read`（缓存命中的 prompt token，provider 报告时；roadmap 7.2）
+- `llm.token_count.prompt_details.cache_write`（缓存写入/未命中的 prompt token，provider 报告时；roadmap 7.2）
 #### TOOL spans (`mcp.*`, `erp.*`)
 TOOL spans 至少要能回答三件事：
 1. 调的是哪个 tool slot（`tool.name`）；

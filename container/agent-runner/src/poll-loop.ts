@@ -754,6 +754,15 @@ async function runQuery(
           if (event.totalTokens !== undefined) {
             llmSpan.setAttribute('llm.token_count.total', event.totalTokens);
           }
+          // Prompt-cache visibility (roadmap 7.2): OpenInference's standard
+          // cached-prompt token attributes so Phoenix shows cache hit (read) vs
+          // miss (write). Only emitted when the provider reported them.
+          if (event.cacheReadTokens !== undefined) {
+            llmSpan.setAttribute('llm.token_count.prompt_details.cache_read', event.cacheReadTokens);
+          }
+          if (event.cacheCreationTokens !== undefined) {
+            llmSpan.setAttribute('llm.token_count.prompt_details.cache_write', event.cacheCreationTokens);
+          }
           if (event.durationMs !== undefined) {
             llmSpan.setAttribute('llm.duration_ms', event.durationMs);
           }

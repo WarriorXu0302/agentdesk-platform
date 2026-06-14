@@ -449,7 +449,8 @@
 - **建议**:(1) SessionConfig 加可选 `maxTokensPerMin`/`costBudgetUsd`(或读自网关 /authorize);(2) host poll loop 周期采样 session outbound.db 的 llm-usage 行,5 分钟窗口超阈值则杀;(3) 或在网关 /authorize 累计 token 花费、超预算拒新请求(更干净)。token 数据已在 outbound.db(`claude-usage.ts`)。
 - **工作量 M · 价值 高**
 
-### 7.2 Prompt 缓存仅 Claude、未系统级集成
+### 7.2 Prompt 缓存仅 Claude、未系统级集成 — 🟡 可观测已补(span hit/miss);config 旋钮有意未加
+- **落地**(可观测侧):usage ProviderEvent 新增 `cacheReadTokens`/`cacheCreationTokens`(`claude-usage.ts` 从 SDK `cache_read_input_tokens`/`cache_creation_input_tokens` 单独透出,不再只折进 inputTokens),poll-loop 的 `provider.request` span 按 OpenInference 标准属性 `llm.token_count.prompt_details.cache_read`(命中)/`cache_write`(未命中/写入)暴露 → 运营者在 Phoenix/Grafana 直接看缓存有效性。span-schema 文档 §5 同步。**有意未加** `container.json` 的 `cache?:{enabled,ttlMs}` 旋钮:Claude prompt cache **已默认开启**(token 已证),无"启用"动作;TTL 旋钮依赖 SDK 支持(不确定),加个不生效的 config 是 cargo-cult。真正的缺口是"看不见缓存效果",已闭合。
 - **现状**:Claude prompt cache 由 SDK 支持、token 已计(`claude-usage.ts:54-57` 含 cache_read/creation tokens),但 `container.json` **无 `cache` 配置项**,运营者无法启停/调优,无 hit/miss metric。
 - **业务影响**:低(价值标中)。缓存生效但运营者无可见/可控,成本优化潜力未充分利用。
 - **建议**:ContainerConfig 加可选 `cache?:{enabled?, ttlMs?}`;容器侧 Claude provider 读取应用;OTEL span 暴露 hit/miss。
@@ -469,7 +470,8 @@
 - **建议**:**按设计意图超出核心范围**。运营者在网关做 tenant/部门映射、按租户返不同 provider hint,或用 per-group `agent_provider`(推荐拓扑)。**留给运营者**。
 - **工作量 L · 价值 低(归运营者)**
 
-### 7.5 无动态 per-query 模型选路(留给 agent/网关)
+### 7.5 无动态 per-query 模型选路(留给 agent/网关)— ⏭️ 已三角(归运营者/agent,核心无需改)
+- **决定**:与 7.3 同类——核心三级 provider 优先级(session→group→container.json→claude)已足够;动态 per-query 成本选路**正确地**属应用逻辑,运营者用 a2a 建不同成本层 worker(fast/quality)+ frontdesk 按复杂度委派,或网关端点返模型推荐即可。平台核心不改。
 - **现状**:provider 解析已实现(`container-runner.ts:410-416` 三级 fallback:session→group→container.json→claude),Claude/OpenAI 可 per-group 选。但**无 per-query 成本选路**("简单查询用便宜模型")。session 选定后锁定。
 - **业务影响**:多 provider 支持已有;动态选路**正确地**属应用逻辑。
 - **建议**:**核心无需改**。运营者用 a2a 委派建不同成本层 worker(fast-worker 便宜模型 / quality-worker 高级模型),frontdesk 按复杂度委派;或建网关端点返模型推荐。三级 provider 优先级已足够。**留给运营者**。
