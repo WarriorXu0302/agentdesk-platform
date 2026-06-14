@@ -453,12 +453,25 @@ export function buildAskQuestionFallbackText(params: {
   return lines.join('\n');
 }
 
+/**
+ * Normalize text destined for a Feishu card `markdown` element so newlines
+ * render as line breaks instead of showing up literally as `\n`. Models
+ * sometimes emit the two-character escape `\n` (backslash + n) instead of a real
+ * newline, and CRLF from some sources renders oddly too; both are folded to a
+ * real LF here. (A genuine literal backslash-n — e.g. a Windows path — is
+ * vanishingly rare in chat card text, so collapsing it is the right trade-off
+ * for never showing a stray `\n` to the user.)
+ */
+export function normalizeCardText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/\\r\\n|\\n|\\r/g, '\n');
+}
+
 export function buildMarkdownCard(text: string, title?: string): Record<string, unknown> {
   const card: Record<string, unknown> = {
     schema: '2.0',
     config: { width_mode: 'fill' },
     body: {
-      elements: [{ tag: 'markdown', content: text }],
+      elements: [{ tag: 'markdown', content: normalizeCardText(text) }],
     },
   };
   if (title) {
@@ -487,7 +500,7 @@ export function buildFeishuAskQuestionCardWithPayloads(params: {
     },
     body: {
       elements: [
-        { tag: 'markdown', content: params.question },
+        { tag: 'markdown', content: normalizeCardText(params.question) },
         {
           tag: 'action',
           actions: params.options.map((option, index) => ({
@@ -541,7 +554,7 @@ export function buildFeishuRosterOptInCard(params: {
     },
     body: {
       elements: [
-        { tag: 'markdown', content: body },
+        { tag: 'markdown', content: normalizeCardText(body) },
         {
           tag: 'action',
           actions: [
