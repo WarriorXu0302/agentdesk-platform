@@ -40,6 +40,7 @@ import {
   engagePatternInvalidTotal,
   inboundIngressFailedTotal,
   inboundTotal,
+  messagesRoutedTotal,
   policyCheckFailedTotal,
   startTimer,
 } from './metrics.js';
@@ -423,6 +424,7 @@ async function routeInboundInner(event: InboundEvent): Promise<void> {
     if (engages && accessOk && scopeOk) {
       await deliverToAgent(agent, agentGroup, mg, event, userId, effectiveSessionMode, true);
       engagedCount++;
+      messagesRoutedTotal.inc({ agent_group_id: agent.agent_group_id, outcome: 'engaged' });
 
       // Mention-sticky: ask the adapter to subscribe the thread so the
       // platform's subscribed-message path carries follow-ups without
@@ -458,7 +460,9 @@ async function routeInboundInner(event: InboundEvent): Promise<void> {
       // gate is meant to prevent.
       await deliverToAgent(agent, agentGroup, mg, event, userId, effectiveSessionMode, false);
       accumulatedCount++;
+      messagesRoutedTotal.inc({ agent_group_id: agent.agent_group_id, outcome: 'accumulated' });
     } else {
+      messagesRoutedTotal.inc({ agent_group_id: agent.agent_group_id, outcome: 'dropped' });
       log.debug('Message not engaged for agent (drop policy)', {
         agentGroupId: agent.agent_group_id,
         engage_mode: agent.engage_mode,

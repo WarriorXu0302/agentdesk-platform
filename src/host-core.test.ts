@@ -695,6 +695,14 @@ describe('router', () => {
       ignored_message_policy: 'accumulate',
     });
 
+    // roadmap 2.6: the accumulate outcome must be observable per worker.
+    const { messagesRoutedTotal } = await import('./metrics.js');
+    const accumulatedFor = async (ag: string) =>
+      (await messagesRoutedTotal.get()).values
+        .filter((v) => v.labels.outcome === 'accumulated' && v.labels.agent_group_id === ag)
+        .reduce((s, v) => s + v.value, 0);
+    const accBefore = await accumulatedFor('ag-1');
+
     await routeInbound({
       channelType: 'discord',
       platformId: 'chan-123',
@@ -719,6 +727,8 @@ describe('router', () => {
     db.close();
     expect(rows).toHaveLength(1);
     expect(rows[0].trigger).toBe(0);
+    // messages_routed_total{agent_group_id='ag-1',outcome='accumulated'} bumped.
+    expect(await accumulatedFor('ag-1')).toBe(accBefore + 1);
   });
 
   it('drops silently when engage fails + ignored_message_policy=drop', async () => {
@@ -728,6 +738,13 @@ describe('router', () => {
 
     const { updateMessagingGroupAgent } = await import('./db/messaging-groups.js');
     updateMessagingGroupAgent('mga-1', { engage_mode: 'mention' }); // drop is the default
+
+    const { messagesRoutedTotal } = await import('./metrics.js');
+    const droppedFor = async (ag: string) =>
+      (await messagesRoutedTotal.get()).values
+        .filter((v) => v.labels.outcome === 'dropped' && v.labels.agent_group_id === ag)
+        .reduce((s, v) => s + v.value, 0);
+    const dropBefore = await droppedFor('ag-1');
 
     await routeInbound({
       channelType: 'discord',
@@ -739,6 +756,8 @@ describe('router', () => {
     expect(wakeContainer).not.toHaveBeenCalled();
     // No session should have been created for this agent.
     expect(findSession('mg-1', null)).toBeUndefined();
+    // roadmap 2.6: the drop outcome is observable per worker too.
+    expect(await droppedFor('ag-1')).toBe(dropBefore + 1);
   });
 
   it('fails closed (no engage) and counts the metric when engage_pattern is an invalid regex', async () => {

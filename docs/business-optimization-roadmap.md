@@ -124,7 +124,8 @@
 - **建议**:加可选 nack/reject-with-reason:(1) `delivery.ts` 加 `nack_message` 系统动作(reason + 可选 suggested_target);(2) classification_log 记为独立 outcome;(3) frontdesk 把 nack 当下次尝试的澄清提示。可与 2.3 的 escalate 一起设计。
 - **工作量 M · 价值 中**
 
-### 2.6 累积消息策略(accumulate)缺细粒度控制与观察
+### 2.6 累积消息策略(accumulate)缺细粒度控制与观察 — 🟡 观察缺口已补(metric);细粒度控制留作后续
+- **落地**(观察侧,additive 低风险):新增 `messages_routed_total{agent_group_id, outcome}` 指标(outcome ∈ engaged|accumulated|dropped),在 router fan-out 三个分支按 worker emit。这正补上"router 记了 engaged/accumulated 计数却不按 group emit metric"这条核心缺口——运营者现在能按 worker 看 engaged-vs-accumulated 比与静默 backlog 增长趋势。标签有界(agent_group_id = 配置 roster,同 `routing_feedback_total{reported_by}` 基数)。host-core 测试对 accumulate/drop 两路径做 snapshot-delta 断言。**有意未做(M+/价值中,留作后续)**:messages_in 加 `accumulated_at`/`was_engaged` 列、结构化 `{policy, max_backlog, retention_hours}`、`archive_accumulated` 清理动作、per-worker/时间上限——这些是控制面而非观察面,无 metric 的可见性缺口已先闭合。
 - **现状**:`src/router.ts:374-453` 实现了 `ignored_message_policy='accumulate'`(trigger=0 存储,`src/db/schema.ts:180-181`),但 messages_in **无 `accumulated_at`/`was_engaged`/priority 列**;router 记了 engaged/accumulated 计数(L386-387)却不按 group emit metric;无 backlog 清理/归档 API。策略是二元的(drop vs accumulate),无 per-worker 或时间上限。
 - **业务影响**:中等。长对话中累积上下文降低信噪比,worker 要翻几百条旧消息;无内置清理或大 backlog 可见性。
 - **建议**:把策略扩成结构化 `{policy, max_backlog, retention_hours}`;messages_in 加 `accumulated_at`/`was_engaged`;按 group emit backlog 大小 metric;加可选 `archive_accumulated` 动作。

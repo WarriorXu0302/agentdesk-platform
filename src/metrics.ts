@@ -285,6 +285,21 @@ export const routingFeedbackTotal = new client.Counter({
   registers: [registry],
 });
 
+export const messagesRoutedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_messages_routed_total`,
+  help: 'Per-agent message routing outcomes in the messaging-group fan-out (roadmap 2.6) — makes the engaged-vs-accumulated backlog visible per worker',
+  // `agent_group_id`: the wired worker that made the decision — bounded to the
+  //   operator's configured roster (same cardinality basis as
+  //   routing_feedback_total{reported_by}).
+  // `outcome`: closed enum engaged|accumulated|dropped. `accumulated` = the
+  //   message was stored as silent context (ignored_message_policy='accumulate')
+  //   WITHOUT waking the container, so a rising accumulated rate for a worker is
+  //   a growing silent backlog the operator otherwise couldn't see. `dropped` =
+  //   engage didn't fire and the policy is 'drop'.
+  labelNames: ['agent_group_id', 'outcome'] as const,
+  registers: [registry],
+});
+
 export const providerErrorsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_provider_errors_total`,
   help: 'Container-provider errors by provider + code',
