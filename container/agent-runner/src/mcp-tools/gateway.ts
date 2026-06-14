@@ -326,6 +326,9 @@ function hashBody(path: string, body: Record<string, unknown>): string {
             }))
           : null;
         break;
+      case '/task/status':
+        payload = { taskId: body.taskId ?? null };
+        break;
       case '/memory/get':
         payload = { subject: body.subject ?? null, namespace: body.namespace ?? null, query: body.query ?? null };
         break;
@@ -675,7 +678,7 @@ export async function handleGatewayExecute(
   // dedupe a retried write. If the agent omits one we generate it here. A
   // dryRun touches no committed state, so it stays null.
   const idempotencyKey = getString(args, 'idempotencyKey') ?? (dryRun ? null : crypto.randomUUID());
-  const result = await callGateway(runtime, '/execute', {
+  const body: Record<string, unknown> = {
     agent: agentBlock(runtime),
     requester,
     requesterSource,
@@ -684,9 +687,39 @@ export async function handleGatewayExecute(
     context: getRecord(args, 'context') ?? {},
     dryRun,
     idempotencyKey,
-  });
+  };
+  // Optional async submission (ADR-0037): only forward when the agent asked, so
+  // the request shape is unchanged for the common synchronous case.
+  const submitAsync = getBoolean(args, 'submitAsync');
+  if (submitAsync) body.submitAsync = true;
+  const result = await callGateway(runtime, '/execute', body);
   if (!result.ok) return gatewayErr(result);
   log(`gateway_execute: ${operation} for ${requester.userId ?? 'anonymous'} (${requesterSource})`);
+  return ok(result.text);
+}
+
+export async function handleGatewayTaskStatus(
+  runtime: ToolRuntimeConfig,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const taskId = getString(args, 'taskId');
+  if (!taskId) return err('taskId is required');
+
+  const { context: requester, source: requesterSource } = resolveRequester(args);
+  const result = await callGateway(runtime, '/task/status', {
+    agent: agentBlock(runtime),
+    requester,
+    requesterSource,
+    taskId,
+    context: getRecord(args, 'context') ?? {},
+  });
+  if (!result.ok) {
+    if (result.code === 'OPERATION_NOT_FOUND') {
+      return err('This backend does not implement async tasks (/task/status). It runs operations synchronously.');
+    }
+    return gatewayErr(result);
+  }
+  log(`gateway_task_status: ${taskId} for ${requester.userId ?? 'anonymous'} (${requesterSource})`);
   return ok(result.text);
 }
 
@@ -888,6 +921,13 @@ export const erpExecute: McpToolDefinition = {
           description:
             'Optional idempotency key for write operations. If omitted, the runtime auto-generates one (unless dryRun=true).',
         },
+        submitAsync: {
+          type: 'boolean',
+          description:
+            'Optional: request async execution for a long-running operation. If the backend supports it you get back ' +
+            '{ taskId, status:"accepted" } — then poll gateway_task_status until done. If it does not, the operation ' +
+            'runs synchronously and you get a normal result. Handle both: branch on whether the response has a taskId.',
+        },
       },
       required: ['operation'],
       additionalProperties: false,
@@ -895,6 +935,31 @@ export const erpExecute: McpToolDefinition = {
   },
   async handler(args) {
     return handleGatewayExecute(toolRuntimeConfigFromRunner(getConfig()), args);
+  },
+};
+
+export const erpTaskStatus: McpToolDefinition = {
+  tool: {
+    name: 'gateway_task_status',
+    description:
+      'Poll the status of an async operation started by gateway_execute with submitAsync=true. ' +
+      'Pass the `taskId` from that response. Returns { status: "pending"|"running"|"succeeded"|"failed", ' +
+      'progress?, result? } — keep polling at a sensible interval until status is terminal (succeeded/failed); ' +
+      'surface `progress` to the user for long tasks. ' +
+      'OPERATION_NOT_FOUND means the backend has no async support (it ran your operation synchronously instead). ' +
+      'Requester identity is derived from the active session by the runtime — fields passed here are ignored.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        taskId: { type: 'string', description: 'The taskId returned by an async gateway_execute.' },
+        context: { type: 'object', description: 'Optional extra backend context.' },
+      },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    return handleGatewayTaskStatus(toolRuntimeConfigFromRunner(getConfig()), args);
   },
 };
 
@@ -1037,4 +1102,13 @@ export const erpMemorySearch: McpToolDefinition = {
   },
 };
 
-registerTools([erpDescribe, erpAuthorize, erpExecute, erpBulkExecute, erpMemoryGet, erpMemoryUpsert, erpMemorySearch]);
+registerTools([
+  erpDescribe,
+  erpAuthorize,
+  erpExecute,
+  erpBulkExecute,
+  erpTaskStatus,
+  erpMemoryGet,
+  erpMemoryUpsert,
+  erpMemorySearch,
+]);

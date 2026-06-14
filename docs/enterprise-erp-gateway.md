@@ -64,6 +64,8 @@ The built-in tools call these paths on the configured `baseUrl`:
 - `POST /bulk_execute` (optional; ADR-0036 — batch many operations in one
   round-trip; a backend that hasn't implemented it returns 404 and the agent
   falls back to per-operation `/execute`)
+- `POST /task/status` (optional; ADR-0037 — poll an async operation started by
+  `/execute` with `submitAsync:true`; 404 if the backend has no async support)
 - `POST /memory/get`
 - `POST /memory/upsert`
 - `POST /memory/search` (optional; ADR-0033 — a backend that hasn't implemented
@@ -471,6 +473,51 @@ Semantics your backend must honor:
 The runnable [`examples/reference-gateway/`](../examples/reference-gateway/)
 implements `/bulk_execute` (per-op idempotency replay, `atomic` pre-validation,
 best-effort `partial`); the conformance runner probes it with a dryRun batch.
+
+## Async / long-running operations — `submitAsync` + `/task/status` (optional, ADR-0037)
+
+`/execute` has a fixed timeout (`backendGateway.timeoutMs`, default 15s). For an
+operation that legitimately takes longer (ledger posting, batch reconciliation,
+forecasting), don't raise the timeout for everything — let that one call go
+**async**. Both pieces are optional and backward-compatible.
+
+The agent sets `submitAsync: true` on `/execute`. If your backend supports async,
+return a task handle immediately instead of blocking:
+
+```jsonc
+// request: a normal /execute body + "submitAsync": true
+// response (accepted, not yet done):
+{ "ok": true, "taskId": "task-8821", "status": "accepted" }
+```
+
+The agent then polls `POST /task/status` (a **read** endpoint) until terminal:
+
+```jsonc
+// request: envelope + { "taskId": "task-8821" }
+{ "ok": true, "status": "running", "progress": 0.6 }
+{ "ok": true, "status": "succeeded", "result": { /* ... */ } }
+{ "ok": true, "status": "failed", "error": { "code": "...", "message": "..." } }
+```
+
+Rules your backend should honor:
+
+- **`submitAsync` is a request, not a command.** A backend without async support
+  ignores it and runs synchronously (returns a normal `result`). The agent
+  handles both — it branches on whether the response has a `taskId`. So adopting
+  async never breaks an agent, and not adopting it costs nothing.
+- **Idempotent submission.** A resubmitted async `/execute` with the same
+  `idempotencyKey` must return the **same** `taskId` — don't start a second task.
+- **The platform doesn't track tasks.** There is no host-side task store; the
+  agent polls. Keep task state (and its authorization — a user may only poll
+  their own tasks, gated on `requesterSource`/`requester`) in your backend.
+- **`status`** is `pending` / `running` / `succeeded` / `failed` (extend if you
+  must); `result` accompanies `succeeded`, `error` accompanies `failed`,
+  `progress` (0..1) is advisory and lets the agent give the user a live update.
+- **`/task/status` is read-scoped** — it joins the signing proxy's `READ_PATHS`.
+
+The reference gateway implements both (an inline task that completes
+immediately, idempotent by key); the conformance runner probes `/task/status`
+with a synthetic task id.
 
 ## Strict response mode
 

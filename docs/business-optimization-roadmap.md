@@ -137,10 +137,19 @@
   - 验证:container tsc 绿、schema sanity 5/5、live conformance **7/7**、curl 冒烟(best-effort `partial` / atomic 不提交 / per-op 幂等 replay)、host 全套 736、签名代理写路径测试、lint/format 净。
 - **工作量 M · 价值 高**
 
-### 3.2 缺异步/长任务模式(只有同步超时模型)⭐ — 🟡 设计锁定(ADR-0037),实现分 commit 落地中
+### 3.2 缺异步/长任务模式(只有同步超时模型)⭐ — ✅ 已落地(ADR-0037 + 6cc7cd7)
 - **现状**:`gateway.ts:522-524` 固定 AbortController 超时(默认 15s)。超过窗口的操作(总账过账、批量对账、预测计算)直接 TIMEOUT。`ERP-INTEGRATION-GUIDE.md:279-302` 的 async approval 只是**业务特定 workaround**,不是通用 async 原语。无 `/task/status`、无 `/submit_async`。
 - **业务影响**:**高**。很多 ERP 操作本就长耗时,强制 15s 不现实。运营者只能调大 timeout(增加失败风险)或在契约外自建 async-job(割裂架构)。
 - **建议**:加**可选**异步提交:`/execute` 带 `{submitAsync:true}` 立即返回 `{taskId, statusUrl}`;加 `/task/status` 返回 `{status, progress?, result|error}`。同步 execute 仍是默认,async 选择性开启。
+- **已实现**(按 ADR-0037 端到端):
+  - 契约:`executeRequestSchema` 加 optional `submitAsync`;新增 `taskStatusRequest/Response` schema,`/task/status` 入 `REQUEST_SCHEMAS`/`RESPONSE_SCHEMAS`。
+  - 客户端 `gateway.ts`:`gateway_execute` 仅在请求时透传 `submitAsync`;新增 `gateway_task_status` 工具 + `handleGatewayTaskStatus`(404 → 提示后端无 async,已同步执行);`hashBody` 加 `/task/status` case。
+  - host 签名代理:`/task/status` 入 `READ_PATHS`(读作用域,host 不存任务状态)。
+  - 参考实现:内存任务存储 + `submitAsync`(幂等 by key,inline 完成)+ `/task/status`(未知 taskId → `failed` 而非 404)。
+  - conformance:`/task/status` 合成 taskId 样本(可选端点)。
+  - 文档:`enterprise-erp-gateway.md` 端点表 + "Async / long-running operations" 专节(submitAsync 是请求非命令、幂等同 taskId、平台不存任务态/agent 轮询、按 requester 授权、读作用域);`gateway.instructions.md` agent 指引(submitAsync → 有 taskId 则轮询、有 result 则已同步完成)。reference README + server 头注(8 端点)。
+  - 测试:`gateway-contract.test.ts`(submitAsync optional + taskStatus schema + 路径注册)、`gateway.test.ts`(submitAsync 透传 + task_status 404 回退)、`gateway-signing-proxy.test.ts`(`/task/status` 读路径可用)。
+  - 验证:container tsc 绿、schema sanity 5/5、live conformance **8/8**、curl 冒烟(submitAsync→taskId / 幂等同 taskId / 轮询 succeeded+result / 未知 taskId→failed 200)、host 全套 737、lint/format 净。
 - **工作量 L · 价值 高**
 
 ### 3.3 `/describe` 缺操作 schema / 字段发现 ⭐

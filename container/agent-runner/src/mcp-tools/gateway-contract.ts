@@ -132,6 +132,11 @@ export const executeRequestSchema = z.object({
   // Write operations always carry a key (auto-generated if the agent omits
   // one). May be null only on a dryRun, where there is no committed state.
   idempotencyKey: z.string().nullable(),
+  // Optional async submission (ADR-0037). When true AND the backend supports it,
+  // the backend returns `{ taskId, status:'accepted' }` immediately instead of
+  // blocking; the agent then polls `/task/status`. A backend that doesn't
+  // support async ignores this and runs synchronously (returns a `result`).
+  submitAsync: z.boolean().optional(),
 });
 
 /**
@@ -160,6 +165,17 @@ export const bulkExecuteRequestSchema = z.object({
   context: z.record(z.string(), z.unknown()),
   dryRun: z.boolean(),
   atomic: z.boolean().optional(),
+});
+
+/**
+ * Optional async task-status poll (ADR-0037). After an async `/execute`
+ * (`submitAsync:true`) returns a `taskId`, the agent polls this read endpoint
+ * until the task reaches a terminal state. Optional: unimplemented → 404.
+ */
+export const taskStatusRequestSchema = z.object({
+  ...envelopeBase,
+  taskId: z.string().min(1),
+  context: z.record(z.string(), z.unknown()),
 });
 
 const memorySubjectSchema = z.object({
@@ -205,6 +221,7 @@ export const REQUEST_SCHEMAS = {
   '/authorize': authorizeRequestSchema,
   '/execute': executeRequestSchema,
   '/bulk_execute': bulkExecuteRequestSchema,
+  '/task/status': taskStatusRequestSchema,
   '/memory/get': memoryGetRequestSchema,
   '/memory/upsert': memoryUpsertRequestSchema,
   '/memory/search': memorySearchRequestSchema,
@@ -333,6 +350,22 @@ export const bulkExecuteResponseSchema = z
   .passthrough();
 
 /**
+ * Async task status (ADR-0037). `status` recommended values:
+ * `pending` | `running` | `succeeded` | `failed` — lenient + passthrough so a
+ * backend may add its own states. `result` is present on `succeeded`, `error`
+ * on `failed`, `progress` (0..1, advisory) while running.
+ */
+export const taskStatusResponseSchema = z
+  .object({
+    ...responseEnvelope,
+    ok: z.boolean().optional(),
+    status: z.string().optional(),
+    progress: z.number().optional(),
+    result: z.unknown().optional(),
+  })
+  .passthrough();
+
+/**
  * Recommended provenance block for a recalled memory record (ADR-0033).
  *
  * Provenance lets an agent (and the audit trail) answer "where did this recalled
@@ -405,6 +438,7 @@ export const RESPONSE_SCHEMAS = {
   '/authorize': authorizeResponseSchema,
   '/execute': executeResponseSchema,
   '/bulk_execute': bulkExecuteResponseSchema,
+  '/task/status': taskStatusResponseSchema,
   '/memory/get': memoryGetResponseSchema,
   '/memory/upsert': memoryUpsertResponseSchema,
   '/memory/search': memorySearchResponseSchema,

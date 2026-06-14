@@ -59,7 +59,8 @@ const HOST_ALIAS = 'host.docker.internal';
  * minted with a narrower scope later. Mirrors the container-side GatewayPath
  * enum (separate build, kept in sync).
  */
-export const READ_PATHS = ['/describe', '/authorize', '/memory/get', '/memory/search'] as const;
+// /task/status (ADR-0037) only reads task state, so it is read-scoped.
+export const READ_PATHS = ['/describe', '/authorize', '/task/status', '/memory/get', '/memory/search'] as const;
 // /bulk_execute (ADR-0036) mutates, so it is write-scoped — same trust tier as
 // /execute. Proxy-mode containers get a write token covering it.
 export const WRITE_PATHS = ['/execute', '/bulk_execute', '/memory/upsert'] as const;

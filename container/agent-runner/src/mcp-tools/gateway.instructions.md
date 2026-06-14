@@ -24,6 +24,14 @@ capability layer.
   `results[]` is index-aligned with your operations and `partial` flags any
   failure. Optional endpoint: on `OPERATION_NOT_FOUND`, fall back to
   per-operation `gateway_execute`.
+- `gateway_task_status` — poll a long-running operation. For an op that may
+  exceed the gateway timeout, call `gateway_execute` with `submitAsync: true`:
+  if the response has a `taskId` (not a `result`), poll `gateway_task_status`
+  with that id at a sensible interval until `status` is `succeeded`/`failed`,
+  and tell the user it's in progress (surface `progress` if present). If
+  `gateway_execute` returned a normal `result` instead, the backend ran it
+  synchronously — you're already done. `OPERATION_NOT_FOUND` from
+  `gateway_task_status` means the backend has no async support.
 - `gateway_memory_get` — load durable backend memory for a `namespace`
   (e.g. `user.profile`). Defaults to subject `user` / the current session
   user; pass `subjectType`/`subjectId` for other subjects, and `query` to

@@ -24,6 +24,7 @@ import {
   handleGatewayMemoryGet,
   handleGatewayMemorySearch,
   handleGatewayMemoryUpsert,
+  handleGatewayTaskStatus,
 } from './gateway.js';
 import {
   CONTRACT_VERSION,
@@ -277,6 +278,51 @@ describe('erp gateway mcp tools', () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain('does not implement /bulk_execute');
+  });
+
+  it('forwards submitAsync on /execute only when requested (ADR-0037)', async () => {
+    setRequestIdentity(sessionIdentity());
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, taskId: 't1', status: 'accepted' }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operation: 'finance.ledger.post',
+      input: {},
+      submitAsync: true,
+    });
+    expect(body).toMatchObject({ operation: 'finance.ledger.post', submitAsync: true });
+
+    // Not requested → field absent (request shape unchanged for the sync case).
+    await handleGatewayExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), { operation: 'x' });
+    expect('submitAsync' in (body as Record<string, unknown>)).toBe(false);
+  });
+
+  it('posts taskId to /task/status, and reports no-async on 404 (ADR-0037)', async () => {
+    setRequestIdentity(sessionIdentity());
+    let url: string | undefined;
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, status: 'succeeded', result: {} }), { status: 200 });
+    }) as typeof fetch;
+
+    const ok = await handleGatewayTaskStatus(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      taskId: 'task-1',
+    });
+    expect(url).toBe('https://erp-gateway.example/task/status');
+    expect(body).toMatchObject({ taskId: 'task-1', requesterSource: 'session' });
+    expect(ok.isError).toBeUndefined();
+
+    globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+    const missing = await handleGatewayTaskStatus(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      taskId: 'task-1',
+    });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0]?.text).toContain('does not implement async tasks');
   });
 
   it('loads durable memory from /memory/get using the trusted userId as default subject', async () => {

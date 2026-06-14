@@ -7,10 +7,11 @@
  * runtime uses (src/mcp-tools/gateway-contract.ts is the single source of
  * truth — this script never re-defines the shapes).
  *
- * Note: `/memory/search` (ADR-0033) and `/bulk_execute` (ADR-0036) are optional
- * for a backend. A backend that hasn't implemented one yet returns 404 and this
- * runner reports that endpoint as FAIL — that is the intended signal ("not
- * implemented"), not a contract violation of the other endpoints.
+ * Note: `/memory/search` (ADR-0033), `/bulk_execute` (ADR-0036), and
+ * `/task/status` (ADR-0037) are optional for a backend. A backend that hasn't
+ * implemented one yet returns 404 and this runner reports that endpoint as FAIL
+ * — that is the intended signal ("not implemented"), not a contract violation
+ * of the other endpoints.
  *
  * Usage:
  *   cd container/agent-runner && bun scripts/gateway-conformance.ts <baseUrl>
@@ -106,6 +107,11 @@ function sampleBody(path: GatewayPath): Record<string, unknown> {
         context: {},
         dryRun: true,
       };
+    case '/task/status':
+      // Optional endpoint (ADR-0037). Probes with a synthetic taskId — a backend
+      // that implements async reports it as an unknown/failed task (200, schema
+      // valid); one without async returns 404 (the "not implemented" signal).
+      return { ...base, taskId: 'conformance-probe-task', context: {} };
     case '/memory/get':
       return {
         ...base,

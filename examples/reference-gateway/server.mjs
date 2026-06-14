@@ -6,13 +6,14 @@
  * This is the executable companion to docs/enterprise-erp-gateway.md and the
  * single source of truth at
  * container/agent-runner/src/mcp-tools/gateway-contract.ts. It implements all
- * seven endpoints with shapes that pass the conformance runner
+ * eight endpoints with shapes that pass the conformance runner
  * (container/agent-runner/scripts/gateway-conformance.ts):
  *
  *   POST /describe        -> { ok, backend, operations: [...] }
  *   POST /authorize       -> { allowed, reason?, obligations? }
  *   POST /execute         -> { ok, result | preview, auditId }
  *   POST /bulk_execute    -> { ok, results: [...], partial? }   (ADR-0036)
+ *   POST /task/status     -> { ok, status, result | error, progress? } (ADR-0037)
  *   POST /memory/get      -> { ok, value, source? }
  *   POST /memory/upsert   -> { ok, value, source }
  *   POST /memory/search   -> { ok, results: [{ value, source, score }] }
@@ -95,6 +96,16 @@ function todosFor(subject) {
  * process-local Map. See docs/gateway-kickstart.md "Idempotency replay".
  */
 const idempotency = new Map();
+
+/**
+ * Async task store (ADR-0037). taskId -> { status, result?, error?, auditId }.
+ * `asyncByKey` maps an idempotencyKey to its taskId so a resubmitted async
+ * request returns the SAME task instead of starting a second one. A real backend
+ * runs the work on a queue/worker; this reference completes it inline so the
+ * demo's /task/status returns `succeeded` immediately.
+ */
+const tasks = new Map();
+const asyncByKey = new Map();
 
 /** Dispatch a committed operation to its business handler. */
 function runOperation(op, req) {
@@ -309,6 +320,21 @@ const handlers = {
       return { status: 403, body: { code: 'BACKEND_UNAUTHORIZED', message: 'untrusted requester may not mutate' } };
     }
 
+    // Async submission (ADR-0037): accept now, return a taskId; the agent polls
+    // /task/status. dryRun takes precedence (you don't async a preview). A real
+    // backend enqueues the work; this reference runs it inline and marks the
+    // task succeeded so the demo poll returns a result. Idempotent by key.
+    if (req.submitAsync === true && !req.dryRun) {
+      if (req.idempotencyKey && asyncByKey.has(req.idempotencyKey)) {
+        return { ok: true, taskId: asyncByKey.get(req.idempotencyKey), status: 'accepted' };
+      }
+      const taskId = `task-${crypto.randomUUID()}`;
+      const auditId = crypto.randomUUID();
+      tasks.set(taskId, { status: 'succeeded', result: runOperation(op, req), auditId });
+      if (req.idempotencyKey) asyncByKey.set(req.idempotencyKey, taskId);
+      return { ok: true, taskId, status: 'accepted', auditId };
+    }
+
     // Idempotency replay (roadmap 1.4 recipe): a mutating execute carries a
     // stable idempotencyKey, and the host retries with backoff on transient
     // failure (ADR-0016). If we've already committed this key, replay the SAME
@@ -368,6 +394,21 @@ const handlers = {
     const results = ops.map((o) => runSingleForBulk(o, req, dryRun));
     const anyFailed = results.some((r) => r.ok === false);
     return { ok: !anyFailed, partial: anyFailed, results };
+  },
+
+  // Optional async status poll (ADR-0037). Returns the task's terminal/interim
+  // state. An unknown taskId is reported as a failed task (200), NOT an HTTP 404
+  // — a 404 here would read as "endpoint not implemented".
+  '/task/status': (req) => {
+    const task = tasks.get(String(req.taskId || ''));
+    if (!task) {
+      return { ok: true, status: 'failed', error: { code: 'VALIDATION_FAILED', message: 'unknown taskId' } };
+    }
+    const out = { ok: true, status: task.status, auditId: task.auditId };
+    if (task.status === 'succeeded') out.result = task.result;
+    if (task.status === 'failed' && task.error) out.error = task.error;
+    if (typeof task.progress === 'number') out.progress = task.progress;
+    return out;
   },
 
   '/memory/get': (req) => {
@@ -475,5 +516,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.error(`reference-gateway listening on http://localhost:${PORT}`);
   console.error(`  signing: ${SIGNING_KEY ? `required (headers x-${NS}-*)` : 'disabled (set GATEWAY_SIGNING_KEY to require)'}`);
-  console.error(`  endpoints: /describe /authorize /execute /bulk_execute /memory/get /memory/upsert /memory/search`);
+  console.error(`  endpoints: /describe /authorize /execute /bulk_execute /task/status /memory/get /memory/upsert /memory/search`);
 });

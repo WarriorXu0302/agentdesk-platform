@@ -3,8 +3,11 @@ import { describe, expect, it } from 'bun:test';
 import {
   bulkExecuteRequestSchema,
   bulkExecuteResponseSchema,
+  executeRequestSchema,
   REQUEST_SCHEMAS,
   RESPONSE_SCHEMAS,
+  taskStatusRequestSchema,
+  taskStatusResponseSchema,
 } from './gateway-contract.js';
 
 // /bulk_execute contract (ADR-0036, roadmap 3.1).
@@ -75,5 +78,60 @@ describe('bulkExecuteResponseSchema', () => {
   it('stays lenient — a backend may add fields and omit results', () => {
     const parsed = bulkExecuteResponseSchema.parse({ ok: true, backendId: 'erp-1' });
     expect(parsed.ok).toBe(true);
+  });
+});
+
+// Async tasks (ADR-0037, roadmap 3.2).
+describe('async task contract', () => {
+  const envelope = {
+    contractVersion: 1,
+    agent: { agentGroupId: 'ag1', groupName: 'FD', assistantName: 'FD' },
+    requester: { userId: 'feishu:ou_alice' },
+    requesterSource: 'session' as const,
+  };
+
+  it('execute accepts an optional submitAsync flag (backward-compatible)', () => {
+    expect(
+      executeRequestSchema.parse({
+        ...envelope,
+        operation: 'finance.ledger.post',
+        input: {},
+        context: {},
+        dryRun: false,
+        idempotencyKey: 'k',
+        submitAsync: true,
+      }).submitAsync,
+    ).toBe(true);
+    // Omitting it stays valid (the common synchronous case).
+    expect(
+      executeRequestSchema.parse({
+        ...envelope,
+        operation: 'x',
+        input: {},
+        context: {},
+        dryRun: false,
+        idempotencyKey: 'k',
+      }).submitAsync,
+    ).toBeUndefined();
+  });
+
+  it('taskStatusRequestSchema requires a taskId', () => {
+    expect(taskStatusRequestSchema.parse({ ...envelope, taskId: 'task-1', context: {} }).taskId).toBe('task-1');
+    expect(() => taskStatusRequestSchema.parse({ ...envelope, taskId: '', context: {} })).toThrow();
+  });
+
+  it('taskStatusResponseSchema parses each status shape and stays lenient', () => {
+    expect(taskStatusResponseSchema.parse({ ok: true, status: 'running', progress: 0.5 }).status).toBe('running');
+    expect(taskStatusResponseSchema.parse({ ok: true, status: 'succeeded', result: { committed: true } }).ok).toBe(
+      true,
+    );
+    expect(
+      taskStatusResponseSchema.parse({ ok: true, status: 'failed', error: { code: 'TIMEOUT', message: 'x' } }).status,
+    ).toBe('failed');
+  });
+
+  it('/task/status is registered as a gateway path on both sides', () => {
+    expect('/task/status' in REQUEST_SCHEMAS).toBe(true);
+    expect('/task/status' in RESPONSE_SCHEMAS).toBe(true);
   });
 });

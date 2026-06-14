@@ -235,6 +235,29 @@ describe('processSigningProxyRequest (ADR-0034 security core)', () => {
     expect(full.fetches[0].url).toBe('https://erp.example/bulk_execute');
   });
 
+  it('treats /task/status as a read path (ADR-0037): a read-only token may use it', async () => {
+    const ro = makeDeps({
+      verifyToken: (_t, sourceIp) => ({
+        ok: true,
+        record: {
+          jti: 'j',
+          sessionId: 's',
+          agentGroupId: 'ag1',
+          allowedPaths: [...READ_PATHS],
+          sourceIp,
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+    const r = await processSigningProxyRequest(
+      { method: 'POST', pathname: '/task/status', token: 'good', sourceIp: '172.17.0.2', rawBody: body() },
+      ro.deps,
+    );
+    expect(r.httpStatus).toBeLessThan(400);
+    expect(ro.fetches).toHaveLength(1);
+    expect(ro.fetches[0].url).toBe('https://erp.example/task/status');
+  });
+
   it('rate-limits per token (429, never forwarded)', async () => {
     const cap = makeDeps({ allowRate: () => false });
     const r = await processSigningProxyRequest(
