@@ -380,6 +380,21 @@ export const rosterDmRejectedTotal = new client.Counter({
   registers: [registry],
 });
 
+export const rosterInviteRejectedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_roster_invite_rejected_total`,
+  help: 'Roster opt-in INVITES rejected by the host invite gate (ADR-0044 Stage 3). Invite is a new-contact vector, so its bar is stricter than send.',
+  // `reason`: flag_disabled | agent_shared_mode | ambiguous_origin |
+  //   bad_member (non-ou_ target) | bad_slot (empty slot label) |
+  //   already_invited (one-shot per (scope,member)
+  //   suppression — a grant already exists, live OR revoked/opted-out) |
+  //   not_member (isMember !== true; undefined/unknown ALSO rejects — the bar is
+  //   absolute for a new-contact vector, unlike the send path) | rate_limited
+  //   (scope 60s/3 or deploy daily cap) | no_adapter. Any sustained non-zero rate
+  //   means an agent is trying to mint contact channels it isn't entitled to.
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 export const gatewaySigningProxyTotal = new client.Counter({
   name: `${METRIC_PREFIX}_gateway_signing_proxy_total`,
   help: 'Host signing-proxy requests by outcome (ADR-0034). signingKey never enters the container in this mode.',

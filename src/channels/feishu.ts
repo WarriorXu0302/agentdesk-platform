@@ -43,6 +43,7 @@ import {
   buildAskQuestionFallbackText,
   buildDisplayCard,
   buildFeishuAskQuestionCardWithPayloads,
+  buildFeishuRosterOptInCard,
   buildMarkdownCard,
   extractEffectivePayload,
   extractVerificationToken,
@@ -978,6 +979,21 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
           });
           return createMessage(target, 'text', JSON.stringify({ text: fallbackText }), threadId);
         }
+      }
+
+      // Roster-DM directed opt-in card (ADR-0044 Stage 3). The HOST invite
+      // handler stamped content.optIn (scopeId/slotLabel/agentGroupId/
+      // expectedUserId/expiresAt); we only render it onto a clickable card whose
+      // button value is that payload verbatim. The clicker's open_id must equal
+      // the card's expectedUserId for a grant to mint (captureDirectedCardConsent,
+      // fail-closed). NEVER build this card from container-supplied fields.
+      if (content.type === 'roster_invite' && isRecord(content.optIn)) {
+        const card = buildFeishuRosterOptInCard({
+          slotLabel: readString(content.slotLabel) ?? 'contact',
+          optIn: content.optIn,
+          prompt: readString(content.prompt),
+        });
+        return createMessage(target, 'interactive', JSON.stringify(card), threadId);
       }
 
       if (content.type === 'card') {

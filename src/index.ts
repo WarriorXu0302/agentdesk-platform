@@ -68,6 +68,9 @@ import './channels/index.js';
 // Modules barrel — default modules (typing, mount-security) ship here; skills
 // append registry-based modules. Imported for side effects (registrations).
 import './modules/index.js';
+// Roster-DM invite handler (ADR-0044 Stage 3) — core, not a module. Imported
+// for the registerDeliveryAction('roster.invite') side effect at the top level.
+import './roster-invite.js';
 // Approval handlers register at the import above (pre-DB); flush their registry
 // to the audit trail once the central DB is ready in main() (roadmap 5.10).
 import { auditApprovalHandlerRegistry } from './modules/approvals/index.js';

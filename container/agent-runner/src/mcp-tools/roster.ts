@@ -13,6 +13,14 @@
  * Slot discovery (which slots are live) is surfaced separately by the host into
  * the agent's context (ADR-0044 Stage 1). This tool is host-gated: if the
  * operator hasn't enabled roster DM (ALLOW_ROSTER_DM) the host rejects the send.
+ *
+ * invite_to_roster (ADR-0044 Stage 3) is the third, most sensitive surface: it
+ * asks the host to invite a specific person to OPT IN to a slot. Like send, the
+ * tool is a thin emitter — it writes a `kind='system'` intent row and the HOST
+ * decides everything: it re-derives scope/agent-group, requires the target be a
+ * current member of the wired group (fail-closed), suppresses re-invites, rate-
+ * limits, and STAMPS the directed consent card itself. The container never
+ * builds the card or chooses scope/expectedUserId.
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
@@ -82,4 +90,60 @@ export const sendRosterDm: McpToolDefinition = {
   },
 };
 
-registerTools([sendRosterDm]);
+export const inviteToRoster: McpToolDefinition = {
+  tool: {
+    name: 'invite_to_roster',
+    description:
+      'Invite a specific person to OPT IN to receiving your directed messages for this conversation, registered under ' +
+      'a roster slot label (e.g. "approver"). Use this to bring a NEW person into your roster when no slot for them ' +
+      'exists yet — afterwards you address them only by their slot via send_roster_dm. The platform posts a consent ' +
+      'card to the group; a slot becomes usable ONLY if that exact person clicks opt-in. ' +
+      'The platform decides everything that matters: it confirms the person is a current member of this group, refuses ' +
+      'to re-invite someone who already responded, rate-limits invites, and controls the card — you cannot invite ' +
+      'someone outside this group, and their identity is never revealed to you. ' +
+      'Only works when the operator has enabled roster DM for this agent; otherwise the invite is rejected.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        member: {
+          type: 'string',
+          description: 'The Feishu member open_id (ou_…) of the person to invite. Must be a member of this group.',
+        },
+        slot_label: {
+          type: 'string',
+          description: 'The roster slot label to register them under (e.g. "approver", "ops-lead").',
+        },
+      },
+      required: ['member', 'slot_label'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    const member = typeof args.member === 'string' ? args.member.trim() : '';
+    const slotLabel = typeof args.slot_label === 'string' ? args.slot_label.trim() : '';
+    if (!member) return err('member is required — the open_id (ou_…) of the person to invite');
+    if (!slotLabel) return err('slot_label is required — the roster slot to register them under');
+
+    // Thin intent row. NO routing fields: the host derives scope/agent-group from
+    // the session, validates membership, and BUILDS + addresses the directed
+    // consent card itself (ADR-0044 Stage 3). The container never authors the
+    // card, the scope, or the expectedUserId stamped on it.
+    writeMessageOut({
+      id: generateId(),
+      kind: 'system',
+      content: JSON.stringify({ action: 'roster.invite', member, slotLabel }),
+    });
+
+    log(`invite_to_roster: slot="${slotLabel}"`);
+    // Opaque result (ADR-0044): never confirm whether the person exists, is a
+    // member, or has already been invited — those are host decisions the agent
+    // must not be able to probe via the tool result.
+    return ok(
+      `Invite queued for slot "${slotLabel}". The platform will post a consent card; a slot becomes usable only if ` +
+        `that person opts in. Their identity is not shown to you, and the platform may decline the invite. ` +
+        `Still reply to the user normally.`,
+    );
+  },
+};
+
+registerTools([sendRosterDm, inviteToRoster]);

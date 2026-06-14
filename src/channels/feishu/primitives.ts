@@ -509,6 +509,55 @@ export function buildFeishuAskQuestionCardWithPayloads(params: {
   };
 }
 
+/**
+ * Build the roster-DM directed opt-in card (ADR-0044 Stage 3). A single primary
+ * "Opt in" button whose action `value` is the HOST-STAMPED roster.optin payload
+ * (scopeId / slotLabel / agentGroupId / expectedUserId / expiresAt). The card is
+ * posted into the origin group; only the member whose open_id equals the card's
+ * expectedUserId can turn a click into a grant (captureDirectedCardConsent runs
+ * cardActionOperatorAllowed fail-closed).
+ *
+ * SECURITY: this builder embeds `optIn` VERBATIM, so it must only ever be invoked
+ * with a payload the host invite handler stamped (src/roster-invite.ts) — see the
+ * load-bearing invariant documented there. It is pure rendering; it derives no
+ * security field itself.
+ */
+export function buildFeishuRosterOptInCard(params: {
+  slotLabel: string;
+  optIn: Record<string, unknown>;
+  prompt?: string;
+}): Record<string, unknown> {
+  const body =
+    params.prompt && params.prompt.trim()
+      ? params.prompt.trim()
+      : `You've been invited to receive direct messages from this assistant for the **${params.slotLabel}** role in this conversation. ` +
+        `Tap **Opt in** to allow it — only you can accept this invite, and you can opt out at any time.`;
+  return {
+    schema: '2.0',
+    config: { width_mode: 'fill' },
+    header: {
+      title: { tag: 'plain_text', content: 'Direct message opt-in' },
+      template: 'blue',
+    },
+    body: {
+      elements: [
+        { tag: 'markdown', content: body },
+        {
+          tag: 'action',
+          actions: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: 'Opt in' },
+              type: 'primary',
+              value: params.optIn,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export function buildDisplayCard(content: Record<string, unknown>): Record<string, unknown> {
   const card = content.card;
   if (!isRecord(card)) return buildMarkdownCard((content.fallbackText as string) || '[Card]');

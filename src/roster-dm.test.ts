@@ -85,7 +85,14 @@ import {
   writeRosterSlots,
 } from './roster-dm.js';
 import { authorizeDm } from './roster-gateway.js';
-import { captureP2pIngressConsent, captureDirectedCardConsent } from './channels/feishu/roster-consent.js';
+import {
+  captureP2pIngressConsent,
+  captureDirectedCardConsent,
+  parseRosterOptIn,
+} from './channels/feishu/roster-consent.js';
+// Side-effect import: registers the registerDeliveryAction('roster.invite') handler
+// so deliverSessionMessages -> handleSystemAction can dispatch invite rows.
+import './roster-invite.js';
 import type { Session } from './types.js';
 
 function now(): string {
@@ -1540,5 +1547,211 @@ describe('writeRosterSlots', () => {
     revokeScope(session.id);
     writeRosterSlots('ag-1', session.id);
     expect(readRosterSlots(session.id)).toHaveLength(0);
+  });
+});
+
+// --- invite_to_roster (ADR-0044 Stage 3 — new-contact vector) ---------------
+describe('invite_to_roster handler', () => {
+  const NEW_MEMBER = 'ou_new_contact';
+  const INVITE_GROUP_CHAT = 'oc_invite_group';
+  const INVITE_GROUP_PLATFORM = `feishu:${INVITE_GROUP_CHAT}`;
+
+  /** A root session WIRED to a feishu group chat — the invite's origin group. */
+  function groupSession(): Session {
+    if (!getDb().prepare('SELECT 1 FROM messaging_groups WHERE id = ?').get('mg-invite-group')) {
+      createMessagingGroup({
+        id: 'mg-invite-group',
+        channel_type: 'feishu',
+        platform_id: INVITE_GROUP_CHAT,
+        name: 'Ops',
+        is_group: 1,
+        unknown_sender_policy: 'strict',
+        created_at: now(),
+      });
+    }
+    const { session } = resolveSession('ag-1', 'mg-invite-group', null, 'shared');
+    return session;
+  }
+
+  function insertInviteOutbound(sessionId: string, msgId: string, member: string, slotLabel: string): void {
+    const db = new Database(outboundDbPath('ag-1', sessionId));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'system', NULL, NULL, ?)`,
+    ).run(msgId, JSON.stringify({ action: 'roster.invite', member, slotLabel }));
+    db.close();
+  }
+
+  interface DeliverCall {
+    channelType: string;
+    platformId: string;
+    kind: string;
+    content: string;
+  }
+  /** Fake adapter capturing deliver() calls with a fixed isMember verdict. */
+  function fakeAdapter(isMemberVerdict: boolean | undefined, calls: DeliverCall[]): void {
+    setDeliveryAdapter({
+      async deliver(channelType, platformId, _threadId, kind, content) {
+        calls.push({ channelType, platformId, kind, content });
+        return 'plat-1';
+      },
+      async isMember() {
+        return isMemberVerdict;
+      },
+    });
+  }
+
+  it('happy path: a member invite stamps a host-controlled directed card to the origin group', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+
+    await deliverSessionMessages(session);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].channelType).toBe('feishu');
+    expect(calls[0].platformId).toBe(INVITE_GROUP_PLATFORM); // posted INTO the origin group
+    const payload = JSON.parse(calls[0].content) as { type: string; optIn: Record<string, unknown> };
+    expect(payload.type).toBe('roster_invite');
+    // Every security-critical field is HOST-stamped (scope = root session id here).
+    expect(payload.optIn).toMatchObject({
+      kind: 'roster.optin',
+      scopeId: session.id,
+      slotLabel: 'approver',
+      agentGroupId: 'ag-1',
+      expectedUserId: NEW_MEMBER,
+    });
+    expect(typeof payload.optIn.expiresAt).toBe('string'); // host-stamped 24h expiry
+    expect(lastAudit(session.id)?.decision).toBe('delivered');
+  });
+
+  it('non-member is rejected fail-closed (no card sent)', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(false, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0);
+    expect(lastAudit(session.id)?.reason).toBe('not_member');
+  });
+
+  it('unknown membership (isMember undefined) ALSO rejects — the bar is absolute for a new contact', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(undefined, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0);
+    expect(lastAudit(session.id)?.reason).toBe('not_member');
+  });
+
+  it('suppresses a re-invite when ANY grant row already exists (live OR opted-out)', async () => {
+    const session = groupSession();
+    // The member opted in once then opted out → a revoked grant row remains.
+    insertDmGrant({
+      scopeId: session.id,
+      agentGroupId: 'ag-1',
+      slotLabel: 'approver',
+      participantOpenId: NEW_MEMBER,
+      dmPlatformId: `feishu:p2p:${NEW_MEMBER}`,
+      consentSource: 'directed-card',
+      consentInboundMsgId: 'prior',
+    });
+    getDb()
+      .prepare('UPDATE dm_grants SET revoked_at = ? WHERE scope_id = ? AND participant_open_id = ?')
+      .run(now(), session.id, NEW_MEMBER);
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0); // never re-asked — harassment guard
+    expect(lastAudit(session.id)?.reason).toBe('already_invited');
+  });
+
+  it('rejects a non-ou_ member target (R2)', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    insertInviteOutbound(session.id, 'inv-1', 'oc_a_group', 'approver'); // a group chat id, not a person
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0);
+    expect(lastAudit(session.id)?.reason).toBe('bad_member');
+  });
+
+  it('fail-closed when the origin group is ambiguous (session not wired to a feishu group)', async () => {
+    // agent-shared session with no messaging group → originGroupForSession null.
+    const { session } = resolveSession('ag-1', null, null, 'agent-shared');
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0);
+    expect(lastAudit(session.id)?.reason).toBe('ambiguous_origin');
+  });
+
+  it('flag OFF rejects the invite', async () => {
+    mockRosterEnabled = false;
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(0);
+    expect(lastAudit(session.id)?.reason).toBe('flag_disabled');
+  });
+
+  it('rate-limits: the 4th invite in a scope window is rejected (scope 60s/3)', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+    // Four invites to four DISTINCT members so the one-shot suppression never trips.
+    insertInviteOutbound(session.id, 'inv-1', 'ou_m1', 'approver');
+    insertInviteOutbound(session.id, 'inv-2', 'ou_m2', 'approver');
+    insertInviteOutbound(session.id, 'inv-3', 'ou_m3', 'approver');
+    insertInviteOutbound(session.id, 'inv-4', 'ou_m4', 'approver');
+    await deliverSessionMessages(session);
+    expect(calls).toHaveLength(3); // 3 cards sent; the 4th is over the per-scope window
+    const rl = getDb()
+      .prepare("SELECT COUNT(*) AS c FROM dm_audit WHERE scope_id = ? AND reason = 'rate_limited'")
+      .get(session.id) as { c: number };
+    expect(rl.c).toBe(1);
+  });
+
+  it('full e2e: invite → click mints grant → slot appears in discovery → send_roster_dm delivers', async () => {
+    const session = groupSession();
+    const calls: DeliverCall[] = [];
+    fakeAdapter(true, calls);
+
+    // 1. Invite — captures the host-stamped opt-in card payload.
+    insertInviteOutbound(session.id, 'inv-1', NEW_MEMBER, 'approver');
+    await deliverSessionMessages(session);
+    const cardPayload = JSON.parse(calls[0].content) as { optIn: unknown };
+    calls.length = 0;
+
+    // 2. The member clicks the card — the SAME parser the real feishu card-action
+    //    handler uses round-trips the host-stamped payload, then mints the grant.
+    const optIn = parseRosterOptIn(cardPayload.optIn);
+    expect(optIn).not.toBeNull();
+    const consent = captureDirectedCardConsent({
+      optIn: optIn as NonNullable<typeof optIn>,
+      operatorOpenId: NEW_MEMBER,
+      inboundMsgId: 'action:click',
+    });
+    expect(consent.ok).toBe(true);
+
+    // 3. Discovery projection now surfaces the slot on the next wake.
+    writeRosterSlots('ag-1', session.id);
+    const slotDb = new Database(inboundDbPath('ag-1', session.id));
+    const slots = slotDb.prepare('SELECT slot_label FROM roster_slots').all() as Array<{ slot_label: string }>;
+    slotDb.close();
+    expect(slots.map((s) => s.slot_label)).toEqual(['approver']);
+
+    // 4. send_roster_dm addressed to the slot delivers to the consented member's p2p.
+    insertRosterOutbound(session.id, 'send-1', { slot: 'approver' });
+    await deliverSessionMessages(session);
+    const sendCall = calls.find((c) => c.platformId === `feishu:p2p:${NEW_MEMBER}`);
+    expect(sendCall).toBeDefined();
+    expect(readDelivered(session.id, 'send-1')?.status).toBe('delivered');
   });
 });

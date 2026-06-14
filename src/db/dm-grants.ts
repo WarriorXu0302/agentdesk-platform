@@ -530,6 +530,43 @@ export function pruneRateLedger(keepSec = 3600, now: Date = new Date()): number 
 }
 
 // ---------------------------------------------------------------------------
+// Invite rate limit (ADR-0044 Stage 3)
+// ---------------------------------------------------------------------------
+//
+// Invite is a NEW-CONTACT vector — it posts a consent card to someone with no
+// grant yet — so it gets its OWN scope-keyed sliding window plus the shared
+// deployment daily cap. Charged BEFORE the card is built/sent (ADR-0044): an
+// invite we attempt consumes budget even if the card later fails to send, the
+// conservative direction for a contact-minting surface. Distinct ledger keys
+// (`invite-scope:`) from the send path so invites never share the per-scope /
+// grant / participant SEND windows.
+
+/** Per-scope invite window: at most 3 invites / 60s in one scope (conservative). */
+export const INVITE_SCOPE_WINDOW: RateWindow = { windowSec: 60, limit: 3 };
+
+/**
+ * Read-only: may this scope post another opt-in invite right now? Enforces the
+ * per-scope 60s window AND the deployment-wide daily cap — the SAME deploy-daily
+ * bucket the send path uses, so invites and sends share one blast-radius ceiling.
+ * Does NOT mutate; call recordInviteConsumption after it passes and the invite is
+ * about to be sent.
+ */
+export function checkInviteRate(scopeId: string, deploy: DeployQuotaConfig, now: Date = new Date()): RateCheckResult {
+  const ws = windowStartIso(now, INVITE_SCOPE_WINDOW.windowSec);
+  const scopeKey = `invite-scope:${scopeId}`;
+  if (currentCount(scopeKey, ws) >= INVITE_SCOPE_WINDOW.limit) {
+    return { allowed: false, blockedKey: scopeKey };
+  }
+  return checkDeployDailyCap(deploy, now);
+}
+
+/** Charge one invite against the per-scope window and the deploy daily bucket. */
+export function recordInviteConsumption(scopeId: string, deploy: DeployQuotaConfig, now: Date = new Date()): void {
+  bumpLedger(`invite-scope:${scopeId}`, windowStartIso(now, INVITE_SCOPE_WINDOW.windowSec));
+  recordDeployDailyConsumption(deploy, now);
+}
+
+// ---------------------------------------------------------------------------
 // Reserve-before-send accounting (ADR-0023 concurrency + at-least-once fix)
 // ---------------------------------------------------------------------------
 //

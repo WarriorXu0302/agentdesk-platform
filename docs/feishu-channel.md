@@ -195,6 +195,52 @@ Scope teardown: when the scope's root session is archived, all of its grants are
 revoked (`revokeScope`), so any not-yet-delivered roster row fails on its next
 drain tick.
 
+### Agent surface — discover / send / invite (ADR-0044)
+
+ADR-0023 (above) is the **host machine**; ADR-0044 adds the **agent-facing**
+triple on top of it, all host-mediated — the container is a thin emitter and
+every security-critical field is host-stamped.
+
+- **Discover.** On every container wake (only when `ALLOW_ROSTER_DM` is on) the
+  host projects the scope's *live* grants into the session's `inbound.db`
+  `roster_slots` table — **only** `{slot_label, sends_remaining, expires_at}`,
+  with **zero identity fields** (no `open_id`, no `dm_platform_id`, no
+  `scope_id`). The container reads it into a "Roster slots you can DM"
+  system-prompt section, so the agent learns which slots exist but never who is
+  behind one. Revoked / expired / max-sends-reached grants drop out on the next
+  wake; the send-time re-check stays authoritative for any mid-turn change.
+
+- **Send.** `send_roster_dm({slot, text})` emits the `kind='roster'` row the
+  Delivery section above describes. The tool result is opaque — it never echoes a
+  resolved `open_id` / `dm_platform_id`.
+
+- **Invite (new-contact vector — a stricter bar than send).**
+  `invite_to_roster({member, slot_label})` emits a `kind='system'`
+  `{action:'roster.invite', …}` intent row; the host
+  `registerDeliveryAction('roster.invite')` handler decides everything and
+  **builds the directed opt-in card itself** — the only place that ever builds
+  one, because `captureDirectedCardConsent` trusts the `expectedUserId`/`scopeId`
+  carried on the card value rather than re-deriving them. Guards, all
+  fail-closed:
+  1. `ALLOW_ROSTER_DM` on **and** `a2aSessionMode: "root-session"`.
+  2. `scopeId` + `agentGroupId` are re-derived from the session — never read from
+     the container's row.
+  3. `member` must be a p2p `open_id` (`ou_*`); anything else is rejected.
+  4. **One-shot per `(scope, member)`:** if *any* grant row already exists (live
+     **or** revoked/opted-out) the re-invite is suppressed — a harassment guard,
+     not just a rate limit. Someone who already chose (in or out) is never
+     re-asked.
+  5. **Membership is mandatory:** the target must be a *current* member of the
+     wired origin group (`isMember === true`). **Unknown also rejects** — for a
+     new-contact vector the bar is absolute (unlike the send path, which may fall
+     back on unknown). An ambiguous origin (the session is not wired to exactly
+     one feishu group) also fails closed.
+
+  Plus an invite rate ledger (scope **3 / 60s** + the shared deploy daily cap),
+  charged **before** the card is built/sent, and a host-stamped **24h** card
+  expiry so a stale click can't mint a live grant days later. Rejections bump
+  `*_roster_invite_rejected_total{reason}` and write a `dm_audit` row.
+
 ### Opt-out / leave revoke (ADR-0023 item 11)
 
 A consented participant can stop being reached at any time:
@@ -294,6 +340,11 @@ deployment per day (tumbling window floored to a UTC boundary; up to ~2x the cap
    gateway (HMAC-verified).
 7. Monitor `*_roster_dm_rejected_total{reason}` — a sustained non-zero rate
    means an agent is attempting DMs it isn't entitled to.
+8. Enabling the flag also exposes the agent tools `send_roster_dm` +
+   `invite_to_roster` and the discovery projection (ADR-0044). `invite_to_roster`
+   posts a consent card into the wired group and is bounded by its own ledger
+   (scope 3 / 60s + the deploy daily cap) — monitor
+   `*_roster_invite_rejected_total{reason}` alongside the send metric.
 
 ## Current limitations
 

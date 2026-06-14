@@ -341,3 +341,25 @@ export function originGroupPlatformIdForGrant(grant: DmGrantRow): string | null 
   if (!mg || mg.is_group !== 1) return null;
   return `${mg.channel_type}:${mg.platform_id}`;
 }
+
+/**
+ * Resolve the single origin GROUP a session is wired to, for the invite gate
+ * (ADR-0044 Stage 3). An invite both posts its consent card into this group AND
+ * requires the target be a current member of it, so it must resolve to exactly
+ * ONE feishu group chat. Fail-closed (returns null) when the session has no
+ * messaging group, the group is missing, it isn't a group chat (is_group!=1), or
+ * it isn't feishu — an ambiguous / non-group origin must REFUSE the invite, not
+ * guess (ADR-0044 "multi-group a2a scope → invite origin may be ambiguous → fail
+ * closed"). Roster DM requires root-session mode (asserted separately), so a
+ * compliant root/frontdesk session resolves here to its single wired group.
+ *
+ * Returns the channel type + the `feishu:<chat_id>` platform id (prefixed form,
+ * matching originGroupPlatformIdForGrant) so one value feeds both the membership
+ * check and the card send.
+ */
+export function originGroupForSession(session: Session): { channelType: string; platformId: string } | null {
+  if (!session.messaging_group_id) return null;
+  const mg = getMessagingGroup(session.messaging_group_id);
+  if (!mg || mg.is_group !== 1 || mg.channel_type !== 'feishu') return null;
+  return { channelType: mg.channel_type, platformId: `${mg.channel_type}:${mg.platform_id}` };
+}
