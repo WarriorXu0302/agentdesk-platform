@@ -165,6 +165,24 @@ export function insertMessage(
   });
 }
 
+/**
+ * Most recent non-null conversation_thread_id in this session's inbound.db
+ * (ADR-0039). The a2a propagation reads it from the SOURCE session to carry the
+ * thread across a hop — inbound.db is authoritative per-message, so this chains
+ * correctly through frontdesk → worker A → worker B (each hop's inbound row
+ * carries the id written by the previous hop). Returns null on a session with no
+ * threaded messages yet (pre-migration / channel-only) — callers must be
+ * null-safe and never block routing on it.
+ */
+export function latestConversationThreadId(db: Database.Database): string | null {
+  const row = db
+    .prepare(
+      'SELECT conversation_thread_id FROM messages_in WHERE conversation_thread_id IS NOT NULL ORDER BY seq DESC LIMIT 1',
+    )
+    .get() as { conversation_thread_id: string } | undefined;
+  return row?.conversation_thread_id ?? null;
+}
+
 export function countDueMessages(db: Database.Database): number {
   return (
     db

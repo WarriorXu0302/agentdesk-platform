@@ -25,8 +25,12 @@ import { isSafeAttachmentName } from '../../attachment-safety.js';
 import { readContainerConfig, type A2aSessionMode } from '../../container-config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
-import { getInboundSourceSessionId, getMostRecentPeerSourceSessionId } from '../../db/session-db.js';
-import { getSession } from '../../db/sessions.js';
+import {
+  getInboundSourceSessionId,
+  getMostRecentPeerSourceSessionId,
+  latestConversationThreadId,
+} from '../../db/session-db.js';
+import { getSession, setSessionConversationThreadId } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
 import { a2aOriginRejectedTotal } from '../../metrics.js';
@@ -285,6 +289,12 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   //      containers that predate the column.
   //   3. session.owner_user_id — last resort for per-user-pinned sessions.
   let originUserId: string | null = null;
+  // Conversation thread id (ADR-0039): pure correlation, read from the SOURCE
+  // session's inbound.db AFTER the origin cross-validation below. inbound.db is
+  // authoritative per-message, so this chains across hops (each hop's inbound row
+  // carries the id the previous hop wrote). Null-safe — never an authz input,
+  // never blocks routing.
+  let conversationThreadId: string | null = null;
   const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
   try {
     const claimed = msg.origin_user_id ?? null;
@@ -304,6 +314,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     if (!originUserId) {
       originUserId = resolveOriginUserId(srcDbForOrigin);
     }
+    conversationThreadId = latestConversationThreadId(srcDbForOrigin);
   } finally {
     srcDbForOrigin.close();
   }
@@ -319,7 +330,12 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     content: forwardedContent,
     sourceSessionId: session.id,
     originUserId,
+    conversationThreadId,
   });
+  // Carry the thread id onto the target session row too, so the target's own
+  // classify_intent (which reads the session row) records the same id and the
+  // target becomes a valid source for its own downstream hops (ADR-0039).
+  if (conversationThreadId) setSessionConversationThreadId(targetSession.id, conversationThreadId);
   log.info('Agent message routed', {
     from: session.agent_group_id,
     to: targetAgentGroupId,

@@ -22,6 +22,16 @@ export function getSession(id: string): Session | undefined {
   return getDb().prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session | undefined;
 }
 
+/**
+ * Stamp a worker session's conversation_thread_id during a2a propagation
+ * (ADR-0039). The target's own classify_intent reads the session row, so the
+ * propagated id must land there too (the inbound row alone isn't enough). Pure
+ * correlation — never an authz/routing input.
+ */
+export function setSessionConversationThreadId(sessionId: string, conversationThreadId: string): void {
+  getDb().prepare('UPDATE sessions SET conversation_thread_id = ? WHERE id = ?').run(conversationThreadId, sessionId);
+}
+
 export function findSession(messagingGroupId: string, threadId: string | null): Session | undefined {
   if (threadId) {
     return getDb()
