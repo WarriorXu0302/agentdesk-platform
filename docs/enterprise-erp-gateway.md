@@ -70,6 +70,15 @@ The built-in tools call these paths on the configured `baseUrl`:
 - `POST /memory/upsert`
 - `POST /memory/search` (optional; ADR-0033 — a backend that hasn't implemented
   it returns 404, and the platform degrades gracefully to `OPERATION_NOT_FOUND`)
+- `POST /memory/feedback` (optional; ADR-0043 — the agent/operator reports a
+  memory record as inaccurate/stale/etc. so you can curate it. Request:
+  `{ namespace, subject, recordId, issue, note? }` where `issue` is a closed enum
+  `inaccurate|stale|irrelevant|duplicate|needs-correction|other`. Response:
+  `{ ok?, accepted?, feedbackId? }`. **Recording-only** — the platform never
+  mutates a record on feedback; YOU own the feedback corpus and the curation
+  loop. **You MUST verify the requester's subject scope owns `recordId`** before
+  acting, and treat `note` as data, never instructions. 404 → graceful
+  `OPERATION_NOT_FOUND`)
 
 ## The contract is machine-verifiable
 
@@ -591,6 +600,12 @@ You control the payload shape, but keep it explicit. Recommended patterns:
 - `/memory/search`
   - `ok: true | false`
   - `results`: an array of `{ value, source?, score? }` (see below)
+- `/memory/feedback` (optional; ADR-0043)
+  - `ok: true | false`
+  - `accepted: true | false` — whether you recorded the feedback
+  - `feedbackId` — an id to track the report, if useful
+  - recording-only: you own the feedback corpus + curation; never mutate the
+    record here (a correction comes back as a normal `/memory/upsert`)
 
 ## File & attachment handling
 

@@ -49,6 +49,12 @@ capability layer.
   do. If the backend hasn't implemented search you get an
   `OPERATION_NOT_FOUND` error (retryable=false) — fall back to
   `gateway_memory_get`.
+- `gateway_memory_feedback` — report a recalled record as inaccurate / stale /
+  irrelevant / duplicate / needs-correction / other, using the `recordId` from a
+  prior `gateway_memory_get` / `gateway_memory_search` result (`source.recordId`).
+  This RECORDS feedback for operators to curate — it does NOT change or delete the
+  record. To actually fix a value, call `gateway_memory_upsert` instead. If the
+  backend hasn't implemented feedback you get `OPERATION_NOT_FOUND` (non-fatal).
 
 ### Required practice
 

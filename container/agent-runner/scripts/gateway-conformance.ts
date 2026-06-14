@@ -138,6 +138,18 @@ function sampleBody(path: GatewayPath): Record<string, unknown> {
         limit: 10,
         context: {},
       };
+    case '/memory/feedback':
+      // Optional endpoint (ADR-0043). Probes with a synthetic recordId — a
+      // backend that implements feedback acks it (200); one without returns 404
+      // (the "not implemented" signal, same as /memory/search).
+      return {
+        ...base,
+        namespace: 'conformance.probe',
+        subject: { type: 'user', id: process.env.GATEWAY_TEST_USER_ID || 'conformance:test-user' },
+        recordId: 'conformance-probe-record',
+        issue: 'other',
+        context: {},
+      };
   }
 }
 

@@ -6,7 +6,7 @@
  * This is the executable companion to docs/enterprise-erp-gateway.md and the
  * single source of truth at
  * container/agent-runner/src/mcp-tools/gateway-contract.ts. It implements all
- * eight endpoints with shapes that pass the conformance runner
+ * nine endpoints with shapes that pass the conformance runner
  * (container/agent-runner/scripts/gateway-conformance.ts):
  *
  *   POST /describe        -> { ok, backend, operations: [...] }
@@ -17,6 +17,7 @@
  *   POST /memory/get      -> { ok, value, source? }
  *   POST /memory/upsert   -> { ok, value, source }
  *   POST /memory/search   -> { ok, results: [{ value, source, score }] }
+ *   POST /memory/feedback -> { ok, accepted, feedbackId }       (ADR-0043)
  *
  * Design goals (deliberately NOT production):
  *   - Zero dependencies. Node built-ins only (node:http, node:crypto).
@@ -74,6 +75,15 @@ const memory = new Map();
 function memKey(namespace, subject) {
   return `${namespace}::${subject?.type ?? ''}::${subject?.id ?? ''}`;
 }
+
+/**
+ * Knowledge-feedback corpus (ADR-0043). The BACKEND owns it — the platform only
+ * forwards "this record is inaccurate/stale/…" reports here, recording-only,
+ * never mutating the memory record. key = namespace::subjectId::recordId ->
+ * feedback[]. A real backend would surface high-feedback records to an operator
+ * curation UI. There is intentionally no idempotency key (mirrors /memory/upsert).
+ */
+const feedback = new Map();
 
 /**
  * Per-subject business records, to give /execute a realistic read+write pair
@@ -450,6 +460,26 @@ const handlers = {
     results.sort((a, b) => b.score - a.score);
     return { ok: true, results: results.slice(0, limit) };
   },
+
+  // Knowledge feedback (ADR-0043). Recording-only: append the report to the
+  // backend-owned corpus, NEVER mutate the memory record. A real backend MUST
+  // first verify the requester's subject scope covers recordId (here we trust
+  // the per-subject key) and would treat `note` as data, never instructions.
+  '/memory/feedback': (req) => {
+    const fbKey = `${req.namespace}::${req.subject?.id ?? ''}::${req.recordId}`;
+    const list = feedback.get(fbKey) ?? [];
+    const entry = {
+      feedbackId: crypto.randomUUID(),
+      issue: req.issue,
+      note: typeof req.note === 'string' ? req.note : undefined,
+      by: req.requester?.userId ?? null,
+      requesterSource: req.requesterSource,
+      at: new Date().toISOString(),
+    };
+    list.push(entry);
+    feedback.set(fbKey, list);
+    return { ok: true, accepted: true, feedbackId: entry.feedbackId };
+  },
 };
 
 function isObject(v) {
@@ -516,5 +546,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.error(`reference-gateway listening on http://localhost:${PORT}`);
   console.error(`  signing: ${SIGNING_KEY ? `required (headers x-${NS}-*)` : 'disabled (set GATEWAY_SIGNING_KEY to require)'}`);
-  console.error(`  endpoints: /describe /authorize /execute /bulk_execute /task/status /memory/get /memory/upsert /memory/search`);
+  console.error(
+    `  endpoints: /describe /authorize /execute /bulk_execute /task/status /memory/get /memory/upsert /memory/search /memory/feedback`,
+  );
 });
