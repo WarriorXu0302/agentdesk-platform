@@ -122,10 +122,19 @@
 
 ## 主题三:后端网关契约对真实企业后端的契合度
 
-### 3.1 缺批量/bulk 操作原语 ⭐ — 🟡 设计锁定(ADR-0036),实现分 commit 落地中
+### 3.1 缺批量/bulk 操作原语 ⭐ — ✅ 已落地(ADR-0036 + c7bb334)
 - **现状**:契约 `input` 是 `Record<string, unknown>`,`/execute` 只处理单操作(`gateway.ts:655-681`,`docs/ERP-INTEGRATION-GUIDE.md:104-134` 只有单操作示例)。"原子创建 50 个订单"必须拆成 50 次 `/execute`。后端虽可自定义 `bulk_create` 操作,但平台**零指引、零示例、零脚手架**。
 - **业务影响**:**高**。薪资、发票对账、库存同步等真实 ERP 流程常涉及批量。50 次独立调用倍增延迟、撑大审计日志、放大部分失败窗口。
 - **建议**:加**可选** `/bulk_execute` 指引:`POST {operations:[{operation,input,idempotencyKey}], atomic?}` → `{ok, results:[...], partial?}`。保持向后兼容(未实现返回 404 OPERATION_NOT_FOUND)。文档讲清权衡:per-operation 幂等比 per-batch 更安全。
+- **已实现**(按 ADR-0036 端到端,一次 coherent 落地):
+  - 契约 `gateway-contract.ts`:`bulkExecuteRequest/Response` + 操作项 schema,`/bulk_execute` 入 `REQUEST_SCHEMAS`/`RESPONSE_SCHEMAS`(成为 `GatewayPath`)。
+  - 客户端 `gateway.ts`:`gateway_bulk_execute` MCP 工具 + `handleGatewayBulkExecute`(每个非 dryRun 操作自动生成 per-op key);404 → 回退提示逐个 `gateway_execute`;`hashBody` 加 bulk 审计摘要。
+  - host 签名代理 `gateway-signing-proxy.ts`:`/bulk_execute` 入 `WRITE_PATHS`(写作用域 token,与 `/execute` 同信任,不新开身份面)。
+  - 参考实现 `examples/reference-gateway/server.mjs`:`/bulk_execute`(per-op 幂等 replay + `atomic` 预校验全做或全不做 + best-effort `partial`)。
+  - conformance runner 加 `/bulk_execute` dryRun 样本(可选端点,404 = 未实现)。
+  - 文档:`enterprise-erp-gateway.md` 端点表 + "Batch operations" 专节(per-op vs per-batch 幂等、atomic 由后端保证、审计调用粒度);`gateway.instructions.md` agent 工具指引;reference README + server 头注。
+  - 测试:`gateway-contract.test.ts`(新,schema)+ `gateway.test.ts`(handler:自动生成 key + 404 回退)+ `gateway-signing-proxy.test.ts`(写路径门控)。
+  - 验证:container tsc 绿、schema sanity 5/5、live conformance **7/7**、curl 冒烟(best-effort `partial` / atomic 不提交 / per-op 幂等 replay)、host 全套 736、签名代理写路径测试、lint/format 净。
 - **工作量 M · 价值 高**
 
 ### 3.2 缺异步/长任务模式(只有同步超时模型)⭐

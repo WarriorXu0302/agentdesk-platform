@@ -6,12 +6,13 @@
  * This is the executable companion to docs/enterprise-erp-gateway.md and the
  * single source of truth at
  * container/agent-runner/src/mcp-tools/gateway-contract.ts. It implements all
- * six endpoints with shapes that pass the conformance runner
+ * seven endpoints with shapes that pass the conformance runner
  * (container/agent-runner/scripts/gateway-conformance.ts):
  *
  *   POST /describe        -> { ok, backend, operations: [...] }
  *   POST /authorize       -> { allowed, reason?, obligations? }
  *   POST /execute         -> { ok, result | preview, auditId }
+ *   POST /bulk_execute    -> { ok, results: [...], partial? }   (ADR-0036)
  *   POST /memory/get      -> { ok, value, source? }
  *   POST /memory/upsert   -> { ok, value, source }
  *   POST /memory/search   -> { ok, results: [{ value, source, score }] }
@@ -108,6 +109,35 @@ function runOperation(op, req) {
   }
   // demo.* / conformance.noop: echo the input back, no real side effects.
   return { operation: op, input, committed: true };
+}
+
+/**
+ * Run ONE operation for /bulk_execute (ADR-0036). Returns a per-op result item —
+ * `{ ok:true, result|preview, auditId }` on success, or `{ ok:false, error }` on
+ * failure — instead of an HTTP status, since a batch aggregates many outcomes.
+ * Honors per-op idempotency replay exactly like single /execute.
+ */
+function runSingleForBulk(entry, req, dryRun) {
+  const op = String(entry?.operation || '');
+  if (!OPERATION_NAMES.has(op)) {
+    return { ok: false, error: { code: 'OPERATION_NOT_FOUND', message: `unknown operation: ${op}` } };
+  }
+  const def = OPERATIONS.find((o) => o.name === op);
+  if (def.mutating && !isTrusted(req)) {
+    return { ok: false, error: { code: 'BACKEND_UNAUTHORIZED', message: 'untrusted requester may not mutate' } };
+  }
+  const key = entry?.idempotencyKey;
+  if (def.mutating && !dryRun && key && idempotency.has(key)) {
+    return { ...idempotency.get(key), replayed: true };
+  }
+  const auditId = crypto.randomUUID();
+  if (dryRun) {
+    return { ok: true, preview: { operation: op, input: entry?.input ?? {} }, auditId };
+  }
+  // Per-op input overrides the batch envelope; subject (if any) comes from the batch.
+  const item = { ok: true, result: runOperation(op, { ...req, operation: op, input: entry?.input ?? {} }), auditId };
+  if (def.mutating && key) idempotency.set(key, item);
+  return item;
 }
 
 /**
@@ -299,6 +329,47 @@ const handlers = {
     return response;
   },
 
+  // Optional batch endpoint (ADR-0036). Runs N operations in one round-trip.
+  '/bulk_execute': (req) => {
+    const ops = Array.isArray(req.operations) ? req.operations : null;
+    if (!ops || ops.length === 0) {
+      return { status: 400, body: { code: 'VALIDATION_FAILED', message: 'operations must be a non-empty array' } };
+    }
+    const dryRun = req.dryRun === true;
+
+    if (req.atomic === true) {
+      // All-or-nothing. A real backend wraps the commits in ONE transaction; this
+      // reference approximates by pre-validating every op (existence + trust) and
+      // committing only if all pass — otherwise nothing commits.
+      const problems = ops.map((o) => {
+        const name = String(o?.operation || '');
+        if (!OPERATION_NAMES.has(name)) return { code: 'OPERATION_NOT_FOUND', message: `unknown operation: ${name}` };
+        const def = OPERATIONS.find((d) => d.name === name);
+        if (def.mutating && !isTrusted(req)) {
+          return { code: 'BACKEND_UNAUTHORIZED', message: 'untrusted requester may not mutate' };
+        }
+        return null;
+      });
+      const badIdx = problems.findIndex((p) => p !== null);
+      if (badIdx !== -1) {
+        // Nothing committed. partial stays false — atomic means all-or-nothing.
+        return {
+          ok: false,
+          partial: false,
+          results: problems.map((p, i) =>
+            p ? { ok: false, error: p } : { ok: false, error: { code: 'UNKNOWN', message: 'aborted: atomic batch had a failing operation' } },
+          ),
+        };
+      }
+      return { ok: true, partial: false, results: ops.map((o) => runSingleForBulk(o, req, dryRun)) };
+    }
+
+    // Best-effort: each op runs independently; partial=true if any failed.
+    const results = ops.map((o) => runSingleForBulk(o, req, dryRun));
+    const anyFailed = results.some((r) => r.ok === false);
+    return { ok: !anyFailed, partial: anyFailed, results };
+  },
+
   '/memory/get': (req) => {
     const key = memKey(req.namespace, req.subject);
     const rec = memory.get(key);
@@ -404,5 +475,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.error(`reference-gateway listening on http://localhost:${PORT}`);
   console.error(`  signing: ${SIGNING_KEY ? `required (headers x-${NS}-*)` : 'disabled (set GATEWAY_SIGNING_KEY to require)'}`);
-  console.error(`  endpoints: /describe /authorize /execute /memory/get /memory/upsert /memory/search`);
+  console.error(`  endpoints: /describe /authorize /execute /bulk_execute /memory/get /memory/upsert /memory/search`);
 });

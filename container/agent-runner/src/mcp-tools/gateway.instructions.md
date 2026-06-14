@@ -16,6 +16,14 @@ capability layer.
   payload. Use `dryRun: true` first when you need a preview or a safe
   validation pass. Pass an `idempotencyKey` for write operations you might
   retry.
+- `gateway_bulk_execute` — run MANY operations in ONE round-trip instead of
+  calling `gateway_execute` N times. Use it for batch flows (bulk creation,
+  reconciliation, sync). Each op carries its own idempotency key (auto-filled
+  if omitted), so a retry never double-writes committed ops. `atomic: true`
+  requests all-or-nothing (backend-enforced); default is best-effort —
+  `results[]` is index-aligned with your operations and `partial` flags any
+  failure. Optional endpoint: on `OPERATION_NOT_FOUND`, fall back to
+  per-operation `gateway_execute`.
 - `gateway_memory_get` — load durable backend memory for a `namespace`
   (e.g. `user.profile`). Defaults to subject `user` / the current session
   user; pass `subjectType`/`subjectId` for other subjects, and `query` to

@@ -18,6 +18,7 @@ import {
   erpMemorySearch,
   erpMemoryUpsert,
   handleGatewayAuthorize,
+  handleGatewayBulkExecute,
   handleGatewayDescribe,
   handleGatewayExecute,
   handleGatewayMemoryGet,
@@ -237,6 +238,45 @@ describe('erp gateway mcp tools', () => {
       idempotencyKey: 'idem-123',
       requesterSource: 'session',
     });
+  });
+
+  it('posts a batch to /bulk_execute, auto-generating a per-op idempotency key (ADR-0036)', async () => {
+    setRequestIdentity(sessionIdentity());
+
+    let url: string | undefined;
+    let body: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, results: [{ ok: true }, { ok: true }] }), { status: 200 });
+    }) as typeof fetch;
+
+    await handleGatewayBulkExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operations: [
+        { operation: 'sales.order.create', input: { sku: 'A' } }, // no key → auto-generated
+        { operation: 'sales.order.create', input: { sku: 'B' }, idempotencyKey: 'k2' },
+      ],
+      atomic: true,
+    });
+
+    expect(url).toBe('https://erp-gateway.example/bulk_execute');
+    const ops = (body as { operations: Array<Record<string, unknown>> }).operations;
+    expect(ops).toHaveLength(2);
+    expect(typeof ops[0].idempotencyKey).toBe('string'); // auto-generated, non-null
+    expect((ops[0].idempotencyKey as string).length).toBeGreaterThan(0);
+    expect(ops[1].idempotencyKey).toBe('k2'); // agent-supplied preserved
+    expect(body).toMatchObject({ atomic: true, dryRun: false, requesterSource: 'session' });
+  });
+
+  it('falls back to per-op execute when the backend has not implemented /bulk_execute (404)', async () => {
+    setRequestIdentity(sessionIdentity());
+    globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+
+    const result = await handleGatewayBulkExecute(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      operations: [{ operation: 'demo.echo', input: {} }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('does not implement /bulk_execute');
   });
 
   it('loads durable memory from /memory/get using the trusted userId as default subject', async () => {

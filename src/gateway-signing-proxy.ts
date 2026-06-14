@@ -60,7 +60,9 @@ const HOST_ALIAS = 'host.docker.internal';
  * enum (separate build, kept in sync).
  */
 export const READ_PATHS = ['/describe', '/authorize', '/memory/get', '/memory/search'] as const;
-export const WRITE_PATHS = ['/execute', '/memory/upsert'] as const;
+// /bulk_execute (ADR-0036) mutates, so it is write-scoped — same trust tier as
+// /execute. Proxy-mode containers get a write token covering it.
+export const WRITE_PATHS = ['/execute', '/bulk_execute', '/memory/upsert'] as const;
 export const ALL_GATEWAY_PATHS: readonly string[] = [...READ_PATHS, ...WRITE_PATHS];
 
 const REQUESTER_SOURCES = new Set(['session', 'agent-asserted']);

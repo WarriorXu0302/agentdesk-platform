@@ -7,10 +7,10 @@
  * runtime uses (src/mcp-tools/gateway-contract.ts is the single source of
  * truth — this script never re-defines the shapes).
  *
- * Note: `/memory/search` (ADR-0033) is optional for a backend. A backend that
- * hasn't implemented it yet will return 404 and this runner reports that
- * endpoint as FAIL — that is the intended signal ("search not implemented"),
- * not a contract violation of the other endpoints.
+ * Note: `/memory/search` (ADR-0033) and `/bulk_execute` (ADR-0036) are optional
+ * for a backend. A backend that hasn't implemented one yet returns 404 and this
+ * runner reports that endpoint as FAIL — that is the intended signal ("not
+ * implemented"), not a contract violation of the other endpoints.
  *
  * Usage:
  *   cd container/agent-runner && bun scripts/gateway-conformance.ts <baseUrl>
@@ -95,6 +95,16 @@ function sampleBody(path: GatewayPath): Record<string, unknown> {
         context: {},
         dryRun: true,
         idempotencyKey: crypto.randomUUID(),
+      };
+    case '/bulk_execute':
+      // Optional endpoint (ADR-0036). dryRun so the probe commits nothing; a
+      // backend that hasn't implemented it returns 404 (the "not implemented"
+      // signal, same as /memory/search).
+      return {
+        ...base,
+        operations: [{ operation: 'conformance.noop', input: {}, idempotencyKey: null }],
+        context: {},
+        dryRun: true,
       };
     case '/memory/get':
       return {

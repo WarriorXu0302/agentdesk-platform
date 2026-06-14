@@ -61,6 +61,9 @@ The built-in tools call these paths on the configured `baseUrl`:
 - `POST /describe`
 - `POST /authorize`
 - `POST /execute`
+- `POST /bulk_execute` (optional; ADR-0036 — batch many operations in one
+  round-trip; a backend that hasn't implemented it returns 404 and the agent
+  falls back to per-operation `/execute`)
 - `POST /memory/get`
 - `POST /memory/upsert`
 - `POST /memory/search` (optional; ADR-0033 — a backend that hasn't implemented
@@ -411,6 +414,63 @@ item's status (e.g. `{ applied: [...], failed: [{ id, reason }] }`). The agent
 can then report exactly what landed and attest it (see
 [Execution attestation](#execution-attestation-user-visible-trust-signal)).
 Reserve the closed error codes for whole-request transport failures.
+
+## Batch operations — `/bulk_execute` (optional, ADR-0036)
+
+When a flow runs the same kind of operation many times (bulk order creation,
+invoice reconciliation, inventory sync), N separate `/execute` calls multiply
+latency and audit rows. The **optional** `POST /bulk_execute` runs a batch in
+one round-trip. It is opt-in: a backend that doesn't implement it returns 404,
+and the agent falls back to per-operation `/execute`.
+
+Request — each operation carries its **own** `idempotencyKey`:
+
+```jsonc
+{
+  // envelope: contractVersion, agent, requester, requesterSource
+  "operations": [
+    { "operation": "sales.order.create", "input": { "sku": "A", "quantity": 1 }, "idempotencyKey": "k1" },
+    { "operation": "sales.order.create", "input": { "sku": "B", "quantity": 2 }, "idempotencyKey": "k2" }
+  ],
+  "context": {},
+  "dryRun": false,
+  "atomic": false   // optional; see below
+}
+```
+
+Response — `results` is index-aligned with `operations`:
+
+```jsonc
+{
+  "ok": true,
+  "results": [
+    { "ok": true, "result": { /* ... */ }, "auditId": "..." },
+    { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "..." } }
+  ],
+  "partial": true   // best-effort: true when any op failed
+}
+```
+
+Semantics your backend must honor:
+
+- **Per-operation idempotency, not per-batch.** Each op dedupes on its own key,
+  so a retried batch replays already-committed ops and runs only the rest —
+  never a double-write. A single batch-level key can't express "30 of 50
+  already committed," which is why the contract puts the key on each op.
+- **`atomic` is your guarantee, requested not enforced.** Default (absent/false)
+  is best-effort: run each op independently, set `partial: true` if any failed.
+  `atomic: true` asks for all-or-nothing in **one backend transaction**; the
+  platform has no cross-operation coordinator, so a backend that can't honor it
+  must **reject** `atomic: true` (don't fake it). On an atomic failure, commit
+  nothing and return `ok: false`.
+- **`dryRun`** previews every op and commits none.
+- **Audit granularity.** The host `gateway_audit` table records **one row** per
+  `/bulk_execute` call (it's call-grained). Operation-level audit is the
+  backend's job — each result's `auditId` ties back to your backend's record.
+
+The runnable [`examples/reference-gateway/`](../examples/reference-gateway/)
+implements `/bulk_execute` (per-op idempotency replay, `atomic` pre-validation,
+best-effort `partial`); the conformance runner probes it with a dryRun batch.
 
 ## Strict response mode
 

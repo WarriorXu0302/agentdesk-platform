@@ -202,6 +202,39 @@ describe('processSigningProxyRequest (ADR-0034 security core)', () => {
     expect(cap.fetches).toHaveLength(0);
   });
 
+  it('treats /bulk_execute as a write path (ADR-0036): read-only token forbids it, full token forwards it', async () => {
+    // Read-only token → /bulk_execute is forbidden (it lives in WRITE_PATHS).
+    const ro = makeDeps({
+      verifyToken: (_t, sourceIp) => ({
+        ok: true,
+        record: {
+          jti: 'j',
+          sessionId: 's',
+          agentGroupId: 'ag1',
+          allowedPaths: [...READ_PATHS],
+          sourceIp,
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        },
+      }),
+    });
+    const forbidden = await processSigningProxyRequest(
+      { method: 'POST', pathname: '/bulk_execute', token: 'good', sourceIp: 'x', rawBody: body() },
+      ro.deps,
+    );
+    expect(forbidden.httpStatus).toBe(403);
+    expect(ro.fetches).toHaveLength(0);
+
+    // Full token (default) → forwarded to the backend's /bulk_execute.
+    const full = makeDeps();
+    const forwarded = await processSigningProxyRequest(
+      { method: 'POST', pathname: '/bulk_execute', token: 'good', sourceIp: '172.17.0.2', rawBody: body() },
+      full.deps,
+    );
+    expect(forwarded.httpStatus).toBeLessThan(400);
+    expect(full.fetches).toHaveLength(1);
+    expect(full.fetches[0].url).toBe('https://erp.example/bulk_execute');
+  });
+
   it('rate-limits per token (429, never forwarded)', async () => {
     const cap = makeDeps({ allowRate: () => false });
     const r = await processSigningProxyRequest(

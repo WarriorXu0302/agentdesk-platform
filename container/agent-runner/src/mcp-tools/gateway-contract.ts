@@ -134,6 +134,34 @@ export const executeRequestSchema = z.object({
   idempotencyKey: z.string().nullable(),
 });
 
+/**
+ * One operation inside a `/bulk_execute` batch (ADR-0036). Each op carries its
+ * OWN `idempotencyKey` — per-operation, not per-batch — so a retry after a
+ * partial commit replays the committed ops and executes only the rest, never
+ * double-writing. Null only on a dryRun.
+ */
+export const bulkExecuteOperationSchema = z.object({
+  operation: z.string().min(1),
+  input: z.record(z.string(), z.unknown()),
+  idempotencyKey: z.string().nullable(),
+});
+
+/**
+ * Optional batch endpoint (ADR-0036, roadmap 3.1). Lets the agent submit N
+ * operations in one round-trip instead of N `/execute` calls. Optional: a
+ * backend that doesn't implement it returns 404 (OPERATION_NOT_FOUND) and the
+ * client falls back to per-op `/execute`. `atomic` REQUESTS all-or-nothing — the
+ * backend must honor it in a single transaction or reject it; the platform has
+ * no cross-op coordinator. Default (`atomic` absent/false) is best-effort.
+ */
+export const bulkExecuteRequestSchema = z.object({
+  ...envelopeBase,
+  operations: z.array(bulkExecuteOperationSchema).min(1),
+  context: z.record(z.string(), z.unknown()),
+  dryRun: z.boolean(),
+  atomic: z.boolean().optional(),
+});
+
 const memorySubjectSchema = z.object({
   type: z.string().min(1),
   id: z.string().min(1),
@@ -176,6 +204,7 @@ export const REQUEST_SCHEMAS = {
   '/describe': describeRequestSchema,
   '/authorize': authorizeRequestSchema,
   '/execute': executeRequestSchema,
+  '/bulk_execute': bulkExecuteRequestSchema,
   '/memory/get': memoryGetRequestSchema,
   '/memory/upsert': memoryUpsertRequestSchema,
   '/memory/search': memorySearchRequestSchema,
@@ -276,6 +305,34 @@ export const executeResponseSchema = z
   .passthrough();
 
 /**
+ * One result inside a `/bulk_execute` response (ADR-0036). Mirrors a single
+ * `/execute` outcome: `result` (committed) or `preview` (dryRun), an `auditId`,
+ * or a structured per-op `error` when that op failed (best-effort mode). Lenient
+ * + passthrough so a backend shapes entries however it likes.
+ */
+export const bulkExecuteResultItemSchema = z
+  .object({
+    ok: z.boolean().optional(),
+    result: z.unknown().optional(),
+    preview: z.unknown().optional(),
+    auditId: z.string().optional(),
+    error: gatewayErrorSchema.optional(),
+  })
+  .passthrough();
+
+export const bulkExecuteResponseSchema = z
+  .object({
+    ...responseEnvelope,
+    ok: z.boolean().optional(),
+    // Per-operation results, index-aligned with the request `operations`.
+    results: z.array(bulkExecuteResultItemSchema).optional(),
+    // best-effort mode: true when at least one op failed. atomic mode: on any
+    // failure `ok` is false and nothing committed (so `partial` stays false).
+    partial: z.boolean().optional(),
+  })
+  .passthrough();
+
+/**
  * Recommended provenance block for a recalled memory record (ADR-0033).
  *
  * Provenance lets an agent (and the audit trail) answer "where did this recalled
@@ -347,6 +404,7 @@ export const RESPONSE_SCHEMAS = {
   '/describe': describeResponseSchema,
   '/authorize': authorizeResponseSchema,
   '/execute': executeResponseSchema,
+  '/bulk_execute': bulkExecuteResponseSchema,
   '/memory/get': memoryGetResponseSchema,
   '/memory/upsert': memoryUpsertResponseSchema,
   '/memory/search': memorySearchResponseSchema,

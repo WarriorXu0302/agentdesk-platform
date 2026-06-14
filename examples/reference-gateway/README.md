@@ -8,7 +8,7 @@ machine-verifiable source of truth at
 
 Use it to:
 
-- see a complete gateway answer all six endpoints with contract-compliant shapes,
+- see a complete gateway answer all seven endpoints with contract-compliant shapes,
 - run the conformance runner against something real and watch it go green,
 - copy as the skeleton for your own gateway (replace the in-memory store and the
   no-op operations with calls into your ERP / CRM / ticketing backend).
@@ -30,6 +30,7 @@ real backend persists it with the write). The inline comments in
 | `POST /describe` | returns an operation catalog (`conformance.noop`, `demo.echo`, `demo.order.create`, plus a realistic read+write pair `todo.list` / `todo.create`) and a memory-namespace catalog |
 | `POST /authorize` | allows reads; denies a **mutating** op when `requesterSource` is `agent-asserted` |
 | `POST /execute` | `dryRun` → `preview`; otherwise → `result`; **replays the same result for a repeated `idempotencyKey`** so host retries can't double-write; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND` |
+| `POST /bulk_execute` | runs many operations in one round-trip (ADR-0036); per-op idempotency replay; `atomic` pre-validates then commits all-or-nothing; best-effort returns per-op `results[]` + `partial` |
 | `POST /memory/get` | exact lookup by `(namespace, subject)`; returns `value` + `source` provenance |
 | `POST /memory/upsert` | stores (optionally merges) `value`; returns the stored value + `source` |
 | `POST /memory/search` | naive keyword match over stored JSON, scoped by namespace + subject; returns `{ value, source, score }[]` (ADR-0033) |
@@ -75,17 +76,18 @@ cd container/agent-runner
 pnpm exec tsx scripts/gateway-conformance.ts http://localhost:8088
 ```
 
-Expected output — all six green:
+Expected output — all seven green:
 
 ```
   PASS        /describe       [200]
   PASS        /authorize      [200]
   PASS        /execute        [200]
+  PASS        /bulk_execute   [200]
   PASS        /memory/get     [200]
   PASS        /memory/upsert  [200]
   PASS        /memory/search  [200]
 
-All 6 endpoints conformant.
+All 7 endpoints conformant.
 ```
 
 Other modes (all pass against this reference):

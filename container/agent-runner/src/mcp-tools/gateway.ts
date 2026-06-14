@@ -316,6 +316,16 @@ function hashBody(path: string, body: Record<string, unknown>): string {
       case '/execute':
         payload = body.input ?? null;
         break;
+      case '/bulk_execute':
+        // Hash the operation names + inputs so identical batches collapse and
+        // distinct batches differ; the per-op idempotency keys live inside.
+        payload = Array.isArray(body.operations)
+          ? (body.operations as Array<Record<string, unknown>>).map((o) => ({
+              operation: o?.operation ?? null,
+              input: o?.input ?? null,
+            }))
+          : null;
+        break;
       case '/memory/get':
         payload = { subject: body.subject ?? null, namespace: body.namespace ?? null, query: body.query ?? null };
         break;
@@ -680,6 +690,60 @@ export async function handleGatewayExecute(
   return ok(result.text);
 }
 
+export async function handleGatewayBulkExecute(
+  runtime: ToolRuntimeConfig,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const rawOps = args.operations;
+  if (!Array.isArray(rawOps) || rawOps.length === 0) {
+    return err('operations must be a non-empty array of { operation, input?, idempotencyKey? }');
+  }
+
+  const { context: requester, source: requesterSource } = resolveRequester(args);
+  const dryRun = getBoolean(args, 'dryRun') ?? false;
+
+  // Normalize each op. Per-operation idempotency (ADR-0036): auto-generate a key
+  // per non-dryRun op the agent left blank, mirroring /execute — so a retried
+  // batch replays committed ops by their own key instead of double-writing.
+  const operations = rawOps.map((raw) => {
+    const op = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    const input = op.input && typeof op.input === 'object' && !Array.isArray(op.input) ? op.input : {};
+    return {
+      operation: typeof op.operation === 'string' ? op.operation : '',
+      input,
+      idempotencyKey: typeof op.idempotencyKey === 'string' ? op.idempotencyKey : dryRun ? null : crypto.randomUUID(),
+    };
+  });
+  if (operations.some((o) => !o.operation)) {
+    return err('each operation requires a non-empty "operation" name');
+  }
+
+  const body: Record<string, unknown> = {
+    agent: agentBlock(runtime),
+    requester,
+    requesterSource,
+    operations,
+    context: getRecord(args, 'context') ?? {},
+    dryRun,
+  };
+  const atomic = getBoolean(args, 'atomic');
+  if (atomic !== undefined) body.atomic = atomic;
+
+  const result = await callGateway(runtime, '/bulk_execute', body);
+  if (!result.ok) {
+    // 404 = this backend hasn't implemented the optional bulk endpoint. Steer
+    // the agent to the always-present per-operation path rather than failing.
+    if (result.code === 'OPERATION_NOT_FOUND') {
+      return err(
+        `This backend does not implement /bulk_execute. Fall back to calling gateway_execute once per operation (${operations.length} operations).`,
+      );
+    }
+    return gatewayErr(result);
+  }
+  log(`gateway_bulk_execute: ${operations.length} ops for ${requester.userId ?? 'anonymous'} (${requesterSource})`);
+  return ok(result.text);
+}
+
 export async function handleGatewayMemoryGet(
   runtime: ToolRuntimeConfig,
   args: Record<string, unknown>,
@@ -834,6 +898,52 @@ export const erpExecute: McpToolDefinition = {
   },
 };
 
+export const erpBulkExecute: McpToolDefinition = {
+  tool: {
+    name: 'gateway_bulk_execute',
+    description:
+      'Execute MANY business operations in ONE gateway round-trip instead of calling gateway_execute N times — ' +
+      'use it for batch flows (bulk order creation, invoice reconciliation, inventory sync). ' +
+      'Each operation carries its own idempotency key (auto-generated if omitted), so a retry never double-writes already-committed operations. ' +
+      'Set atomic=true to REQUEST all-or-nothing (the backend must honor it in one transaction or reject it). Default is best-effort: ' +
+      'the response `results[]` is index-aligned with your operations and `partial` is true if any failed. ' +
+      'This endpoint is OPTIONAL: if the backend has not implemented it you get OPERATION_NOT_FOUND — fall back to per-operation gateway_execute. ' +
+      'Requester identity is derived from the active session by the runtime — userId/channelType/platformId/threadId passed here are ignored.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        operations: {
+          type: 'array',
+          description: 'Non-empty array of operations to run, in order.',
+          items: {
+            type: 'object',
+            properties: {
+              operation: { type: 'string', description: 'Stable business operation name, e.g. "sales.order.create".' },
+              input: { type: 'object', description: 'Operation payload.' },
+              idempotencyKey: {
+                type: 'string',
+                description: 'Optional per-operation key. Auto-generated if omitted (unless dryRun=true).',
+              },
+            },
+            required: ['operation'],
+          },
+        },
+        atomic: {
+          type: 'boolean',
+          description: 'Request all-or-nothing semantics. Backend-enforced; default best-effort (partial allowed).',
+        },
+        dryRun: { type: 'boolean', description: 'Validate/preview every operation without committing any.' },
+        context: { type: 'object', description: 'Optional backend context applied to the batch.' },
+      },
+      required: ['operations'],
+      additionalProperties: false,
+    },
+  },
+  async handler(args) {
+    return handleGatewayBulkExecute(toolRuntimeConfigFromRunner(getConfig()), args);
+  },
+};
+
 export const erpMemoryGet: McpToolDefinition = {
   tool: {
     name: 'gateway_memory_get',
@@ -927,4 +1037,4 @@ export const erpMemorySearch: McpToolDefinition = {
   },
 };
 
-registerTools([erpDescribe, erpAuthorize, erpExecute, erpMemoryGet, erpMemoryUpsert, erpMemorySearch]);
+registerTools([erpDescribe, erpAuthorize, erpExecute, erpBulkExecute, erpMemoryGet, erpMemoryUpsert, erpMemorySearch]);
