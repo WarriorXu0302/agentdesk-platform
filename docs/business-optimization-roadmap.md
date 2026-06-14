@@ -385,10 +385,11 @@
 - **建议**:(1) 文档化 agent 可在 payload 塞 Cancel 选项(已支持);(2) 可选扩 schema 加 `role:'cancel'` 标记(渲染红按钮);(3) 实现会话级取消命令('cancel'/'/cancel'/'取消')标记 pending_question 为 cancelled(需 host 小支持)。
 - **工作量 S · 价值 中**
 
-### 6.7 长任务无中间进度反馈
+### 6.7 长任务无中间进度反馈 — ✅ 已落地(1cd409d,文档/指引)
 - **现状**:progress-status(`progress-status/index.ts`)只有 reaction emoji(入站加、首次投递/失败移除)。长任务(30s+)**无中间状态更新 API**。但 agent **已可**发多条普通消息当进度("1/3...2/3...")。
 - **业务影响**:中等。长操作中用户全程只见 emoji,90s 后静默失败则无指示卡在哪,易焦虑/重复点击/放弃。
 - **建议**:(1) 文档化 agent 可发中间状态消息(今天就支持);(2) 可选进度 API 发非终态更新而不刷屏;(3) PATCH 消息内联进度(需 Feishu 支持,超核心范围)。当前多消息 fallback 多数场景够用。
+- **已实现**(纯指引,符合建议(1)——机制今天就有,缺的是引导):`container/CLAUDE.md` Communication 段加"Long-running work"指引:平台只给 ambient reaction 指示器(不显示在做什么),故长任务发 1-2 条稀疏的里程碑更新("Step 2 of 3 done"),与"be concise"平衡(别刷屏);后端本身长耗时则走异步路径(`gateway_execute` `submitAsync` → 轮询 `gateway_task_status` 转达 `progress`,即 3.2/ADR-0037 的进度字段)而非阻塞到超时。建议(2)的可选进度 API = 3.2 已交付的 `/task/status` `progress`;建议(3) PATCH 内联超核心范围,未做。agent 基础提示词是最高杠杆位(每轮都读)。
 - **工作量 S · 价值 中**
 
 ### 6.8 审批拒绝无内联原因/补救建议 — ✅ 已落地(0470cee)

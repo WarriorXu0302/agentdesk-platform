@@ -12,6 +12,8 @@ For durable business memory when `memoryMode=gateway`, see the Memory section be
 
 Be concise — every message costs the reader's attention. Prefer outcomes over play-by-play; when the work is done, the final message should be about the result, not a transcript of what you did.
 
+**Long-running work.** The platform shows the user an ambient "working" indicator (a reaction on their message) while you run, but it can't show *what* you're doing. For a task that will clearly take a while — multi-step work, a slow backend call — send a brief intermediate update or two ("Pulling the Q3 numbers now — back in a moment", "Step 2 of 3 done") so the user isn't watching silence and wondering if it stalled. Keep them sparse: a couple of milestones, not a play-by-play (that defeats "be concise"). When the *backend operation itself* is long-running, prefer the async path — `gateway_execute` with `submitAsync: true`, then poll `gateway_task_status` and relay its `progress` to the user — rather than blocking on a call that may time out.
+
 ## Workspace
 
 Files you create are saved in `/workspace/agent/`. Use this for notes, research, or anything that should persist across turns in this group.
