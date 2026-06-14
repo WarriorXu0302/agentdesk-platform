@@ -137,7 +137,7 @@
   - 验证:container tsc 绿、schema sanity 5/5、live conformance **7/7**、curl 冒烟(best-effort `partial` / atomic 不提交 / per-op 幂等 replay)、host 全套 736、签名代理写路径测试、lint/format 净。
 - **工作量 M · 价值 高**
 
-### 3.2 缺异步/长任务模式(只有同步超时模型)⭐
+### 3.2 缺异步/长任务模式(只有同步超时模型)⭐ — 🟡 设计锁定(ADR-0037),实现分 commit 落地中
 - **现状**:`gateway.ts:522-524` 固定 AbortController 超时(默认 15s)。超过窗口的操作(总账过账、批量对账、预测计算)直接 TIMEOUT。`ERP-INTEGRATION-GUIDE.md:279-302` 的 async approval 只是**业务特定 workaround**,不是通用 async 原语。无 `/task/status`、无 `/submit_async`。
 - **业务影响**:**高**。很多 ERP 操作本就长耗时,强制 15s 不现实。运营者只能调大 timeout(增加失败风险)或在契约外自建 async-job(割裂架构)。
 - **建议**:加**可选**异步提交:`/execute` 带 `{submitAsync:true}` 立即返回 `{taskId, statusUrl}`;加 `/task/status` 返回 `{status, progress?, result|error}`。同步 execute 仍是默认,async 选择性开启。
