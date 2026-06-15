@@ -1,6 +1,7 @@
 import type { RoleScope, UserRole, UserRoleKind } from '../../../types.js';
 import { getDb } from '../../../db/connection.js';
 import { recordEnterpriseAudit } from '../../../db/enterprise-audit.js';
+import { isMemberOfOrg, isOrgAdmin, orgOfAgentGroup } from './organizations.js';
 
 /**
  * Grant a role at an explicit scope (ADR-0052). Role/scope pairing is enforced
@@ -132,9 +133,18 @@ export function isAdminOfAgentGroup(userId: string, agentGroupId: string): boole
   return !!row;
 }
 
-/** Any admin privilege over this agent group: global admin OR scoped admin. */
+/**
+ * Any admin privilege over this agent group (e.g. approval-card authority).
+ * Org-aware (ADR-0052): owner/global-admin bypass; otherwise a scoped/org admin
+ * must first be a member of the group's org (a stale cross-org admin grant is
+ * inert). NULL-org groups keep the pre-ADR-0052 behavior.
+ */
 export function hasAdminPrivilege(userId: string, agentGroupId: string): boolean {
-  return isOwner(userId) || isGlobalAdmin(userId) || isAdminOfAgentGroup(userId, agentGroupId);
+  if (isOwner(userId) || isGlobalAdmin(userId)) return true;
+  const org = orgOfAgentGroup(agentGroupId);
+  if (org !== null && !isMemberOfOrg(userId, org)) return false;
+  if (org !== null && isOrgAdmin(userId, org)) return true;
+  return isAdminOfAgentGroup(userId, agentGroupId);
 }
 
 export function getOwners(): UserRole[] {

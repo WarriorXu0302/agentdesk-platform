@@ -22,6 +22,7 @@
  *  - With `agentGroupId` → that group: the above, OR a role scoped to the group
  *    (operator / viewer / admin @ group).
  */
+import { hasOrgOperabilityRole, isMemberOfOrg, isOrgAdmin, orgOfAgentGroup } from './db/organizations.js';
 import {
   hasGlobalOperabilityRole,
   hasScopedOperabilityRole,
@@ -33,9 +34,14 @@ import { getUser } from './db/users.js';
 
 export function canOperate(userId: string, agentGroupId?: string): boolean {
   if (!getUser(userId)) return false;
+  // Platform tier — fleet-wide operate.
   if (isOwner(userId) || isGlobalAdmin(userId) || hasGlobalOperabilityRole(userId)) return true;
-  if (agentGroupId && (isAdminOfAgentGroup(userId, agentGroupId) || hasScopedOperabilityRole(userId, agentGroupId))) {
-    return true;
+  if (agentGroupId) {
+    // Org prerequisite, symmetric with canAccessAgentGroup (ADR-0052).
+    const org = orgOfAgentGroup(agentGroupId);
+    if (org !== null && !isMemberOfOrg(userId, org)) return false;
+    if (isAdminOfAgentGroup(userId, agentGroupId) || hasScopedOperabilityRole(userId, agentGroupId)) return true;
+    if (org !== null && (isOrgAdmin(userId, org) || hasOrgOperabilityRole(userId, org))) return true;
   }
   return false;
 }

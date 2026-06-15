@@ -49,7 +49,8 @@ import {
   updatePendingChannelApprovalCard,
 } from './db/pending-channel-approvals.js';
 import { deletePendingSenderApproval, getPendingSenderApproval } from './db/pending-sender-approvals.js';
-import { hasAdminPrivilege } from './db/user-roles.js';
+import { isMemberOfOrg, orgOfAgentGroup } from './db/organizations.js';
+import { hasAdminPrivilege, isGlobalAdmin, isOwner } from './db/user-roles.js';
 import { getUser, upsertUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
 import { ensureUserDm } from './user-dm.js';
@@ -170,10 +171,31 @@ function handleUnknownSender(
 
 setSenderResolver(extractAndUpsertUser);
 
+/**
+ * "Public within org" (ADR-0052, sub-decision #1). A `public` policy / `all`
+ * sender-scope normally skips sender gating. For an ORG-scoped agent group we
+ * still enforce the org-membership prerequisite, so a public channel can't be a
+ * cross-org ingress: only identified org members (and platform owner/global-admin)
+ * pass. A NULL-org (legacy) group stays fully public — byte-for-byte as before.
+ */
+function publicIngressAllowed(userId: string | null, agentGroupId: string): boolean {
+  const org = orgOfAgentGroup(agentGroupId);
+  if (org === null) return true; // legacy / un-orged: fully public
+  if (!userId) return false; // org-scoped: an unidentified sender can't be proven an org member
+  return isMemberOfOrg(userId, org) || isOwner(userId) || isGlobalAdmin(userId);
+}
+
 setAccessGate((event, userId, mg, agentGroupId): AccessGateResult => {
-  // Public channels skip the access check entirely.
+  // Public channels skip the sender check — but an org-scoped group still
+  // enforces the org-membership prerequisite ("public within org").
   if (mg.unknown_sender_policy === 'public') {
-    return { allowed: true };
+    if (publicIngressAllowed(userId, agentGroupId)) return { allowed: true };
+    log.info('MESSAGE DROPPED — public ingress to org-scoped group by non-org-member', {
+      messagingGroupId: mg.id,
+      agentGroupId,
+      userId,
+    });
+    return { allowed: false, reason: 'cross_org_public' };
   }
 
   if (!userId) {
@@ -200,7 +222,12 @@ setAccessGate((event, userId, mg, agentGroupId): AccessGateResult => {
  */
 setSenderScopeGate(
   (_event: InboundEvent, userId: string | null, _mg: MessagingGroup, agent: MessagingGroupAgent): AccessGateResult => {
-    if (agent.sender_scope === 'all') return { allowed: true };
+    if (agent.sender_scope === 'all') {
+      // 'all' skips the known-member check — but an org-scoped group still
+      // enforces the org prerequisite ("public within org", ADR-0052).
+      if (publicIngressAllowed(userId, agent.agent_group_id)) return { allowed: true };
+      return { allowed: false, reason: 'cross_org_scope_all' };
+    }
     if (!userId) return { allowed: false, reason: 'unknown_user_scope' };
     const decision = canAccessAgentGroup(userId, agent.agent_group_id);
     if (decision.allowed) return { allowed: true };
