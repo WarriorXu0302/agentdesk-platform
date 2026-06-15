@@ -20,6 +20,7 @@
 import crypto from 'node:crypto';
 
 import { SIGNING_NONCE_HEADER, SIGNING_SIGNATURE_HEADER, SIGNING_TIMESTAMP_HEADER } from '../branding.js';
+import { getOutboundDb } from '../db/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getConfig, type BackendGatewayConfig, type RunnerConfig } from '../config.js';
 import { getRequestIdentity, type RequestIdentity } from '../request-context.js';
@@ -329,6 +330,96 @@ export function canonicalJSON(value: unknown, seen: Set<object> = new Set()): st
   }
   seen.delete(value);
   return out;
+}
+
+/**
+ * Stable idempotency key for gateway WRITES (ADR-0048). Replaces the per-call
+ * crypto.randomUUID() so a crash-mid-turn re-run re-issues the SAME key and the
+ * backend dedupes the double write — instead of seeing a brand-new op.
+ *
+ * The stable anchor is sourced from `processing_ack` in outbound.db — the host
+ * (poll-loop) marks the current turn's inbound rows 'processing' there, and this
+ * MCP child reads it. Module state (getCurrentInReplyTo / RequestIdentity) does
+ * NOT cross the child process boundary, so it CANNOT be used here (ADR-0048).
+ *
+ * Key = sha256(anchor | contentHash | occurrence):
+ *  - anchor      = sorted processing message-ids — STABLE across a re-drive
+ *                  (same rows re-marked), so the re-run reproduces the key.
+ *  - contentHash = sha256(canonicalJSON({callsite,operation,input,context,async}))
+ *                  — distinct writes get distinct hashes (no wrong-dedup on a
+ *                  misaligned replay; the key is content-, not dispatch-order-,
+ *                  derived, so it survives the SDK's parallel tool calls).
+ *  - occurrence  = count of prior writes THIS turn-execution with the same
+ *                  contentHash — so two INTENTIONALLY-identical writes get
+ *                  distinct keys (no data-loss collision), captured
+ *                  SYNCHRONOUSLY before any await (atomic within the JS turn).
+ *
+ * The occurrence counter resets per turn-EXECUTION via a reset signal
+ * (anchor + MAX(status_changed)); a re-drive bumps status_changed (>=60s backoff
+ * apart) so the counter restarts at 0 and the re-run reproduces 0,1,… — while
+ * the KEY excludes the signal, so it still matches the original run. Returns null
+ * when there is no processing batch (scheduled/detached paths) -> caller falls
+ * back to crypto.randomUUID().
+ */
+function resolveTurn(): { anchor: string; signal: string } | null {
+  try {
+    const rows = getOutboundDb()
+      .prepare("SELECT message_id, status_changed FROM processing_ack WHERE status = 'processing' ORDER BY message_id")
+      .all() as Array<{ message_id: string; status_changed: string }>;
+    if (rows.length === 0) return null;
+    const anchor = rows.map((r) => r.message_id).join(',');
+    const signal = rows.reduce((max, r) => (r.status_changed > max ? r.status_changed : max), '');
+    return { anchor, signal };
+  } catch {
+    return null;
+  }
+}
+
+let occResetKey: string | null = null;
+const occCounts = new Map<string, number>();
+function nextOccurrence(turn: { anchor: string; signal: string }, contentHash: string): number {
+  const resetKey = `${turn.anchor}|${turn.signal}`;
+  if (resetKey !== occResetKey) {
+    occResetKey = resetKey;
+    occCounts.clear();
+  }
+  const n = occCounts.get(contentHash) ?? 0;
+  occCounts.set(contentHash, n + 1);
+  return n;
+}
+
+export function deriveStableIdempotencyKey(params: {
+  callsite: string;
+  operation: string;
+  input: unknown;
+  context: unknown;
+  submitAsync: boolean;
+}): string | null {
+  const turn = resolveTurn();
+  if (!turn) return null;
+  let content: string;
+  try {
+    content = canonicalJSON({
+      callsite: params.callsite,
+      operation: params.operation,
+      input: params.input ?? null,
+      context: params.context ?? null,
+      async: params.submitAsync,
+    });
+  } catch {
+    return null; // un-canonicalizable (cycle) -> fall back to random
+  }
+  const contentHash = crypto.createHash('sha256').update(content).digest('hex');
+  const occurrence = nextOccurrence(turn, contentHash);
+  const keyHash = crypto.createHash('sha256').update(`${turn.anchor}|${contentHash}|${occurrence}`).digest('hex');
+  return `idem:${keyHash.slice(0, 40)}`;
+}
+
+/** Reset the per-turn occurrence tracker. Test-only — production resets via the
+ *  anchor/signal change inside nextOccurrence (no cross-process hook exists). */
+export function __resetIdempotencyOccurrenceForTests(): void {
+  occResetKey = null;
+  occCounts.clear();
 }
 
 function hashBody(path: string, body: Record<string, unknown>): string {
@@ -720,20 +811,28 @@ export async function handleGatewayExecute(
   // Write operations must always carry an idempotency key so a backend can
   // dedupe a retried write. If the agent omits one we generate it here. A
   // dryRun touches no committed state, so it stays null.
-  const idempotencyKey = getString(args, 'idempotencyKey') ?? (dryRun ? null : crypto.randomUUID());
+  const input = getRecord(args, 'input') ?? {};
+  const context = getRecord(args, 'context') ?? {};
+  // Optional async submission (ADR-0037): only forward when the agent asked, so
+  // the request shape is unchanged for the common synchronous case.
+  const submitAsync = getBoolean(args, 'submitAsync') ?? false;
+  // Stable, content-derived key (ADR-0048) so a re-run dedupes; falls back to a
+  // random key when no stable turn anchor is available (scheduled/detached).
+  const idempotencyKey =
+    getString(args, 'idempotencyKey') ??
+    (dryRun
+      ? null
+      : (deriveStableIdempotencyKey({ callsite: 'exec', operation, input, context, submitAsync }) ?? crypto.randomUUID()));
   const body: Record<string, unknown> = {
     agent: agentBlock(runtime),
     requester,
     requesterSource,
     operation,
-    input: getRecord(args, 'input') ?? {},
-    context: getRecord(args, 'context') ?? {},
+    input,
+    context,
     dryRun,
     idempotencyKey,
   };
-  // Optional async submission (ADR-0037): only forward when the agent asked, so
-  // the request shape is unchanged for the common synchronous case.
-  const submitAsync = getBoolean(args, 'submitAsync');
   if (submitAsync) body.submitAsync = true;
   const result = await callGateway(runtime, '/execute', body);
   if (!result.ok) return gatewayErr(result);
@@ -781,14 +880,21 @@ export async function handleGatewayBulkExecute(
   // Normalize each op. Per-operation idempotency (ADR-0036): auto-generate a key
   // per non-dryRun op the agent left blank, mirroring /execute — so a retried
   // batch replays committed ops by their own key instead of double-writing.
-  const operations = rawOps.map((raw) => {
+  // Key is the stable, content-derived key (ADR-0048; callsite "bulk[i]" namespaces
+  // each op) so a re-run dedupes; random fallback when no stable turn anchor.
+  const bulkContext = getRecord(args, 'context') ?? {};
+  const operations = rawOps.map((raw, i) => {
     const op = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
     const input = op.input && typeof op.input === 'object' && !Array.isArray(op.input) ? op.input : {};
-    return {
-      operation: typeof op.operation === 'string' ? op.operation : '',
-      input,
-      idempotencyKey: typeof op.idempotencyKey === 'string' ? op.idempotencyKey : dryRun ? null : crypto.randomUUID(),
-    };
+    const operation = typeof op.operation === 'string' ? op.operation : '';
+    const idempotencyKey =
+      typeof op.idempotencyKey === 'string'
+        ? op.idempotencyKey
+        : dryRun
+          ? null
+          : (deriveStableIdempotencyKey({ callsite: `bulk[${i}]`, operation, input, context: bulkContext, submitAsync: false }) ??
+            crypto.randomUUID());
+    return { operation, input, idempotencyKey };
   });
   if (operations.some((o) => !o.operation)) {
     return err('each operation requires a non-empty "operation" name');
