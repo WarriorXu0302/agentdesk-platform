@@ -209,6 +209,38 @@ describe('routeAgentMessage return-path', () => {
     expect(bRows[0].source_session_id).toBe(S1.id); // <- the return address
   });
 
+  // Cross-org runtime guard (ADR-0052 FIX-3). The A→B destination was created
+  // while both groups were un-orged; assigning A and B to different orgs orphans
+  // that edge, and the runtime guard must refuse it before a target session forms.
+  function seedOrgs(): void {
+    const db = getDb();
+    db.prepare('INSERT INTO organizations (id, name, slug, created_at) VALUES (?,?,?,?)').run('org-x', 'X', 'x', now());
+    db.prepare('INSERT INTO organizations (id, name, slug, created_at) VALUES (?,?,?,?)').run('org-y', 'Y', 'y', now());
+  }
+  it('refuses a cross-org agent-to-agent hop even with a pre-existing destination', async () => {
+    seedOrgs();
+    getDb().prepare('UPDATE agent_groups SET organization_id = ? WHERE id = ?').run('org-x', A);
+    getDb().prepare('UPDATE agent_groups SET organization_id = ? WHERE id = ?').run('org-y', B);
+    await expect(
+      routeAgentMessage(
+        { id: 'msg-xorg', platform_id: B, content: JSON.stringify({ text: 'leak' }), in_reply_to: null },
+        S1,
+      ),
+    ).rejects.toThrow(/cross-org/);
+    expect(readInbound(B, SB.id)).toHaveLength(0); // no target inbound row materialized
+  });
+
+  it('allows a same-org agent-to-agent hop', async () => {
+    seedOrgs();
+    getDb().prepare('UPDATE agent_groups SET organization_id = ? WHERE id = ?').run('org-x', A);
+    getDb().prepare('UPDATE agent_groups SET organization_id = ? WHERE id = ?').run('org-x', B);
+    await routeAgentMessage(
+      { id: 'msg-sameorg', platform_id: B, content: JSON.stringify({ text: 'ok' }), in_reply_to: null },
+      S1,
+    );
+    expect(readInbound(B, SB.id)).toHaveLength(1);
+  });
+
   it('emits an agent_delegation audit row for cross-agent hops (roadmap 5.5)', async () => {
     await routeAgentMessage(
       { id: 'msg-deleg', platform_id: B, content: JSON.stringify({ text: 'do X' }), in_reply_to: null },

@@ -80,12 +80,11 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     folder,
     agent_provider: null,
     created_at: now,
-    // TODO(ADR-0052 Stage B / fix-3): inherit the source group's organization_id
-    // and add the same-org assert on createDestination below. NULL here is
-    // behavior-preserving for Stage A (no gate reads org yet); it becomes a
-    // cross-org laundering hole once Stage B's access gate is live, so the
-    // inheritance + ACL assert MUST land together with gate enforcement.
-    organization_id: null,
+    // FIX-3 (ADR-0052): a spawned worker INHERITS its creator's organization, so
+    // it lands inside the same tenant boundary instead of becoming a NULL-org
+    // (cross-org-reachable) island. The bidirectional destination rows below are
+    // therefore same-org by construction; createDestination still asserts it.
+    organization_id: sourceGroup.organization_id,
   };
   createAgentGroup(newGroup);
   initGroupFilesystem(newGroup, { instructions: instructions ?? undefined });

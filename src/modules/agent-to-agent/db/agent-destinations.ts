@@ -34,6 +34,7 @@
  */
 import type { AgentDestination } from '../../../types.js';
 import { getDb } from '../../../db/connection.js';
+import { orgOfAgentGroup } from '../../permissions/db/organizations.js';
 
 /**
  * ⚠️  Caller responsibility: after this returns, call
@@ -42,6 +43,19 @@ import { getDb } from '../../../db/connection.js';
  * container's inbound.db. See the top-of-file invariant.
  */
 export function createDestination(row: AgentDestination): void {
+  // FIX-3 (ADR-0052): an agent→agent destination is an a2a ACL grant and must
+  // NOT cross an org boundary — that would be a delegation path out of the
+  // tenant. Channels aren't org-scoped (target_type='channel' is exempt), and a
+  // NULL-org side (legacy / un-orged) means "no boundary here", so it's allowed.
+  if (row.target_type === 'agent') {
+    const srcOrg = orgOfAgentGroup(row.agent_group_id);
+    const dstOrg = orgOfAgentGroup(row.target_id);
+    if (srcOrg !== null && dstOrg !== null && srcOrg !== dstOrg) {
+      throw new Error(
+        `cross-org destination refused (ADR-0052): ${row.agent_group_id}[${srcOrg}] → ${row.target_id}[${dstOrg}]`,
+      );
+    }
+  }
   getDb()
     .prepare(
       `INSERT INTO agent_destinations (agent_group_id, local_name, target_type, target_id, created_at)

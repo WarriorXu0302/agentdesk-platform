@@ -37,6 +37,7 @@ import { a2aOriginRejectedTotal } from '../../metrics.js';
 import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { hasDestination } from './db/agent-destinations.js';
+import { orgOfAgentGroup } from '../permissions/db/organizations.js';
 import { collectLegitimateOrigins, resolveOriginUserId } from './origin-user.js';
 
 export { isSafeAttachmentName };
@@ -237,6 +238,22 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   }
   if (!getAgentGroup(targetAgentGroupId)) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
+  }
+
+  // Cross-org guard (ADR-0052 FIX-3). Defense-in-depth beside the destination
+  // ACL: reject a cross-tenant delegation edge BEFORE resolveTargetSession can
+  // materialize an org-Y target session stamped with the org-X origin. A
+  // NULL-org side (legacy) means no boundary. Self-messages are same-group so
+  // never cross. createDestination already blocks creating such an edge; this
+  // catches a pre-existing / misconfigured one at send time.
+  if (targetAgentGroupId !== session.agent_group_id) {
+    const srcOrg = orgOfAgentGroup(session.agent_group_id);
+    const dstOrg = orgOfAgentGroup(targetAgentGroupId);
+    if (srcOrg !== null && dstOrg !== null && srcOrg !== dstOrg) {
+      throw new Error(
+        `cross-org agent-to-agent refused (ADR-0052): ${session.agent_group_id}[${srcOrg}] → ${targetAgentGroupId}[${dstOrg}]`,
+      );
+    }
   }
 
   // Spawn-depth cap. Self-messages (system notifications looped back into the

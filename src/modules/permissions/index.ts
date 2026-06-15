@@ -49,7 +49,7 @@ import {
   updatePendingChannelApprovalCard,
 } from './db/pending-channel-approvals.js';
 import { deletePendingSenderApproval, getPendingSenderApproval } from './db/pending-sender-approvals.js';
-import { isMemberOfOrg, orgOfAgentGroup } from './db/organizations.js';
+import { addOrgMember, isMemberOfOrg, orgOfAgentGroup } from './db/organizations.js';
 import { hasAdminPrivilege, isGlobalAdmin, isOwner } from './db/user-roles.js';
 import { getUser, upsertUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
@@ -279,6 +279,10 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
       added_by: approverId,
       added_at: new Date().toISOString(),
     });
+    // FIX-4a (ADR-0052): enroll into the group's org too, else approve-then-replay
+    // re-hits the gate and cross_org_denies the freshly-added member (silent drop).
+    const admitOrg = orgOfAgentGroup(row.agent_group_id);
+    if (admitOrg) addOrgMember(admitOrg, row.sender_identity, approverId);
     log.info('Unknown sender approved — member added', {
       approvalId: row.id,
       senderIdentity: row.sender_identity,
@@ -458,6 +462,19 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
       deletePendingChannelApproval(row.messaging_group_id);
       return true;
     }
+    // FIX-4b (ADR-0052): the approver must be able to ACCESS the chosen group
+    // under the org rule before we wire a channel into it — a cross-org approver
+    // (or a mis-targeted connect) must not pull a channel into another tenant.
+    // owner/global_admin bypass; a cross-org admin is refused (cross_org_denied).
+    if (!canAccessAgentGroup(approverId, targetAgentGroupId).allowed) {
+      log.warn('Channel registration: approver lacks access to target group — wiring refused', {
+        messagingGroupId: row.messaging_group_id,
+        targetAgentGroupId,
+        approverId,
+      });
+      deletePendingChannelApproval(row.messaging_group_id);
+      return true;
+    }
   } else {
     log.warn('Channel registration: unknown response value', {
       messagingGroupId: row.messaging_group_id,
@@ -512,6 +529,9 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
       added_by: approverId,
       added_at: new Date().toISOString(),
     });
+    // FIX-4a (ADR-0052): also enroll into the target group's org.
+    const admitOrg = orgOfAgentGroup(targetAgentGroupId);
+    if (admitOrg) addOrgMember(admitOrg, senderUserId, approverId);
   }
 
   deletePendingChannelApproval(row.messaging_group_id);
@@ -612,6 +632,9 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
       added_by: userId,
       added_at: new Date().toISOString(),
     });
+    // FIX-4a (ADR-0052): also enroll into the new group's org.
+    const admitOrg = orgOfAgentGroup(ag.id);
+    if (admitOrg) addOrgMember(admitOrg, senderUserId, userId);
   }
 
   deletePendingChannelApproval(row.messaging_group_id);

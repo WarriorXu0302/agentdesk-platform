@@ -15,6 +15,7 @@ import { addOrgMember, createOrganization } from './db/organizations.js';
 import { createUser } from './db/users.js';
 import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
 import { canOperate } from './operability.js';
+import { createDestination } from '../agent-to-agent/db/agent-destinations.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -134,5 +135,60 @@ describe('hasAdminPrivilege is org-aware (approval-card authority)', () => {
     grantRole({ userId: 'owner', role: 'owner', scope: { kind: 'global' }, grantedBy: null });
     expect(hasAdminPrivilege('owner', 'gX')).toBe(true);
     expect(hasAdminPrivilege('owner', 'gY')).toBe(true);
+  });
+});
+
+describe('createDestination cross-org refusal (FIX-3, a2a ACL writer)', () => {
+  it('refuses an agent→agent destination across orgs', () => {
+    expect(() =>
+      createDestination({
+        agent_group_id: 'gX',
+        local_name: 'y',
+        target_type: 'agent',
+        target_id: 'gY',
+        created_at: now(),
+      }),
+    ).toThrow(/cross-org/);
+  });
+
+  it('allows same-org and NULL-org agent destinations, and channel destinations', () => {
+    createAgentGroup({
+      id: 'gX2',
+      name: 'GX2',
+      folder: 'gx2',
+      agent_provider: null,
+      created_at: now(),
+      organization_id: 'org-x',
+    });
+    // same org → ok
+    expect(() =>
+      createDestination({
+        agent_group_id: 'gX',
+        local_name: 'x2',
+        target_type: 'agent',
+        target_id: 'gX2',
+        created_at: now(),
+      }),
+    ).not.toThrow();
+    // legacy/null-org side → ok (no boundary)
+    expect(() =>
+      createDestination({
+        agent_group_id: 'gX',
+        local_name: 'leg',
+        target_type: 'agent',
+        target_id: 'gLegacy',
+        created_at: now(),
+      }),
+    ).not.toThrow();
+    // channels are not org-scoped → ok even from an org-scoped group
+    expect(() =>
+      createDestination({
+        agent_group_id: 'gX',
+        local_name: 'ch',
+        target_type: 'channel',
+        target_id: 'mg-1',
+        created_at: now(),
+      }),
+    ).not.toThrow();
   });
 });
