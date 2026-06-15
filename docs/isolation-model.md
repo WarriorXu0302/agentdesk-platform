@@ -130,3 +130,29 @@ messaging_group_agents (session_mode, trigger_rules, priority)
 - **Same agent, separate sessions:** multiple messaging_groups → same agent_group, `session_mode = 'shared'`
 - **Same chat, separate user contexts:** one messaging_group → same agent_group, `session_mode = 'per-user'` or `per-user-per-thread`
 - **Separate agents:** each messaging_group → different agent_group
+
+## Organization tenancy (ADR-0052)
+
+Above the channel↔agent isolation is an optional **tenant** boundary. An
+`agent_group` belongs to at most one `organization` (`agent_groups.organization_id`,
+nullable — `NULL` = legacy / un-orged, no tenancy). `organizations` +
+`organization_members` (membership = *reachability*, never privilege) draw the
+boundary; `user_roles.organization_id` carries org-scoped grants (`org-admin`,
+org-scoped `operator`/`viewer`).
+
+```
+organizations
+   ↑ organization_id (nullable)        ↑ membership (reachability, not privilege)
+agent_groups                        organization_members
+```
+
+Enforcement is **entirely host-side** at `canAccessAgentGroup` (and its admin /
+operability / operator-query cousins): a non-platform user can reach an
+org-scoped group only if they're a member of its org (`cross_org_denied`
+otherwise). `owner` / `global_admin` are platform superusers **above** the
+boundary. a2a delegation and channel wiring are constrained to one org; the
+operator triage surface (ADR-0049) is org-scoped for a non-global actor.
+sessions / messaging_groups / audit carry **no** org column — they derive org by
+JOIN through their immutable `agent_group_id`, so there is no second copy to
+drift, and org never enters the backend-gateway business-authz path (invariant:
+the gateway is the only authorization path; org isolation is host gating only).

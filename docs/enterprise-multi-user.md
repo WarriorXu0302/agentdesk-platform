@@ -48,10 +48,27 @@ parts — important for offboarding and incident response:
   lingers until idle-exit / `AGENTDESK_SESSION_TTL_DAYS`. The revoked user simply
   can't feed it new input. If you need hard mid-turn termination, that's an
   operator action (kill the container / archive the session).
-- **A `public` messaging group does not gate on membership at all** (by design —
-  `unknown_sender_policy='public'` admits anyone). Role revocation has no effect
-  on who can *message* a public group; gate sensitive behaviour behind the
-  backend gateway there, not group membership.
+- **A `public` messaging group does not gate on membership** for an un-orged
+  (NULL-org) agent group (by design — `unknown_sender_policy='public'` admits
+  anyone). Role revocation has no effect on who can *message* such a group; gate
+  sensitive behaviour behind the backend gateway there, not group membership.
+  **Exception (ADR-0052):** if the agent group belongs to an organization,
+  `public` / `sender_scope='all'` still enforce the org-membership prerequisite
+  ("public within org") — an outsider can't use a public channel as a cross-org
+  ingress.
+
+**Organization tenancy (ADR-0052).** When an agent group belongs to an
+`organization`, the access gate adds a **membership prerequisite**: a
+non-platform user reaches it only if they're a member of that org, else
+`cross_org_denied` (re-checked per message, same real-time revocation as above —
+removing an `organization_members` row blocks the next message). `owner` /
+`global_admin` are platform superusers above the tenant boundary. a2a delegation
+and channel wiring stay within one org; the operator triage surface (ADR-0049,
+`--as`) is org-scoped for a non-global actor. This is **host admission control
+only** — like role revocation above, it is not a substitute for per-action
+gateway authz (org never enters the gateway authz path). A deployment with no
+organizations behaves exactly as before (NULL-org = no prerequisite). See
+[isolation-model.md](isolation-model.md#organization-tenancy-adr-0052).
 
 For **business-action authorization** (not just message admission), the
 enforcement point is your backend gateway: `gateway_authorize` / `gateway_execute`

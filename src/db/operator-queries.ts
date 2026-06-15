@@ -22,9 +22,25 @@
  * Read-only by construction (SELECT only). These read the central DB, which is
  * operator-owned; the CLI (scripts/trace.ts) is an operator tool, so access is
  * gated by who can run it, not an in-band role check.
+ *
+ * Org scoping (ADR-0052 FIX-5): an OPTIONAL `orgScope` restricts results to a
+ * set of organizations. It is computed by the CALLER (e.g. scripts/trace.ts
+ * --as, from the actor's role/membership) so this stays a pure DB-layer module
+ * with no permissions import. Semantics:
+ *   - `undefined` → no scoping (OS-gated caller — the documented residual until
+ *     a real operator endpoint exists; NOT silently fleet-open, it's a conscious
+ *     caller choice).
+ *   - `'all'` → an explicit fleet-wide actor (owner / global-admin / global
+ *     operator|viewer) — no predicate.
+ *   - `string[]` → restrict to sessions whose agent group is in one of these
+ *     orgs. FAIL-CLOSED: an empty list returns zero rows. NULL-org (legacy)
+ *     sessions are excluded for a scoped actor. Keyed on organization_id /
+ *     agent_group_id (structural), never conversation_thread_id (ADR-0039).
  */
 import type { Session } from '../types.js';
 import { getDb, hasTable } from './connection.js';
+
+export type OrgScope = 'all' | string[];
 
 export interface SessionFilter {
   agentGroupId?: string;
@@ -42,7 +58,8 @@ export interface SessionFilter {
  * channelType joins through the session's messaging group. Caps at 1000 rows so
  * a fat fleet can't return an unbounded result; default 200.
  */
-export function listSessions(filter: SessionFilter = {}): Session[] {
+export function listSessions(filter: SessionFilter = {}, orgScope?: OrgScope): Session[] {
+  if (Array.isArray(orgScope) && orgScope.length === 0) return []; // fail-closed: scoped actor with no orgs
   const where: string[] = [];
   const params: unknown[] = [];
   if (filter.agentGroupId) {
@@ -73,6 +90,14 @@ export function listSessions(filter: SessionFilter = {}): Session[] {
     where.push('mg.channel_type = ?');
     params.push(filter.channelType);
   }
+  // FIX-5 org scope: structural JOIN to the session's agent group; restrict to
+  // the actor's orgs. (NULL-org sessions are excluded for a scoped actor.)
+  let agJoin = '';
+  if (Array.isArray(orgScope)) {
+    agJoin = 'LEFT JOIN agent_groups ag ON s.agent_group_id = ag.id';
+    where.push(`ag.organization_id IN (${orgScope.map(() => '?').join(',')})`);
+    params.push(...orgScope);
+  }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, 1000) : 200;
   // NULL last_active sorts last under DESC (SQLite ranks NULL lowest).
@@ -80,6 +105,7 @@ export function listSessions(filter: SessionFilter = {}): Session[] {
     .prepare(
       `SELECT s.* FROM sessions s
          LEFT JOIN messaging_groups mg ON s.messaging_group_id = mg.id
+         ${agJoin}
          ${clause}
          ORDER BY s.last_active DESC
          LIMIT ?`,
@@ -103,11 +129,27 @@ export interface RequestTrace {
  * request" view. (Each session also carries conversation_thread_id for
  * cross-referencing an OTel trace — displayed, not used as a lookup key.)
  */
-export function traceRequest(rootSessionId: string): RequestTrace {
+export function traceRequest(rootSessionId: string, orgScope?: OrgScope): RequestTrace {
   const db = getDb();
-  const sessions = db
-    .prepare('SELECT * FROM sessions WHERE root_session_id = ? ORDER BY created_at ASC')
-    .all(rootSessionId) as Session[];
+  if (Array.isArray(orgScope) && orgScope.length === 0) {
+    return { rootSessionId, sessions: [], classifications: [] }; // fail-closed
+  }
+  // FIX-5 (ADR-0052): filter PER SESSION ROW, not per-root — a delegation tree
+  // rooted in org X could (defense-in-depth) contain a worker hop in another org;
+  // a scoped actor must only see the sessions in their orgs, and classifications
+  // are then constrained to the surviving session ids.
+  const sessions = (
+    Array.isArray(orgScope)
+      ? db
+          .prepare(
+            `SELECT s.* FROM sessions s
+               LEFT JOIN agent_groups ag ON s.agent_group_id = ag.id
+               WHERE s.root_session_id = ? AND ag.organization_id IN (${orgScope.map(() => '?').join(',')})
+               ORDER BY s.created_at ASC`,
+          )
+          .all(rootSessionId, ...orgScope)
+      : db.prepare('SELECT * FROM sessions WHERE root_session_id = ? ORDER BY created_at ASC').all(rootSessionId)
+  ) as Session[];
   let classifications: Array<Record<string, unknown>> = [];
   if (sessions.length > 0 && hasTable(db, 'classification_log')) {
     const ids = sessions.map((s) => s.id);

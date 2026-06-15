@@ -26,7 +26,8 @@ import path from 'path';
 import { DATA_DIR } from '../src/config.js';
 import { initDb } from '../src/db/connection.js';
 import { runMigrations } from '../src/db/migrations/index.js';
-import { listSessions, traceRequest, type SessionFilter } from '../src/db/operator-queries.js';
+import { listSessions, traceRequest, type OrgScope, type SessionFilter } from '../src/db/operator-queries.js';
+import { orgsForUser } from '../src/modules/permissions/db/organizations.js';
 import { canOperate } from '../src/modules/permissions/operability.js';
 
 function usage(): never {
@@ -107,6 +108,12 @@ function main(): void {
   // OS-gated only. With --as, the actor must hold an operability role. A
   // request trace fans out across groups → require fleet-wide operate; a
   // scoped --agent-group list only needs operate on that one group.
+  //
+  // org scope (ADR-0052 FIX-5): with --as, results are also org-scoped — a
+  // platform-tier actor (fleet-wide operate) sees everything ('all'); otherwise
+  // results are restricted to the actor's orgs (fail-closed). Without --as,
+  // orgScope stays undefined (OS-gated, unrestricted — the documented residual).
+  let orgScope: OrgScope | undefined;
   if (actor !== null) {
     const isTrace = !args[0].startsWith('--');
     const scopeGroup = isTrace ? undefined : peekFlag(args, '--agent-group');
@@ -118,11 +125,12 @@ function main(): void {
       );
       process.exit(1);
     }
+    orgScope = canOperate(actor) ? 'all' : orgsForUser(actor);
   }
 
   // A bare first arg (not a --flag) is a root_session_id to trace.
   if (!args[0].startsWith('--')) {
-    const trace = traceRequest(args[0]);
+    const trace = traceRequest(args[0], orgScope);
     console.log(`root_session_id: ${trace.rootSessionId}`);
     console.log(`sessions (${trace.sessions.length}):`);
     for (const s of trace.sessions) {
@@ -142,7 +150,7 @@ function main(): void {
     return;
   }
 
-  const sessions = listSessions(parseFilters(args));
+  const sessions = listSessions(parseFilters(args), orgScope);
   console.log(`${sessions.length} session(s):`);
   for (const s of sessions) {
     console.log(

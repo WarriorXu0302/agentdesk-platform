@@ -1,6 +1,6 @@
 # ADR-0052: 真·多租户 org 隔离（对标清单 #7 完整版,用户显式选择）
 
-- **Status**: Accepted（**分阶段**:Stage A 已落地;Stage B 待用户确认 2 项子决策;Stage C 随后）
+- **Status**: Accepted（**分阶段**:Stage A + B 已落地全绿;2 子决策已确认[① public-within-org ② owner/global_admin 跨 org 旁路];剩 FIX-4b 选项/approver 过滤 + createNewAgentGroup org 继承 + Stage C bootstrap）
 - **Date**: 2026-06-16
 - **Decider(s)**: 用户(在明确警告后选"要更强的完整多租户隔离");coding agent(design+9 视角对抗评审 workflow wf_ef5a7824 + 执行)
 - **Tags**: `multi-tenant`, `isolation`, `rbac`, `governance`, `identity-trust-chain`, `db`, `migration`, `security`, `fail-closed`
@@ -66,7 +66,9 @@ FK 推导)✓、operator-queries(**FIX-5**:必填 `actor` + 非全局则强制 `
 不动)✓、roster(scope 跨整棵委派树,隔离**依赖 FIX-3**——跨 org 边永不成树)✓、网关记忆(代理只按 token 绑定,**不加 org
 输入**;跨 org 记忆隔离是后端 subject-scoping 职责 ADR-0033,且 org-X 用户永不获 org-Y 组的会话)✓、审计读(JOIN org +
 同款 fail-closed actor 过滤)✓。
-- **FIX-2**:`public` 策略 + `sender_scope='all'` 在闸前短路 → org-scoped wiring 禁用 public/all(NULL-org 保留)。
+- **FIX-2(已落地,采子决策①"public within org")**:`public` 策略 + `sender_scope='all'` 在闸前短路 → 对 org-scoped
+  组改为**仍强制 org 成员前置**(`publicIngressAllowed`:org 组要求已识别 org 成员或 owner/global_admin;NULL-org 全公开)。
+  非"禁用",而是"org 内公开",保留能力的同时堵住跨组入口。
 - **FIX-4**:approve-then-replay 对 orged 组会断(新 group-member 非 org-member → cross_org_denied → 静默丢)→ 3 个
   `addMember` admit 点同时 `addOrgMember`;审批选项列表 + `pickApprover` 按 approver 的 org 过滤。
 
@@ -100,11 +102,17 @@ D2 冗余(创建 chokepoint 错 + gateway_audit org 列削弱不变量 2);D1 无
   RoleScope)、createAgentGroup 6 列、新 `permissions/db/organizations.ts`、grant/revoke RoleScope 返工 + FIX-1 收紧 +
   全调用点迁移、Stage A 测试(迁移幂等/回填、revoke 契约回归、grant 审计含 organizationId)。**行为不变**(无 org 时逐字),
   把危险的契约返工**隔离 + 回归测**先落。
-- **Stage B(待用户确认 2 子决策)**:访问闸 org 前置 + `cross_org_denied`、canOperate org 化、FIX-2/3/4/5/6/7、
-  跨组拒绝测试套 + org 隔离守卫测试 + NULL-org 兼容测试。
-- **Stage C**:bootstrap(init-enterprise-topology 可选 org 块 + `--org`/`--org-admin`)、docs(enterprise-multi-user /
-  feishu-channel / isolation-model)。
+- **Stage B(已落地,分 B1/B2/B3)**:
+  - **B1(010caa2)**:访问闸 org 前置 + `cross_org_denied` + `org_admin`、`hasAdminPrivilege` 同款前置、`canOperate`
+    org 化、FIX-2 public-within-org。跨组拒绝测试套(canAccessAgentGroup/canOperate/hasAdminPrivilege + NULL-org 兼容)。
+  - **B2(a42a0bd)**:FIX-3(create-agent 继承 org + `createDestination` 同 org 断言 + `routeAgentMessage` 运行时守卫)、
+    FIX-4a(3 个 admit 点 addOrgMember)、FIX-4b 渠道 connect handler `canAccessAgentGroup` 校验。
+  - **B3(本提交)**:FIX-5(operator-queries `orgScope` fail-closed 过滤 + `traceRequest` 逐行 + `trace.ts --as` 串联)、
+    docs(enterprise-multi-user / isolation-model)、ADR 状态。FIX-6(取证表无 org 列、代理不盖)+ FIX-7(守卫扩展)在
+    Stage A 已随 organizations.ts 落地。
+- **剩余(收尾)**:FIX-4b 选项/approver org 过滤(纯 UX,被 B2 connect 校验兜底)+ createNewAgentGroup org 继承;
+  Stage C bootstrap(init-enterprise-topology 可选 org 块 + `--org`/`--org-admin`)+ feishu-channel docs。
 
-**待用户确认的 2 项子决策(Stage B 前)**:① org-scoped wiring 禁 `public`/`sender_scope='all'`(移除一项能力,推荐此 fail-closed
-默认,可选替代="public 仅在 org 内");② owner/global_admin 跨 org 旁路(假定平台运营者可见所有租户)。子决策 ③(回填:自动把
-所有当前可达用户纳入 org-default 防锁死)**已在 Stage A 采推荐默认**(零锁死风险、单 org 即今日行为)。
+**2 项子决策(已由用户确认)**:① **采"public within org"**(非禁用 public,而是 org-scoped 组上 public 仍强制 org 成员前置,
+保留能力);② **owner/global_admin 跨 org 旁路**(平台运营者见所有租户)。子决策 ③(回填:自动把所有当前可达用户纳入
+org-default 防锁死)在 Stage A 已采推荐默认。

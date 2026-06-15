@@ -6,6 +6,7 @@ import { recordClassification } from './classification-log.js';
 import { createMessagingGroup } from './messaging-groups.js';
 import { listSessions, traceRequest } from './operator-queries.js';
 import { createSession } from './sessions.js';
+import { createOrganization } from '../modules/permissions/db/organizations.js';
 import type { Session } from '../types.js';
 
 function now(): string {
@@ -126,5 +127,60 @@ describe('traceRequest (ADR-0049 fan-out by root_session_id, ADR-0039-safe)', ()
     const trace = traceRequest('nope');
     expect(trace.sessions).toEqual([]);
     expect(trace.classifications).toEqual([]);
+  });
+});
+
+describe('org scope (ADR-0052 FIX-5)', () => {
+  beforeEach(() => {
+    createOrganization({ id: 'org-x', name: 'X', slug: 'x', created_at: now() });
+    createOrganization({ id: 'org-y', name: 'Y', slug: 'y', created_at: now() });
+    // org-scoped groups + a legacy null-org group (ag-frontdesk from the outer setup).
+    createAgentGroup({
+      id: 'ag-x',
+      name: 'AX',
+      folder: 'agx',
+      agent_provider: null,
+      created_at: now(),
+      organization_id: 'org-x',
+    });
+    createAgentGroup({
+      id: 'ag-y',
+      name: 'AY',
+      folder: 'agy',
+      agent_provider: null,
+      created_at: now(),
+      organization_id: 'org-y',
+    });
+    createSession(session({ id: 's-x', agent_group_id: 'ag-x' }));
+    createSession(session({ id: 's-y', agent_group_id: 'ag-y' }));
+    createSession(session({ id: 's-legacy', agent_group_id: 'ag-frontdesk' })); // null-org
+  });
+
+  it('listSessions restricts to the actor orgs; fail-closed on empty; unrestricted when undefined/all', () => {
+    expect(
+      listSessions({}, ['org-x'])
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(['s-x']);
+    expect(
+      listSessions({}, ['org-x', 'org-y'])
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(['s-x', 's-y']);
+    expect(listSessions({}, [])).toEqual([]); // fail-closed
+    // 'all' and undefined are unrestricted (sees the legacy null-org session too)
+    expect(listSessions({}, 'all').length).toBe(3);
+    expect(listSessions({}).length).toBe(3);
+  });
+
+  it('traceRequest filters the tree per-session-row by org', () => {
+    // A tree rooted on s-x with a (defense-in-depth) foreign-org worker hop.
+    createSession(session({ id: 's-x-root', agent_group_id: 'ag-x' }));
+    createSession(session({ id: 's-x-worker', agent_group_id: 'ag-x', root_session_id: 's-x-root' }));
+    createSession(session({ id: 's-foreign', agent_group_id: 'ag-y', root_session_id: 's-x-root' }));
+    const scoped = traceRequest('s-x-root', ['org-x']);
+    expect(scoped.sessions.map((s) => s.id).sort()).toEqual(['s-x-root', 's-x-worker']); // foreign hop dropped
+    expect(traceRequest('s-x-root', []).sessions).toEqual([]); // fail-closed
+    expect(traceRequest('s-x-root', 'all').sessions).toHaveLength(3); // unrestricted
   });
 });
