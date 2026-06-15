@@ -1,6 +1,7 @@
 export { initDb, initTestDb, getDb, closeDb } from './connection.js';
 export { runMigrations } from './migrations/index.js';
 export { markInboundSeen, pruneInboundDedup } from './inbound-dedup.js';
+export { listSessions, traceRequest, type SessionFilter, type RequestTrace } from './operator-queries.js';
 export {
   createAgentGroup,
   getAgentGroup,
