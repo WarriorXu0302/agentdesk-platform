@@ -1,9 +1,24 @@
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { closeDb, initTestDb, runMigrations } from '../../db/index.js';
 import { queryGatewayAudit } from '../../db/gateway-audit.js';
 import type { DeliveryActionHandler } from '../../delivery.js';
 import type { Session } from '../../types.js';
+
+/** A minimal host-written inbound.db carrying the given namespaced origins —
+ *  the "legitimate identity set" the actor is cross-validated against. */
+function fakeInboundDb(origins: string[]): Database.Database {
+  const db = new Database(':memory:');
+  db.exec(
+    'CREATE TABLE messages_in (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, origin_user_id TEXT, content TEXT, channel_type TEXT)',
+  );
+  const ins = db.prepare(
+    "INSERT INTO messages_in (kind, origin_user_id, content, channel_type) VALUES ('chat', ?, '{}', 'feishu')",
+  );
+  for (const o of origins) ins.run(o);
+  return db;
+}
 
 const captured: Map<string, DeliveryActionHandler> = new Map();
 
@@ -45,6 +60,9 @@ describe('gateway_audit delivery action', () => {
   it('persists a well-formed audit payload', async () => {
     const handler = captured.get('gateway_audit');
     expect(handler).toBeDefined();
+    // Owner-less (shared) session: the claimed actor is honored because ou_1
+    // genuinely appeared in this session's host-written inbound.db.
+    const inDb = fakeInboundDb(['feishu:ou_1']);
     await handler!(
       {
         action: 'gateway_audit',
@@ -59,9 +77,9 @@ describe('gateway_audit delivery action', () => {
         inputHash: 'deadbeef',
       },
       session(),
-      // inDb is only used by schedulers; gateway_audit writes central DB directly.
-      {} as never,
+      inDb,
     );
+    inDb.close();
 
     const rows = queryGatewayAudit();
     expect(rows).toHaveLength(1);
@@ -78,6 +96,40 @@ describe('gateway_audit delivery action', () => {
       idempotency_key: 'idem-xyz',
       input_hash: 'deadbeef',
     });
+  });
+
+  it('owner-less session: DROPS a forged actor not in the session identity set (audit-only attribution)', async () => {
+    const handler = captured.get('gateway_audit')!;
+    const inDb = fakeInboundDb(['feishu:ou_alice']); // victim never appeared
+    await handler(
+      {
+        action: 'gateway_audit',
+        path: '/execute',
+        requesterSource: 'session',
+        status: 'ok',
+        userId: 'feishu:ou_victim',
+      },
+      session(),
+      inDb,
+    );
+    inDb.close();
+    // The row is still recorded (it's a real gateway call) but the forged actor
+    // is dropped to null rather than stamped as the victim.
+    const rows = queryGatewayAudit();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.user_id).toBeNull();
+  });
+
+  it('owner-less session: KEEPS a claimed actor that genuinely appeared in the session', async () => {
+    const handler = captured.get('gateway_audit')!;
+    const inDb = fakeInboundDb(['feishu:ou_alice', 'feishu:ou_bob']);
+    await handler(
+      { action: 'gateway_audit', path: '/describe', requesterSource: 'session', status: 'ok', userId: 'feishu:ou_bob' },
+      session(),
+      inDb,
+    );
+    inDb.close();
+    expect(queryGatewayAudit()[0]!.user_id).toBe('feishu:ou_bob');
   });
 
   it('drops payloads missing required fields', async () => {

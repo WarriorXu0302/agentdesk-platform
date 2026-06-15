@@ -9,9 +9,12 @@
  * Intentionally best-effort: if the audit row write fails we log and move
  * on. Never block or retry the container's message flow on audit failures.
  */
+import type Database from 'better-sqlite3';
+
 import { registerDeliveryAction } from '../../delivery.js';
 import { recordGatewayAudit, type GatewayAuditEntry } from '../../db/gateway-audit.js';
 import { log } from '../../log.js';
+import { resolveTrustedActor } from '../../trusted-actor.js';
 import type { Session } from '../../types.js';
 
 function readString(content: Record<string, unknown>, key: string): string | undefined {
@@ -28,7 +31,11 @@ function toStatus(raw: unknown): 'ok' | 'error' {
   return raw === 'ok' ? 'ok' : 'error';
 }
 
-async function handleGatewayAudit(content: Record<string, unknown>, session: Session): Promise<void> {
+async function handleGatewayAudit(
+  content: Record<string, unknown>,
+  session: Session,
+  inDb: Database.Database,
+): Promise<void> {
   const path = readString(content, 'path');
   const requesterSource = readString(content, 'requesterSource');
   if (!path || !requesterSource) {
@@ -43,7 +50,11 @@ async function handleGatewayAudit(content: Record<string, unknown>, session: Ses
   const entry: GatewayAuditEntry = {
     sessionId: session.id,
     agentGroupId: session.agent_group_id,
-    userId: readString(content, 'userId') ?? null,
+    // Host-anchored actor: session owner when set, else accept the container-
+    // claimed userId only if that user genuinely appeared in this session
+    // (owner-less shared/group frontdesk). Audit-only attribution — see
+    // resolveTrustedActor + ADR-0046.
+    userId: resolveTrustedActor('gateway_audit', session, readString(content, 'userId') ?? null, inDb),
     path,
     operation: readString(content, 'operation') ?? null,
     requesterSource,

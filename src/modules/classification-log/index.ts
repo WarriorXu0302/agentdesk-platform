@@ -20,15 +20,12 @@ import { recordClassification, type ClassificationLogEntry } from '../../db/clas
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { log } from '../../log.js';
 import {
-  classificationActorRejectedTotal,
   classificationLogFailuresTotal,
   classificationsTotal,
   escalationTotal,
   routingFeedbackTotal,
 } from '../../metrics.js';
-// Pure leaf helper (type-only deps, no side effects) — reused so the actor
-// cross-validation uses the EXACT same namespacing as the a2a origin check.
-import { collectLegitimateOrigins } from '../agent-to-agent/origin-user.js';
+import { resolveTrustedActor } from '../../trusted-actor.js';
 import type { Session } from '../../types.js';
 
 const ACTIONS: ReadonlyArray<ClassificationLogEntry['action']> = ['delegate', 'clarify', 'reject', 'answer_self'];
@@ -86,61 +83,6 @@ function toAction(raw: unknown): ClassificationLogEntry['action'] {
   return typeof raw === 'string' && (ACTIONS as readonly string[]).includes(raw)
     ? (raw as ClassificationLogEntry['action'])
     : 'delegate';
-}
-
-/**
- * Resolve the host-trusted actor for a recording-surface row (classify_intent /
- * escalate / routing_feedback). These tables are audit-level ground truth, so
- * the actor must stay host-anchored — never an agent-spoofable field:
- *
- *  - A session with a host-established owner (per-user / per-user-per-thread, or
- *    a root-pinned session) IS the authoritative actor; a container-claimed
- *    userId that disagrees is ignored + warned (prior behavior, unchanged).
- *  - With NO owner (shared / per-thread / agent-shared frontdesk group sessions —
- *    owner_user_id is NULL) a container-claimed userId is accepted ONLY if that
- *    user genuinely appeared in this session, cross-validated against the
- *    HOST-written inbound.db (the same check the a2a hop uses, ADR-0017). A
- *    fabricated victim id that never entered the session is dropped to null +
- *    counted, so a prompt-injected frontdesk/worker cannot stamp an arbitrary
- *    actor into the audit corpus. (ADR-0017 identity trust chain; closes the
- *    owner-NULL dead spot found by the as-merged recording-surface audit.)
- */
-function resolveTrustedActor(
-  action: string,
-  session: Session,
-  claimedUserId: string | null,
-  inDb: Database.Database,
-): string | null {
-  if (session.owner_user_id) {
-    if (claimedUserId && claimedUserId !== session.owner_user_id) {
-      log.warn(`${action} userId mismatch — trusting session owner`, {
-        sessionId: session.id,
-        claimed: claimedUserId,
-        session: session.owner_user_id,
-      });
-    }
-    return session.owner_user_id;
-  }
-  // No host-established owner: a claimed id is only trustworthy if the host saw
-  // that user pass through this session. Anything else is unverifiable → null.
-  if (!claimedUserId) return null;
-  let legitimate: Set<string>;
-  try {
-    legitimate = collectLegitimateOrigins(inDb);
-  } catch (err) {
-    log.warn(`${action}: legitimate-origin lookup failed — dropping unverifiable actor`, {
-      sessionId: session.id,
-      err,
-    });
-    return null;
-  }
-  if (legitimate.has(claimedUserId)) return claimedUserId;
-  classificationActorRejectedTotal.labels(action).inc();
-  log.warn(`${action}: rejecting container-claimed userId not in session identity set`, {
-    sessionId: session.id,
-    claimed: claimedUserId,
-  });
-  return null;
 }
 
 async function handleClassifyIntent(

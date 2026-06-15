@@ -33,6 +33,12 @@
 ## Consequences
 
 - **正向**:记录型面的 actor 归因现在 host-anchored;伪造的 victim id 在 owner-less 会话被置 null 并计数,合法参与者归因不受损。补齐了 ADR-0017 身份链在 ADR-0038/0040 面上的一致性。R1-R5 + recording-only(invariant 3)不变,纯 fail-closed 加固。
-- **可观测**:新增 `*_classification_actor_rejected_total{action}`(镜像 `a2a_origin_rejected_total`),非零=有人试图伪造审计归因,值得排查。
+- **可观测**:新增 `*_recording_actor_rejected_total{action}`(镜像 `a2a_origin_rejected_total`),非零=有人试图伪造审计归因,值得排查。
 - **行为**:owner 非空的会话(per-user 等)行为完全不变。owner=NULL 且 claimed 不在身份集 → 该行 user_id/actor 记 null(而非伪造值)。回归测试覆盖伪造丢弃(+计数)、合法保留、owner 优先三种路径,且**已实测在修复前为红**。
 - 纯 host 改动(`classification-log/index.ts`、`metrics.ts`),无 schema/契约变更,无容器改动。inbound.db 读失败兜底置 null(不抛、不阻断记录流)。
+
+## Update（同会话,完整性扫描扩展到第 4 个面 + 抽公共件）
+
+落地前对**自己刚修的两类模式**做了完整性扫描(grep 全仓),发现窄红队漏掉的同类 sibling:**`src/modules/gateway-audit/index.ts` 的 `handleGatewayAudit`**(`gateway_audit` delivery-action)同样把 `userId` 逐字取自容器 payload——而且比上面三个还松:**连 `session.owner_user_id` 都不优先**,直接 `readString(content,'userId')`。同属本 ADR 的类(纯审计归因:`gateway_audit.user_id` 只被 `queryGatewayAudit` 当可选 WHERE 过滤输入读,从不入决策 → **low**)。
+
+为此:**把 `resolveTrustedActor` 抽到共享件 `src/trusted-actor.ts`**(安全关键身份逻辑单一来源,避免在两个模块重复),四个记录型面(classify_intent/escalate/routing_feedback/gateway_audit)统一走它;指标改通用名 **`*_recording_actor_rejected_total{action}`**(原 `classification_*`,本会话内新加、无外部消费者/告警引用,改名安全)。gateway-audit 同样配「伪造丢弃/合法保留」回归测试,实测修复前为红。**经验**:窄红队按拓扑/面切分会漏掉跨模块的同类实例——修完一类务必全仓 grep 同模式,把所有 sibling 一次修净,别留 whack-a-mole。

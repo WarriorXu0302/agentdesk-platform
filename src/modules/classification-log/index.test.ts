@@ -97,8 +97,8 @@ describe('classify_intent delivery action', () => {
   });
 
   it('owner-less session: DROPS a forged actor that never appeared in the session (+ counts the rejection)', async () => {
-    const { classificationActorRejectedTotal } = await import('../../metrics.js');
-    const sum = async () => (await classificationActorRejectedTotal.get()).values.reduce((s, v) => s + v.value, 0);
+    const { recordingActorRejectedTotal } = await import('../../metrics.js');
+    const sum = async () => (await recordingActorRejectedTotal.get()).values.reduce((s, v) => s + v.value, 0);
     const before = await sum();
 
     const handler = captured.get('classify_intent')!;
