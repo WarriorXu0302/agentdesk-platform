@@ -21,7 +21,7 @@
  * exposing just user-roles/user-dms) is more churn than it's worth. Revisit
  * if either module becomes genuinely optional (see REFACTOR_PLAN open q #3).
  */
-import { normalizeOptions, type RawOption } from '../../channels/ask-question.js';
+import { approverExpectedUserId, normalizeOptions, type RawOption } from '../../channels/ask-question.js';
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { createPendingApproval, getSession } from '../../db/sessions.js';
@@ -239,6 +239,11 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
           title,
           question,
           options: APPROVAL_OPTIONS,
+          // Scope the card to the chosen approver so the card-action gate fails
+          // closed by design (ADR-0019), not by the incidental id-type of the
+          // delivery target. Normalized to the operator handle (open_id) —
+          // strips the `feishu:`-style namespace; see approverExpectedUserId.
+          expectedUserId: approverExpectedUserId(target.userId),
         }),
       );
     } catch (err) {

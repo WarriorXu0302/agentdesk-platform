@@ -2,12 +2,14 @@ import crypto from 'crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import { approverExpectedUserId } from './ask-question.js';
 import {
   cardActionOperatorAllowed,
   decryptFeishuPayload,
   normalizeFeishuEventMode,
   normalizeFeishuPlatformId,
   parseFeishuQuestionActionPayload,
+  resolveAskQuestionExpectedUserId,
   signFeishuBody,
 } from './feishu.js';
 import { buildAskQuestionFallbackText, isExpiredQuestionPayload } from './feishu/primitives.js';
@@ -163,6 +165,65 @@ describe('cardActionOperatorAllowed (fail-closed wrong-user gate, ADR-0019)', ()
   it('allows unscoped cards regardless of operator', () => {
     expect(cardActionOperatorAllowed(undefined, '')).toBe(true);
     expect(cardActionOperatorAllowed(undefined, 'ou_anyone')).toBe(true);
+  });
+});
+
+describe('approverExpectedUserId (approval-card scoping, roadmap 5.9)', () => {
+  it('strips the channel namespace to the operator handle (open_id)', () => {
+    // extractAndUpsertUser stores `feishu:<open_id>`; the card-action gate
+    // compares against operator.open_id, so the namespace must be stripped.
+    expect(approverExpectedUserId('feishu:ou_approver')).toBe('ou_approver');
+  });
+
+  it('returns undefined for an empty / unnamespaced id (spread away the field)', () => {
+    expect(approverExpectedUserId(undefined)).toBeUndefined();
+    expect(approverExpectedUserId('')).toBeUndefined();
+    expect(approverExpectedUserId('feishu:')).toBeUndefined();
+  });
+});
+
+describe('resolveAskQuestionExpectedUserId (fail-closed approval gate, ADR-0019)', () => {
+  it('prefers an explicit open_id even when the delivery target is not open_id-typed', () => {
+    // The robustness win: a card delivered to a chat_id-typed target would derive
+    // undefined (unscoped) — but threading the chosen approver scopes it anyway.
+    expect(resolveAskQuestionExpectedUserId('ou_approver', { receiveId: 'oc_group', receiveIdType: 'chat_id' })).toBe(
+      'ou_approver',
+    );
+  });
+
+  it('falls back to the delivery-target derivation when no explicit value is set (no regression)', () => {
+    // The currently-working open_id p2p DM path: container ask_user_question and
+    // any producer that omits expectedUserId still scopes exactly as before.
+    expect(resolveAskQuestionExpectedUserId(undefined, { receiveId: 'ou_dm', receiveIdType: 'open_id' })).toBe('ou_dm');
+    expect(
+      resolveAskQuestionExpectedUserId(undefined, { receiveId: 'oc_group', receiveIdType: 'chat_id' }),
+    ).toBeUndefined();
+  });
+
+  it('ignores a non-open_id explicit value rather than scoping to an unmatchable id', () => {
+    // The landmine: the gate compares against operator.open_id, so scoping to a
+    // union_id/user_id would reject the legitimate approver. Fall back instead.
+    expect(resolveAskQuestionExpectedUserId('on_unionid', { receiveId: 'ou_dm', receiveIdType: 'open_id' })).toBe(
+      'ou_dm',
+    );
+    expect(
+      resolveAskQuestionExpectedUserId('on_unionid', { receiveId: 'oc_group', receiveIdType: 'chat_id' }),
+    ).toBeUndefined();
+  });
+
+  it('scopes a delivered approval card so only the matching approver may act', () => {
+    // End-to-end of the gate: producer normalizes the approver id, the render
+    // scopes the card to it (even on a non-open_id delivery target), and the
+    // card-action gate accepts only that operator open_id — rejecting a
+    // different operator and an absent one.
+    const expected = resolveAskQuestionExpectedUserId(approverExpectedUserId('feishu:ou_approver'), {
+      receiveId: 'oc_shared',
+      receiveIdType: 'chat_id',
+    });
+    expect(expected).toBe('ou_approver');
+    expect(cardActionOperatorAllowed(expected, 'ou_approver')).toBe(true);
+    expect(cardActionOperatorAllowed(expected, 'ou_intruder')).toBe(false);
+    expect(cardActionOperatorAllowed(expected, '')).toBe(false);
   });
 });
 

@@ -54,4 +54,37 @@ export interface AskQuestionPayload {
   title: string;
   question: string;
   options: NormalizedOption[];
+  /**
+   * Optional platform handle of the single user allowed to action this card.
+   * Approval producers thread the chosen approver's handle here so the
+   * card-action gate scopes to a KNOWN identity rather than relying on the
+   * incidental id-type of the delivery target (see
+   * `approverExpectedUserId` + the Feishu render reconcile). Channel renderers
+   * that don't enforce per-user card scoping ignore it — the field is additive.
+   */
+  expectedUserId?: string;
+}
+
+/**
+ * Derive the `expectedUserId` for an approval card from the chosen approver's
+ * user id. Approver ids are namespaced `kind:handle` (e.g. `feishu:ou_xxx`),
+ * but the card-action gate compares against the raw operator handle (Feishu's
+ * `open_id`), so we strip the channel namespace here.
+ *
+ * IMPORTANT (the landmine): the stripped handle must be in the SAME id-space
+ * the operator callback reports. For Feishu that's the `open_id` (`ou_…`) —
+ * `extractAndUpsertUser` stores the sender's open_id, and the card-action
+ * handler reads `operator.open_id` first. Passing a non-open_id handle here
+ * would make the gate reject the legitimate approver, so the Feishu render
+ * only honors an open_id-shaped value and otherwise falls back to its
+ * delivery-target derivation.
+ *
+ * Returns undefined for an empty/unnamespaced id so callers can spread it
+ * conditionally.
+ */
+export function approverExpectedUserId(approverUserId: string | undefined): string | undefined {
+  if (!approverUserId) return undefined;
+  const idx = approverUserId.indexOf(':');
+  const handle = (idx >= 0 ? approverUserId.slice(idx + 1) : approverUserId).trim();
+  return handle || undefined;
 }

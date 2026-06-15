@@ -26,7 +26,7 @@
  * sender_identity). A retry / rapid second message from the same unknown
  * sender is silently dropped (no duplicate card sent).
  */
-import { normalizeOptions, type RawOption } from '../../channels/ask-question.js';
+import { approverExpectedUserId, normalizeOptions, type RawOption } from '../../channels/ask-question.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
 import { log } from '../../log.js';
@@ -130,6 +130,9 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
         title,
         question,
         options,
+        // Fail-closed operator gate (ADR-0019): scope the card to the picked
+        // approver, normalized to the operator handle (open_id).
+        expectedUserId: approverExpectedUserId(target.userId),
       }),
     );
     log.info('Unknown-sender approval card delivered', {

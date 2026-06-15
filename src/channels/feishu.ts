@@ -106,6 +106,33 @@ export function cardActionOperatorAllowed(expectedUserId: string | undefined, op
   return operatorUserId !== '' && operatorUserId === expectedUserId;
 }
 
+/**
+ * Resolve the `expectedUserId` an ask_question card is scoped to (ADR-0019).
+ *
+ * Prefers an explicit handle threaded by the producer (`content.expectedUserId`
+ * — set by approval flows from the chosen approver, see `approverExpectedUserId`)
+ * so the gate fires from a KNOWN approver identity, decoupled from the incidental
+ * id-type of the delivery target. Falls back to the delivery-target derivation
+ * (`target.receiveIdType==='open_id'`) so the currently-working p2p:ou_ DM path
+ * is preserved and non-approval cards (e.g. the container's ask_user_question,
+ * which carries no explicit value) behave exactly as before.
+ *
+ * The explicit value is only honored when it's a confirmable Feishu open_id
+ * (`ou_`): the card-action gate compares against `operator.open_id`, so scoping
+ * to a non-open_id handle would reject the legitimate approver. A non-open_id
+ * explicit value therefore falls back rather than scoping — fail-open is no
+ * worse than today's behavior for that case, whereas a wrong scope would break
+ * approvals.
+ */
+export function resolveAskQuestionExpectedUserId(
+  explicitExpectedUserId: string | undefined,
+  target: { receiveId: string; receiveIdType: string },
+): string | undefined {
+  const explicit = typeof explicitExpectedUserId === 'string' ? explicitExpectedUserId.trim() : '';
+  if (explicit.startsWith('ou_')) return explicit;
+  return target.receiveIdType === 'open_id' ? target.receiveId : undefined;
+}
+
 function readEnvConfig(): FeishuConfig | null {
   const dotenv = readEnvFile([
     'FEISHU_APP_ID',
@@ -951,7 +978,10 @@ function createAdapter(config: FeishuConfig): ChannelAdapter {
         if (options.length === 0) {
           throw new Error('Feishu ask_question requires at least one option');
         }
-        const expectedUserId = target.receiveIdType === 'open_id' ? target.receiveId : undefined;
+        const expectedUserId = resolveAskQuestionExpectedUserId(
+          typeof content.expectedUserId === 'string' ? content.expectedUserId : undefined,
+          target,
+        );
         const card = buildFeishuAskQuestionCardWithPayloads({
           title,
           questionId: content.questionId,

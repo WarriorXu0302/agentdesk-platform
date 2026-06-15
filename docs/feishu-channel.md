@@ -127,6 +127,16 @@ from the same `open_id`** and asserted to round-trip to `feishu:p2p:<open_id>`.
 `union_id` / `user_id` / `chat_id` (`oc_*`) are rejected — the target must be a
 p2p `open_id` (`ou_*`).
 
+> **The same `cardActionOperatorAllowed` gate also scopes approval cards
+> (ADR-0019).** Approval flows (`requestApproval`, OneCLI credential, unknown-
+> sender, channel-registration) thread the chosen approver's `open_id` onto the
+> `ask_question` card via `approverExpectedUserId()`, and the render prefers that
+> explicit value (`resolveAskQuestionExpectedUserId`) over the delivery-target
+> derivation. So an approval card is actionable **only by the picked approver**,
+> by design — not as a side effect of the DM target happening to be an `open_id`.
+> A non-`open_id` approver handle falls back to the derivation rather than
+> scoping to an id the gate can't match (which would reject the legit approver).
+
 ### Make the consent card self-explanatory (onboarding)
 
 The platform only **parses** the `roster.optin` value (`scopeId`, `slotLabel`,

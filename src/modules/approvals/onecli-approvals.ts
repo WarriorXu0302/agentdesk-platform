@@ -20,6 +20,7 @@
 import { OneCLI, type ApprovalRequest, type ManualApprovalHandle } from '@onecli-sh/sdk';
 
 import { pickApprovalDelivery, pickApprover } from './primitive.js';
+import { approverExpectedUserId } from '../../channels/ask-question.js';
 import { ONECLI_API_KEY, ONECLI_URL } from '../../config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
@@ -178,6 +179,9 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
         title: onecliTitle,
         question,
         options: onecliOptions,
+        // Fail-closed operator gate (ADR-0019): scope the card to the picked
+        // approver, normalized to the operator handle (open_id).
+        expectedUserId: approverExpectedUserId(target.userId),
       }),
     );
   } catch (err) {

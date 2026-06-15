@@ -44,7 +44,12 @@
  *   - Approver has no reachable DM.
  *   - Delivery adapter missing.
  */
-import { normalizeOptions, type NormalizedOption, type RawOption } from '../../channels/ask-question.js';
+import {
+  approverExpectedUserId,
+  normalizeOptions,
+  type NormalizedOption,
+  type RawOption,
+} from '../../channels/ask-question.js';
 import { createAgentGroup, getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
@@ -224,6 +229,9 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
         title,
         question,
         options,
+        // Fail-closed operator gate (ADR-0019): scope the card to the picked
+        // approver, normalized to the operator handle (open_id).
+        expectedUserId: approverExpectedUserId(delivery.userId),
       }),
     );
     log.info('Channel registration card delivered', {
