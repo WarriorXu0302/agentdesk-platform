@@ -103,11 +103,11 @@ beforeEach(async () => {
   // Owner user + their DM messaging group (pickApprover + ensureUserDm target).
   upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
   grantRole({
-    user_id: 'telegram:owner',
+    userId: 'telegram:owner',
     role: 'owner',
-    agent_group_id: null,
-    granted_by: null,
-    granted_at: now(),
+    scope: { kind: 'global' },
+    grantedBy: null,
+    grantedAt: now(),
   });
   createMessagingGroup({
     id: 'mg-dm-owner',
@@ -305,11 +305,11 @@ describe('unknown-sender request_approval flow', () => {
     // Pre-seed a separate admin user so we can click as them.
     upsertUser({ id: 'telegram:admin-bob', kind: 'telegram', display_name: 'Bob', created_at: now() });
     grantRole({
-      user_id: 'telegram:admin-bob',
+      userId: 'telegram:admin-bob',
       role: 'admin',
-      agent_group_id: null,
-      granted_by: 'telegram:owner',
-      granted_at: now(),
+      scope: { kind: 'global' },
+      grantedBy: 'telegram:owner',
+      grantedAt: now(),
     });
 
     const { routeInbound } = await import('../../router.js');

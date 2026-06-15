@@ -6,6 +6,11 @@ export interface AgentGroup {
   folder: string;
   agent_provider: string | null;
   created_at: string;
+  // Tenant anchor (ADR-0052). NULL = legacy / un-orged (no isolation prerequisite);
+  // set = this workspace belongs to that organization. This is the ONLY structural
+  // carrier of org on the workload side — sessions/messaging_groups/audit derive org
+  // by JOIN through their (immutable) agent_group_id.
+  organization_id: string | null;
 }
 
 export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';
@@ -45,27 +50,66 @@ export interface User {
   created_at: string;
 }
 
-export type UserRoleKind = 'owner' | 'admin' | 'operator' | 'viewer';
+export type UserRoleKind = 'owner' | 'admin' | 'org-admin' | 'operator' | 'viewer';
 
 /**
- * Role grant. Owner is always global. Admin is either global
- * (agent_group_id = null) or scoped to a specific agent group.
- * Admin @ A implicitly makes the user a member of A — we do not require
- * a separate agent_group_members row for admins.
+ * Where a role grant applies (ADR-0052). EXACTLY ONE scope axis is set per row,
+ * made unrepresentable-when-violated by this discriminated union (vs. a bare
+ * nullable column pair). It maps to (agent_group_id, organization_id) as:
+ *   global → (null, null);  group → (set, null);  org → (null, set).
+ */
+export type RoleScope =
+  | { kind: 'global' }
+  | { kind: 'group'; agentGroupId: string }
+  | { kind: 'org'; organizationId: string };
+
+/**
+ * Role grant. Owner is always global. Admin is global (agent_group_id = null,
+ * organization_id = null), group-scoped (agent_group_id set), or org-scoped
+ * (organization_id set, role 'org-admin'). Admin @ A implicitly makes the user
+ * a member of A — we do not require a separate agent_group_members row for admins.
+ *
+ * `org-admin` (ADR-0052) is admin over every agent group in one organization,
+ * WITHOUT being a platform global admin.
  *
  * `operator` / `viewer` (ADR-0051) are OPERABILITY roles — they gate read-only
  * fleet triage / governance on the HOST plane (the ADR-0049 operator surface),
  * NOT message routing and NOT per-request business authz (which stays at the
- * backend gateway, the only authorization path). They are global
- * (agent_group_id = null) or scoped like admin, but they do NOT confer
- * `hasAdminPrivilege` and do NOT make the user a routable member.
+ * backend gateway, the only authorization path). They can be global, group-, or
+ * org-scoped, but they do NOT confer `hasAdminPrivilege` and do NOT make the
+ * user a routable member.
+ *
+ * INVARIANT: at most one of `agent_group_id` / `organization_id` is non-null.
  */
 export interface UserRole {
   user_id: string;
   role: UserRoleKind;
   agent_group_id: string | null;
+  organization_id: string | null;
   granted_by: string | null;
   granted_at: string;
+}
+
+/** A tenant (ADR-0052). Groups agent workspaces into an isolation boundary. */
+export interface Organization {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+}
+
+/**
+ * Org membership = REACHABILITY, never privilege (ADR-0052). A plain member of
+ * org O is reachable inside O but holds no admin/operator power there — privilege
+ * lives in `user_roles` with `organization_id` set. Keeping membership separate
+ * from privilege is what avoids the circular access gate (acquiring the first
+ * membership is exactly what isolation must control).
+ */
+export interface OrganizationMember {
+  organization_id: string;
+  user_id: string;
+  added_by: string | null;
+  added_at: string;
 }
 
 /** "Known" membership in an agent group — required for unprivileged users. */

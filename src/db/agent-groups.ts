@@ -1,13 +1,21 @@
 import type { AgentGroup } from '../types.js';
 import { getDb } from './connection.js';
 
-export function createAgentGroup(group: AgentGroup): void {
+/**
+ * `organization_id` is OPTIONAL at the call site (defaults to NULL = legacy /
+ * un-orged, ADR-0052) so existing callers stay unchanged; org-aware callers
+ * (bootstrap, agent spawn, channel approval) pass it explicitly. The 6th column
+ * is always written — never a silent NULL-org laundering path.
+ */
+export function createAgentGroup(
+  group: Omit<AgentGroup, 'organization_id'> & { organization_id?: string | null },
+): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at)
-       VALUES (@id, @name, @folder, @agent_provider, @created_at)`,
+      `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at, organization_id)
+       VALUES (@id, @name, @folder, @agent_provider, @created_at, @organization_id)`,
     )
-    .run(group);
+    .run({ ...group, organization_id: group.organization_id ?? null });
 }
 
 export function getAgentGroup(id: string): AgentGroup | undefined {

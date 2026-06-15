@@ -5,8 +5,33 @@
  */
 
 export const SCHEMA = `
+-- Organizations: the multi-tenant isolation boundary (ADR-0052). A user in
+-- org X cannot reach org Y's agent groups / sessions / triage data (enforced at
+-- the host access gate). owner / global_admin are platform superusers above the
+-- boundary by design.
+CREATE TABLE organizations (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  slug       TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+-- Org membership = REACHABILITY, never privilege (ADR-0052). Privilege lives in
+-- user_roles (with organization_id set). Keeping the two separate is what avoids
+-- a circular access gate.
+CREATE TABLE organization_members (
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  added_by        TEXT REFERENCES users(id),
+  added_at        TEXT NOT NULL,
+  PRIMARY KEY (organization_id, user_id)
+);
+
 -- Agent workspaces: folder, skills, CLAUDE.md.
--- All workspaces are equal; privilege lives on users, not groups.
+-- Privilege lives on users, not groups. Workspaces are NO LONGER all equal
+-- (ADR-0052 superseded the original "all workspaces are equal" model): a
+-- workspace belongs to at most one organization (organization_id), the tenant
+-- boundary. NULL organization_id = legacy / un-orged (no isolation prerequisite).
 -- Container config (mcpServers, packages, imageTag, additionalMounts) lives
 -- in groups/<folder>/container.json on disk, not in the DB.
 CREATE TABLE agent_groups (
@@ -14,7 +39,8 @@ CREATE TABLE agent_groups (
   name             TEXT NOT NULL,
   folder           TEXT NOT NULL UNIQUE,
   agent_provider   TEXT,
-  created_at       TEXT NOT NULL
+  created_at       TEXT NOT NULL,
+  organization_id  TEXT REFERENCES organizations(id)
 );
 
 -- Platform groups/channels. unknown_sender_policy governs what happens
@@ -72,15 +98,25 @@ CREATE TABLE users (
 --   owner: always global (agent_group_id IS NULL)
 --   admin: agent_group_id NULL = global, else scoped to that agent group
 -- Invariant: admin @ A implies membership in A (no row needed).
+-- Role grant. At most ONE scope axis is set per row (enforced in code):
+--   global → (agent_group_id NULL, organization_id NULL)
+--   group  → (agent_group_id set,  organization_id NULL)
+--   org    → (agent_group_id NULL, organization_id set)   [ADR-0052]
 CREATE TABLE user_roles (
-  user_id        TEXT NOT NULL REFERENCES users(id),
-  role           TEXT NOT NULL,
-  agent_group_id TEXT REFERENCES agent_groups(id),
-  granted_by     TEXT REFERENCES users(id),
-  granted_at     TEXT NOT NULL,
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  role            TEXT NOT NULL,
+  agent_group_id  TEXT REFERENCES agent_groups(id),
+  organization_id TEXT REFERENCES organizations(id),
+  granted_by      TEXT REFERENCES users(id),
+  granted_at      TEXT NOT NULL,
   PRIMARY KEY (user_id, role, agent_group_id)
 );
 CREATE INDEX idx_user_roles_scope ON user_roles(agent_group_id, role);
+CREATE INDEX idx_user_roles_org ON user_roles(organization_id);
+-- One org-scoped grant of a role per (user, org); disjoint from group rows.
+CREATE UNIQUE INDEX idx_user_roles_org_grant
+  ON user_roles(user_id, role, organization_id)
+  WHERE agent_group_id IS NULL AND organization_id IS NOT NULL;
 
 -- "Known" membership in an agent group. Required for an unprivileged user
 -- to interact with a workspace. Admin @ A is implicitly a member of A.

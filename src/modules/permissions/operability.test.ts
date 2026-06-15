@@ -42,13 +42,19 @@ afterEach(() => {
 describe('operability roles are NOT routing grants (ADR-0051)', () => {
   it('a user holding only global operator/viewer is denied routing with operability_only', () => {
     seedUser('u-op');
-    grantRole({ user_id: 'u-op', role: 'operator', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-op', role: 'operator', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     const d = canAccessAgentGroup('u-op', 'ag-1');
     expect(d.allowed).toBe(false);
     expect(d.allowed === false && d.reason).toBe('operability_only');
 
     seedUser('u-vw');
-    grantRole({ user_id: 'u-vw', role: 'viewer', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-vw',
+      role: 'viewer',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(canAccessAgentGroup('u-vw', 'ag-1').allowed).toBe(false);
     expect((canAccessAgentGroup('u-vw', 'ag-1') as { reason: string }).reason).toBe('operability_only');
     // scoped to ag-1 only → ag-2 falls through to the plain not_member denial
@@ -57,7 +63,7 @@ describe('operability roles are NOT routing grants (ADR-0051)', () => {
 
   it('an operator who is ALSO a member still routes via the member tier (orthogonality)', () => {
     seedUser('u-both');
-    grantRole({ user_id: 'u-both', role: 'operator', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-both', role: 'operator', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     addMember({ user_id: 'u-both', agent_group_id: 'ag-1', added_by: null, added_at: now() });
     const d = canAccessAgentGroup('u-both', 'ag-1');
     expect(d.allowed).toBe(true);
@@ -68,9 +74,15 @@ describe('operability roles are NOT routing grants (ADR-0051)', () => {
 describe('operability roles do NOT confer admin power (ADR-0045 guard)', () => {
   it('operator/viewer never satisfy hasAdminPrivilege', () => {
     seedUser('u-op');
-    grantRole({ user_id: 'u-op', role: 'operator', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-op',
+      role: 'operator',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     seedUser('u-vw');
-    grantRole({ user_id: 'u-vw', role: 'viewer', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-vw', role: 'viewer', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(hasAdminPrivilege('u-op', 'ag-1')).toBe(false);
     expect(hasAdminPrivilege('u-vw', 'ag-1')).toBe(false);
   });
@@ -83,31 +95,43 @@ describe('canOperate (ADR-0051 in-band operator-surface gate)', () => {
 
   it('owner / global-admin operate fleet-wide', () => {
     seedUser('u-owner');
-    grantRole({ user_id: 'u-owner', role: 'owner', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-owner', role: 'owner', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     seedUser('u-ga');
-    grantRole({ user_id: 'u-ga', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-ga', role: 'admin', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(canOperate('u-owner')).toBe(true);
     expect(canOperate('u-ga', 'ag-1')).toBe(true);
   });
 
   it('global operator/viewer operate fleet-wide', () => {
     seedUser('u-op');
-    grantRole({ user_id: 'u-op', role: 'operator', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-op', role: 'operator', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     seedUser('u-vw');
-    grantRole({ user_id: 'u-vw', role: 'viewer', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-vw', role: 'viewer', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(canOperate('u-op')).toBe(true);
     expect(canOperate('u-vw')).toBe(true);
   });
 
   it('scoped operator/viewer/admin operate only their group, not fleet-wide', () => {
     seedUser('u-sop');
-    grantRole({ user_id: 'u-sop', role: 'operator', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-sop',
+      role: 'operator',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(canOperate('u-sop', 'ag-1')).toBe(true);
     expect(canOperate('u-sop', 'ag-2')).toBe(false);
     expect(canOperate('u-sop')).toBe(false); // fleet-wide query → denied
 
     seedUser('u-sa');
-    grantRole({ user_id: 'u-sa', role: 'admin', agent_group_id: 'ag-2', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-sa',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-2' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(canOperate('u-sa', 'ag-2')).toBe(true);
     expect(canOperate('u-sa', 'ag-1')).toBe(false);
   });
@@ -122,21 +146,27 @@ describe('canOperate (ADR-0051 in-band operator-surface gate)', () => {
 describe('role getters + revoke isolation', () => {
   it('getOperators/getViewers list only global grants of that kind', () => {
     seedUser('u-op');
-    grantRole({ user_id: 'u-op', role: 'operator', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-op', role: 'operator', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     seedUser('u-vw');
-    grantRole({ user_id: 'u-vw', role: 'viewer', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-vw', role: 'viewer', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     // a scoped operator must NOT appear in the global list
     seedUser('u-sop');
-    grantRole({ user_id: 'u-sop', role: 'operator', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-sop',
+      role: 'operator',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(getOperators().map((r) => r.user_id)).toEqual(['u-op']);
     expect(getViewers().map((r) => r.user_id)).toEqual(['u-vw']);
   });
 
   it('revoking admin does NOT remove an operator/viewer grant for the same user', () => {
     seedUser('u-multi');
-    grantRole({ user_id: 'u-multi', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
-    grantRole({ user_id: 'u-multi', role: 'operator', agent_group_id: null, granted_by: null, granted_at: now() });
-    revokeRole('u-multi', 'admin', null);
+    grantRole({ userId: 'u-multi', role: 'admin', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
+    grantRole({ userId: 'u-multi', role: 'operator', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
+    revokeRole({ userId: 'u-multi', role: 'admin', scope: { kind: 'global' } });
     // operator survives → can still operate fleet-wide
     expect(canOperate('u-multi')).toBe(true);
     expect(getOperators().map((r) => r.user_id)).toEqual(['u-multi']);

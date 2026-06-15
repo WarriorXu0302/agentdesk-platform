@@ -100,21 +100,27 @@ describe('canAccessAgentGroup', () => {
 
   it('allows owners globally', () => {
     seedUser('u-owner', 'telegram');
-    grantRole({ user_id: 'u-owner', role: 'owner', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-owner', role: 'owner', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(canAccessAgentGroup('u-owner', 'ag-1').allowed).toBe(true);
     expect(canAccessAgentGroup('u-owner', 'ag-2').allowed).toBe(true);
   });
 
   it('allows global admins', () => {
     seedUser('u-ga', 'telegram');
-    grantRole({ user_id: 'u-ga', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-ga', role: 'admin', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(canAccessAgentGroup('u-ga', 'ag-1').allowed).toBe(true);
     expect(canAccessAgentGroup('u-ga', 'ag-2').allowed).toBe(true);
   });
 
   it('scopes admins to their agent group', () => {
     seedUser('u-sa', 'telegram');
-    grantRole({ user_id: 'u-sa', role: 'admin', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-sa',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(canAccessAgentGroup('u-sa', 'ag-1').allowed).toBe(true);
     const denied = canAccessAgentGroup('u-sa', 'ag-2');
     expect(denied.allowed).toBe(false);
@@ -123,7 +129,13 @@ describe('canAccessAgentGroup', () => {
 
   it('admin @ group is implicitly a member', () => {
     seedUser('u-sa', 'telegram');
-    grantRole({ user_id: 'u-sa', role: 'admin', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-sa',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     expect(isMember('u-sa', 'ag-1')).toBe(true);
   });
 
@@ -147,11 +159,11 @@ describe('role helpers', () => {
     seedUser('u-1', 'telegram');
     expect(() =>
       grantRole({
-        user_id: 'u-1',
+        userId: 'u-1',
         role: 'owner',
-        agent_group_id: 'ag-1',
-        granted_by: null,
-        granted_at: now(),
+        scope: { kind: 'group', agentGroupId: 'ag-1' },
+        grantedBy: null,
+        grantedAt: now(),
       }),
     ).toThrow();
   });
@@ -159,7 +171,7 @@ describe('role helpers', () => {
   it('hasAnyOwner reflects owner grants', () => {
     seedUser('u-1', 'telegram');
     expect(hasAnyOwner()).toBe(false);
-    grantRole({ user_id: 'u-1', role: 'owner', agent_group_id: null, granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-1', role: 'owner', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
     expect(hasAnyOwner()).toBe(true);
     expect(isOwner('u-1')).toBe(true);
   });
@@ -253,7 +265,13 @@ describe('role grant/revoke audit (roadmap 5.1)', () => {
     seedAgentGroup('ag-9');
     seedUser('u-x', 'telegram');
     seedUser('u-owner', 'telegram');
-    grantRole({ user_id: 'u-x', role: 'admin', agent_group_id: 'ag-9', granted_by: 'u-owner', granted_at: now() });
+    grantRole({
+      userId: 'u-x',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-9' },
+      grantedBy: 'u-owner',
+      grantedAt: now(),
+    });
     const rows = auditRows('user_role_granted');
     expect(rows).toHaveLength(1);
     expect(rows[0].actor).toBe('u-owner');
@@ -264,12 +282,23 @@ describe('role grant/revoke audit (roadmap 5.1)', () => {
   it('revokeRole emits user_role_revoked ONLY when a row was actually removed', () => {
     seedAgentGroup('ag-9');
     seedUser('u-y', 'telegram');
-    grantRole({ user_id: 'u-y', role: 'admin', agent_group_id: 'ag-9', granted_by: null, granted_at: now() });
+    grantRole({
+      userId: 'u-y',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-9' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
     // No-op revoke (wrong group) must NOT create a misleading audit trail.
-    revokeRole('u-y', 'admin', 'ag-other', 'u-admin');
+    revokeRole({
+      userId: 'u-y',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-other' },
+      revokedBy: 'u-admin',
+    });
     expect(auditRows('user_role_revoked')).toHaveLength(0);
     // Effective revoke records the actor performing it.
-    revokeRole('u-y', 'admin', 'ag-9', 'u-admin');
+    revokeRole({ userId: 'u-y', role: 'admin', scope: { kind: 'group', agentGroupId: 'ag-9' }, revokedBy: 'u-admin' });
     const rows = auditRows('user_role_revoked');
     expect(rows).toHaveLength(1);
     expect(rows[0].actor).toBe('u-admin');

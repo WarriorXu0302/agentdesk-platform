@@ -92,9 +92,15 @@ describe('pickApprover', () => {
     seedUser('u-owner', 'telegram');
     seedUser('u-ga', 'telegram');
     seedUser('u-sa', 'telegram');
-    grantRole({ user_id: 'u-owner', role: 'owner', agent_group_id: null, granted_by: null, granted_at: now() });
-    grantRole({ user_id: 'u-ga', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
-    grantRole({ user_id: 'u-sa', role: 'admin', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    grantRole({ userId: 'u-owner', role: 'owner', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
+    grantRole({ userId: 'u-ga', role: 'admin', scope: { kind: 'global' }, grantedBy: null, grantedAt: now() });
+    grantRole({
+      userId: 'u-sa',
+      role: 'admin',
+      scope: { kind: 'group', agentGroupId: 'ag-1' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
 
     expect(pickApprover('ag-1')).toEqual(['u-sa', 'u-ga', 'u-owner']);
     expect(pickApprover('ag-2')).toEqual(['u-ga', 'u-owner']);

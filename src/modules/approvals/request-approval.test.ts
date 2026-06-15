@@ -93,11 +93,11 @@ describe('requestApproval delivers a scoped approval card (ADR-0019)', () => {
     createAgentGroup({ id: 'ag-1', name: 'AG-1', folder: 'ag-1', agent_provider: null, created_at: now() });
     createUser({ id: 'feishu:ou_approver', kind: 'feishu', display_name: null, created_at: now() });
     grantRole({
-      user_id: 'feishu:ou_approver',
+      userId: 'feishu:ou_approver',
       role: 'owner',
-      agent_group_id: null,
-      granted_by: null,
-      granted_at: now(),
+      scope: { kind: 'global' },
+      grantedBy: null,
+      grantedAt: now(),
     });
 
     const session: Session = {

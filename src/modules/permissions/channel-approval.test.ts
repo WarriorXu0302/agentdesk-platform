@@ -76,11 +76,11 @@ beforeEach(async () => {
 
   upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
   grantRole({
-    user_id: 'telegram:owner',
+    userId: 'telegram:owner',
     role: 'owner',
-    agent_group_id: null,
-    granted_by: null,
-    granted_at: now(),
+    scope: { kind: 'global' },
+    grantedBy: null,
+    grantedAt: now(),
   });
 
   // Pre-seed owner's DM messaging group + user_dms mapping.

@@ -33,26 +33,39 @@ const GATEWAY_AUTHZ_FILES = [
   'src/modules/gateway-audit/index.ts',
 ];
 
-describe('operability gate never touches the gateway / business-authz path (ADR-0051, invariant 2)', () => {
-  it('no gateway/business-authz file consults canOperate or imports the operability module', () => {
+describe('operability + org isolation never touch the gateway / business-authz path (ADR-0051/0052, invariant 2)', () => {
+  it('no gateway/business-authz file consults the operability/org gates or imports their modules', () => {
+    // The host operability gate (ADR-0051) AND the org-isolation gate (ADR-0052)
+    // are HOST access concerns; neither may become a gateway business-authz input.
+    const forbiddenRefs = [
+      /\bcanOperate\b/,
+      /\borgOfAgentGroup\b/,
+      /\bisMemberOfOrg\b/,
+      /\bisOrgAdmin\b/,
+      /\bhasOrgOperabilityRole\b/,
+      /\borganization_id\b/, // forensic tables get NO org column; proxy never stamps org (fix-6)
+    ];
+    const forbiddenImports = [/from\s+['"][^'"]*operability(\.js)?['"]/, /from\s+['"][^'"]*\/organizations(\.js)?['"]/];
     const offenders: string[] = [];
     for (const rel of GATEWAY_AUTHZ_FILES) {
       const full = path.join(REPO, rel);
       if (!fs.existsSync(full)) continue; // tolerate refactors that rename/remove a file
       const text = fs.readFileSync(full, 'utf8');
-      if (/\bcanOperate\b/.test(text)) offenders.push(`${rel}: references canOperate`);
-      if (/from\s+['"][^'"]*operability(\.js)?['"]/.test(text)) offenders.push(`${rel}: imports operability`);
+      for (const re of forbiddenRefs) if (re.test(text)) offenders.push(`${rel}: references ${re.source}`);
+      for (const re of forbiddenImports) if (re.test(text)) offenders.push(`${rel}: imports ${re.source}`);
     }
     expect(
       offenders,
-      `business authorization must stay at the gateway — operability must not leak into it: ${offenders.join('; ')}`,
+      `business authorization must stay at the gateway — operability/org must not leak into it: ${offenders.join('; ')}`,
     ).toHaveLength(0);
   });
 
-  it('the operability gate does not import any gateway/business module', () => {
-    const text = fs.readFileSync(path.join(REPO, 'src/modules/permissions/operability.ts'), 'utf8');
+  it('the operability + org gate modules do not import any gateway/business module', () => {
     const bad = [/gateway-signing/, /gateway-audit/, /gateway-proxy-token/, /roster-gateway/];
-    const hits = bad.filter((re) => re.test(text)).map((re) => re.source);
-    expect(hits, `operability.ts must not import gateway/business modules: ${hits.join(', ')}`).toHaveLength(0);
+    for (const rel of ['src/modules/permissions/operability.ts', 'src/modules/permissions/db/organizations.ts']) {
+      const text = fs.readFileSync(path.join(REPO, rel), 'utf8');
+      const hits = bad.filter((re) => re.test(text)).map((re) => re.source);
+      expect(hits, `${rel} must not import gateway/business modules: ${hits.join(', ')}`).toHaveLength(0);
+    }
   });
 });
