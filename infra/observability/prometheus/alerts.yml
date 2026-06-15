@@ -141,6 +141,44 @@ groups:
             path is stamping unverifiable identities. Both require
             investigation. See ADR-0017.
 
+      # Audit-attribution forgery (ADR-0046): a container on an owner-less
+      # (shared / per-thread / agent-shared) session tried to stamp an actor
+      # userId into the classification_log / enterprise_audit / gateway_audit
+      # corpus for a user that never appeared in the session. Recording-only —
+      # no privilege/routing impact — but a non-zero rate means a prompt-injected
+      # agent is forging audit ground truth.
+      - alert: AgentDeskRecordingActorForged
+        expr: rate(agentdesk_recording_actor_rejected_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Recording-surface actor failed host cross-validation
+          description: >-
+            agentdesk_recording_actor_rejected_total is non-zero. A container
+            tried to attribute a classify_intent / escalate / routing_feedback /
+            gateway_audit record to a user that never appeared in the session.
+            Audit-integrity only, but indicates a prompt-injected agent. See
+            ADR-0046.
+
+      # Roster consent-card forgery (ADR-0045): the host refused to deliver a
+      # roster opt-in (roster.optin) consent card that arrived on a plain channel
+      # row instead of via the host invite handler. Only a compromised /
+      # prompt-injected container can produce this — the legitimate builder never
+      # travels the polled delivery path. Treat as an active attack.
+      - alert: AgentDeskRosterOptInCardForged
+        expr: rate(agentdesk_roster_dm_rejected_total{reason="forged_optin_card"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Container attempted to forge a roster opt-in consent card
+          description: >-
+            agentdesk_roster_dm_rejected_total{reason="forged_optin_card"} is
+            non-zero. A container tried to plant a host-looking roster opt-in
+            card (which mints a DM consent grant on click) via a plain channel
+            row, bypassing the host invite gate. See ADR-0045.
+
       # Worker routing feedback (ADR-0040): a worker is persistently NACKing the
       # work it receives. The platform RECORDS nacks but does NOT reroute, so a
       # sustained per-worker nack rate means the work is being dropped unless the
