@@ -300,6 +300,37 @@ function applySigningHeaders(
   headers[signatureHeader] = signature;
 }
 
+/**
+ * Deterministic JSON serialization: object keys sorted recursively so two values
+ * that are deeply equal serialize identically regardless of key insertion order.
+ * Arrays keep their order; `undefined` object values are dropped (matching
+ * JSON.stringify); a cycle throws (callers wrap in try/catch and fall back).
+ *
+ * Used by hashBody (audit input_hash) and the stable idempotency key (ADR-0048)
+ * so the SAME logical request always produces the SAME hash — raw JSON.stringify
+ * is key-order sensitive, so `{a:1,b:2}` and `{b:2,a:1}` would otherwise hash
+ * differently and defeat both audit-dedup and idempotency.
+ */
+export function canonicalJSON(value: unknown, seen: Set<object> = new Set()): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (seen.has(value)) throw new Error('canonicalJSON: circular reference');
+  seen.add(value);
+  let out: string;
+  if (Array.isArray(value)) {
+    out = `[${value.map((v) => canonicalJSON(v, seen)).join(',')}]`;
+  } else {
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
+      .sort();
+    out = `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJSON(obj[k], seen)}`).join(',')}}`;
+  }
+  seen.delete(value);
+  return out;
+}
+
 function hashBody(path: string, body: Record<string, unknown>): string {
   try {
     // Different gateway paths carry their business payload in different
@@ -363,7 +394,7 @@ function hashBody(path: string, body: Record<string, unknown>): string {
       default:
         payload = body.input ?? null;
     }
-    return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    return crypto.createHash('sha256').update(canonicalJSON(payload)).digest('hex');
   } catch {
     return '';
   }
