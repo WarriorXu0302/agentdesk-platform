@@ -1,0 +1,12 @@
+{
+  "name": "bare-text-fallback: a final bare-text result delivers to the originating channel",
+  "description": "Many models emit their final answer as bare text after a tool-call chain (no <message to=...> wrapper). With a single destination, the poll-loop's reply-source fallback must deliver that bare text back to the inbound channel rather than dropping it to the scratchpad.",
+  "destinations": [{ "name": "feishu-main", "type": "channel", "channelType": "feishu", "platformId": "oc_main" }],
+  "messages": [{ "id": "m1", "text": "thanks!", "platformId": "oc_main", "channelType": "feishu" }],
+  "agentResponse": "You're welcome — glad I could help.",
+  "assert": [
+    { "outboundCount": 1 },
+    { "deliversTo": { "platformId": "oc_main", "channelType": "feishu" } },
+    { "textContains": "welcome" }
+  ]
+}

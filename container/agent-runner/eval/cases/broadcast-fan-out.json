@@ -1,0 +1,15 @@
+{
+  "name": "broadcast-fan-out: two <message> blocks each produce a separately-routed outbound",
+  "description": "An agent that addresses two distinct destinations in one turn must produce two outbound rows, each routed to its own destination — fan-out, not a single merged message.",
+  "destinations": [
+    { "name": "discord-test", "type": "channel", "channelType": "discord", "platformId": "chan-1" },
+    { "name": "slack-test", "type": "channel", "channelType": "slack", "platformId": "chan-2" }
+  ],
+  "messages": [{ "id": "m1", "text": "announce the maintenance window", "platformId": "chan-1", "channelType": "discord" }],
+  "agentResponse": "<message to=\"discord-test\">Maintenance at 02:00 UTC</message><message to=\"slack-test\">Maintenance at 02:00 UTC</message>",
+  "assert": [
+    { "outboundCount": 2 },
+    { "deliversTo": { "platformId": "chan-1", "channelType": "discord" } },
+    { "deliversTo": { "platformId": "chan-2", "channelType": "slack" } }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "delegate-to-worker: a frontdesk delegation routes as an a2a message to the worker",
+  "description": "The headline routing the misroute/nack feedback (ADR-0040) is about. With a worker wired as an agent destination, a <message to=worker> must become a channel_type='agent' outbound addressed to that worker's agent group — NOT a channel delivery back to the user.",
+  "destinations": [
+    { "name": "finance-worker", "type": "agent", "agentGroupId": "finance-worker" },
+    { "name": "feishu-main", "type": "channel", "channelType": "feishu", "platformId": "oc_main" }
+  ],
+  "messages": [{ "id": "m1", "text": "please approve invoice INV-1", "platformId": "oc_main", "channelType": "feishu" }],
+  "agentResponse": "<message to=\"finance-worker\">approve invoice INV-1 for this employee</message>",
+  "assert": [
+    { "outboundCount": 1 },
+    { "delegatesTo": "finance-worker" },
+    { "textContains": "INV-1" }
+  ]
+}

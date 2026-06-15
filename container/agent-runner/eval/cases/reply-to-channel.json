@@ -1,0 +1,13 @@
+{
+  "name": "reply-to-channel: explicit message routes back to the originating channel",
+  "description": "A single channel destination; the agent replies with an explicit <message to=...> block. It must deliver to that destination, reply to the inbound, and carry the text verbatim.",
+  "destinations": [{ "name": "feishu-main", "type": "channel", "channelType": "feishu", "platformId": "oc_main" }],
+  "messages": [{ "id": "m1", "text": "what is our refund policy?", "platformId": "oc_main", "channelType": "feishu" }],
+  "agentResponse": "<message to=\"feishu-main\">Refunds within 30 days.</message>",
+  "assert": [
+    { "outboundCount": 1 },
+    { "deliversTo": { "platformId": "oc_main", "channelType": "feishu" } },
+    { "textEquals": "Refunds within 30 days." },
+    { "inReplyTo": "m1" }
+  ]
+}
