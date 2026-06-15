@@ -1,6 +1,6 @@
 # ADR-0052: 真·多租户 org 隔离（对标清单 #7 完整版,用户显式选择）
 
-- **Status**: Accepted（**分阶段**:Stage A + B 已落地全绿;2 子决策已确认[① public-within-org ② owner/global_admin 跨 org 旁路];剩 FIX-4b 选项/approver 过滤 + createNewAgentGroup org 继承 + Stage C bootstrap）
+- **Status**: Accepted（**Stage A + B + C 全落地全绿**;2 子决策已确认[① public-within-org ② owner/global_admin 跨 org 旁路];FIX-4b 选项/approver 过滤 + createNewAgentGroup org 继承 = **接受的 UX 残余**,见下)
 - **Date**: 2026-06-16
 - **Decider(s)**: 用户(在明确警告后选"要更强的完整多租户隔离");coding agent(design+9 视角对抗评审 workflow wf_ef5a7824 + 执行)
 - **Tags**: `multi-tenant`, `isolation`, `rbac`, `governance`, `identity-trust-chain`, `db`, `migration`, `security`, `fail-closed`
@@ -110,8 +110,16 @@ D2 冗余(创建 chokepoint 错 + gateway_audit org 列削弱不变量 2);D1 无
   - **B3(本提交)**:FIX-5(operator-queries `orgScope` fail-closed 过滤 + `traceRequest` 逐行 + `trace.ts --as` 串联)、
     docs(enterprise-multi-user / isolation-model)、ADR 状态。FIX-6(取证表无 org 列、代理不盖)+ FIX-7(守卫扩展)在
     Stage A 已随 organizations.ts 落地。
-- **剩余(收尾)**:FIX-4b 选项/approver org 过滤(纯 UX,被 B2 connect 校验兜底)+ createNewAgentGroup org 继承;
-  Stage C bootstrap(init-enterprise-topology 可选 org 块 + `--org`/`--org-admin`)+ feishu-channel docs。
+- **Stage C(71b45b1)**:`assignAgentGroupToOrg`(把既有组并入 org + 自动 enroll 现有成员/scoped-admin 防锁死)+
+  专用运营 CLI `scripts/org.ts`(list/create/assign/add-member/remove-member/grant-admin/revoke-admin)+ docs
+  setup 路径。**选专用 CLI 而非线程化 init-enterprise-topology**(低风险、单一职责,不动 753 行 bootstrap 脚本)。
+
+**接受的 UX 残余(非安全缺口,B2 connect-authz 已兜底)**:FIX-4b 选项/approver org 过滤 + createNewAgentGroup org 继承。
+诚实分析:① **不是安全洞**——渠道审批新建的组落 null-org 由**原 member/admin RBAC** 管(外人仍需成员资格才够得着),
+是"未分配租户"非跨租户泄漏;运营者可后续 `org assign`(已 enroll 防锁死)。② **approver-picking 对未接线渠道本就 ill-defined**
+——未接线渠道还没 agent group → 没有参考 org,无法"按 org 选 approver";故 B2 的 connect-authz(approver 必须能 access 目标组,
+跨组 approver 被拒)才是正确防线,而非依赖选项过滤。③ createNewAgentGroup org 继承与 part-2 耦合且无 part-2 时空转(全局 admin
+approver 无单一 org → null-org)。→ 纯 UX、低价值、设计上对未接线渠道不清晰 → 接受为残余,不强做。
 
 **2 项子决策(已由用户确认)**:① **采"public within org"**(非禁用 public,而是 org-scoped 组上 public 仍强制 org 成员前置,
 保留能力);② **owner/global_admin 跨 org 旁路**(平台运营者见所有租户)。子决策 ③(回填:自动把所有当前可达用户纳入
