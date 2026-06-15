@@ -74,12 +74,14 @@ and a demo skips.
 Every request carries `requester` (e.g. `{ userId: "feishu:ou_alice" }`) and a
 `requesterSource`:
 
-- **`session`** — host-derived from the verified identity trust chain. Authoritative.
+- **`session`** — on the honest path, host-derived from the verified identity
+  trust chain (read from inbound.db; the agent does not set it through the normal
+  MCP tool). A useful signal for non-malicious traffic.
 - **`agent-asserted`** — no trusted identity was available. The agent *claimed*
   an identity; the platform could not verify it.
 
-Map `requester.userId` to your own user/principal system, but gate *writes* on
-the source. The reference's `isTrusted(req)` is the whole pattern:
+Map `requester.userId` to your own user/principal system, and use the source as
+a first-line gate on *writes*:
 
 ```js
 function isTrusted(req) { return req?.requesterSource === 'session'; }
@@ -87,12 +89,30 @@ function isTrusted(req) { return req?.requesterSource === 'session'; }
 if (def.mutating && !isTrusted(req)) return deny('mutating op requires a session-trusted requester');
 ```
 
-A prompt-injected agent can put any string in `requester.userId`, but it cannot
-forge `requesterSource: 'session'` — that is stamped host-side. Treat
-`agent-asserted` as read-only at most. **Never** use `requester.userId` as a
-*verified* identity for a write; treat memory-write provenance the same way
-(see `source.writtenBy` in the reference — it's backend-asserted, not verified,
-per ADR-0033).
+> **⚠️ `requesterSource` is defense-in-depth, NOT an authentication boundary
+> against a hostile container.** On the host **signing-proxy** path (ADR-0034)
+> the host signs the container-supplied request body *verbatim*: it validates the
+> agent-group binding but does **not** stamp, override, or cross-validate
+> `requesterSource` or `requester.userId`. The agent runs with shell access, so a
+> compromised or prompt-injected agent can read the proxy token from its own
+> environment and craft a direct request asserting `requesterSource: 'session'`
+> with **any** `requester.userId` — and the host will HMAC-sign it as trusted.
+> This is the platform's explicitly **accepted residual risk R5** (ADR-0017,
+> ADR-0034): the *agent-group* is the trust unit; an agent that group can already
+> act as can forge a peer user's identity *to your backend*. (An earlier version
+> of this guide wrongly stated `session` "cannot be forged — stamped host-side";
+> it can. Only the agent-group binding is enforced host-side.)
+>
+> **For your backend:** treat the `requesterSource`/`requester` gate as a useful
+> default that stops *honest* mis-routing — not as authentication. For any write
+> where one user impersonating another would be damaging, anchor authorization on
+> something the container cannot forge: your own backend-side session/principal
+> verification, and/or the platform approval flow
+> (`obligations: ['user-confirmation']`, §3.2), which routes a confirmation to the
+> *actual* end-user before the write commits. Scope each agent-group's blast
+> radius accordingly. **Never** use `requester.userId` *or* `requesterSource` as a
+> *verified* cross-user identity for a write; treat memory-write provenance the
+> same way (`source.writtenBy` is backend-asserted, not verified, per ADR-0033).
 
 ### 3.2 Permission denial — deny in `/authorize`, not only `/execute`
 
@@ -230,6 +250,9 @@ function requireSignature(req, res, next) {
   next();
 }
 
+// NOTE: requesterSource is defense-in-depth, not authentication — a compromised
+// container can forge 'session' (residual risk R5, see §3.1). For damaging
+// writes, also anchor on backend-side principal verification / user approval.
 const isTrusted = (req) => req.body?.requesterSource === 'session';
 const CV = 1; // contractVersion
 
@@ -278,7 +301,7 @@ GATEWAY_STRICT_RESPONSES=true pnpm exec tsx scripts/gateway-conformance.ts http:
 ## 5. Pre-production checklist
 
 - [ ] All six endpoints return the contract shapes — conformance green, including `GATEWAY_STRICT_RESPONSES=true`.
-- [ ] Writes gated on `requesterSource === 'session'`; `agent-asserted` is read-only at most (§3.1).
+- [ ] Writes gated on `requesterSource === 'session'` as a first line; `agent-asserted` is read-only at most. **But `requesterSource` is forgeable by a compromised container (residual risk R5) — for damaging writes, also anchor authorization on backend-side principal verification and/or user approval, not on `requesterSource` alone (§3.1).**
 - [ ] `/authorize` runs your real permission policy and returns `obligations: ['user-confirmation']` for human-sign-off ops (§3.2).
 - [ ] `/execute` dedupes on `idempotencyKey` in the same transaction as the write; `dryRun` never commits (§3.3).
 - [ ] Every `/execute` returns an `auditId` your backend also logs (§3.4).
