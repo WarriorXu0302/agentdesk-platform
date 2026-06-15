@@ -440,6 +440,16 @@ export const memorySearchResultSchema = z
     // result. Both optional + passthrough → a backend adopts this incrementally.
     conflictsWith: z.array(z.string()).optional(),
     resolved: z.boolean().optional(),
+    // Optional temporal validity (ADR-0050). A backend that curates memory with
+    // A.U.D.N. reconciliation (add / update / delete / no-op against existing
+    // neighbours) should INVALIDATE a superseded fact, not delete it: stamp
+    // `invalidAt` and drop it from default recall, but surface it (with `validAt`
+    // / `invalidAt`) when the agent asks for history. ISO-8601 strings; both
+    // optional + passthrough so a non-temporal backend stays conformant. The
+    // platform never interprets these — it forwards them inside the memory fence
+    // like any other recalled field; the agent decides whether stale facts matter.
+    validAt: z.string().optional(),
+    invalidAt: z.string().optional(),
   })
   .passthrough();
 

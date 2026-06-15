@@ -14,17 +14,23 @@
  *   POST /execute         -> { ok, result | preview, auditId }
  *   POST /bulk_execute    -> { ok, results: [...], partial? }   (ADR-0036)
  *   POST /task/status     -> { ok, status, result | error, progress? } (ADR-0037)
- *   POST /memory/get      -> { ok, value, source? }
- *   POST /memory/upsert   -> { ok, value, source }
- *   POST /memory/search   -> { ok, results: [{ value, source, score }] }
+ *   POST /memory/get      -> { ok, value, source?, validAt? }
+ *   POST /memory/upsert   -> { ok, value, source, validAt, op }  (ADR-0050)
+ *   POST /memory/search   -> { ok, results: [{ value, source, score, validAt, invalidAt? }] }
  *   POST /memory/feedback -> { ok, accepted, feedbackId }       (ADR-0043)
  *
  * Design goals (deliberately NOT production):
  *   - Zero dependencies. Node built-ins only (node:http, node:crypto).
  *     Runs with plain `node server.mjs` — no install, no build step.
  *   - In-memory storage. All memory lives in a Map and is lost on restart.
+ *   - A.U.D.N. curation (ADR-0050). /memory/upsert reconciles against the live
+ *     version (add / update / no-op) instead of blindly overwriting; superseding
+ *     a fact invalidates it (keeps history) rather than deleting. Deterministic
+ *     here; a real backend reconciles semantically (LLM / domain rules).
  *   - Keyword search. /memory/search does a naive substring/term match over
- *     stored JSON and attaches a `source` provenance block + a `score`.
+ *     stored JSON and attaches a `source` provenance block + a `score`. By
+ *     default it returns only live facts; `includeHistory: true` surfaces
+ *     superseded ones with their `validAt`/`invalidAt`.
  *   - Optional HMAC verification (off by default). Set GATEWAY_SIGNING_KEY to
  *     require + verify the same `<timestamp>.<nonce>.<body>` signature the
  *     runtime emits, using the brand-namespaced headers.
@@ -68,7 +74,15 @@ const CONTRACT_VERSION = 1;
 
 /**
  * In-memory durable store. Real backends use a database.
- * key = `${namespace}::${subject.type}::${subject.id}` -> { value, source }
+ *
+ * key = `${namespace}::${subject.type}::${subject.id}` -> version[]
+ * where version = { value, source, validAt, invalidAt }.
+ *
+ * We keep a *version list* per key (not a single record) to demonstrate the
+ * A.U.D.N. + temporal-validity curation pattern (ADR-0050): an upsert reconciles
+ * against the current live version instead of blindly overwriting. At most one
+ * version is live (`invalidAt === null`); superseded versions are INVALIDATED
+ * (stamped `invalidAt`), never deleted, so history stays auditable.
  */
 const memory = new Map();
 
@@ -423,21 +437,42 @@ const handlers = {
 
   '/memory/get': (req) => {
     const key = memKey(req.namespace, req.subject);
-    const rec = memory.get(key);
-    if (!rec) return { ok: true, value: null };
-    return { ok: true, value: rec.value, source: rec.source };
+    const live = liveVersion(memory.get(key));
+    if (!live) return { ok: true, value: null };
+    return { ok: true, value: live.value, source: live.source, validAt: live.validAt };
   },
 
   '/memory/upsert': (req) => {
     const key = memKey(req.namespace, req.subject);
-    const recordId = crypto.randomUUID();
-    const existing = memory.get(key);
-    const value = req.merge && existing && isObject(existing.value) && isObject(req.value)
-      ? { ...existing.value, ...req.value }
+    const now = new Date().toISOString();
+    const versions = memory.get(key) ?? [];
+    const live = liveVersion(versions);
+
+    // Merge against the live value when the caller asked for a partial update.
+    const value = req.merge && live && isObject(live.value) && isObject(req.value)
+      ? { ...live.value, ...req.value }
       : req.value;
+
+    // A.U.D.N. reconciliation (ADR-0050). This demo is DETERMINISTIC: it
+    // compares the canonical JSON of the live value to decide add/update/no-op.
+    // A real backend would reconcile semantically (an LLM or domain rules) and
+    // could also DELETE — retire a fact a new one contradicts without replacing
+    // it — which value-equality alone can't detect.
+    //   NO-OP  — value unchanged vs the live record → write nothing, return it.
+    //   UPDATE — value changed → INVALIDATE the live record (stamp invalidAt,
+    //            keep it for history) and append a new live version (supersede).
+    //   ADD    — no live record → append the first version.
+    if (live && stableStringify(live.value) === stableStringify(value)) {
+      return { ok: true, value: live.value, source: live.source, validAt: live.validAt, op: 'noop' };
+    }
+    const op = live ? 'update' : 'add';
+    if (live) live.invalidAt = now; // supersede: invalidate, never delete
+
+    const recordId = crypto.randomUUID();
     const source = provenance(req.namespace, req.subject, req, recordId);
-    memory.set(key, { value, source });
-    return { ok: true, value, source };
+    versions.push({ value, source, validAt: now, invalidAt: null });
+    memory.set(key, versions);
+    return { ok: true, value, source, validAt: now, op };
   },
 
   '/memory/search': (req) => {
@@ -445,17 +480,33 @@ const handlers = {
     const terms = query.split(/\s+/).filter(Boolean);
     const limit = Number.isInteger(req.limit) && req.limit > 0 ? req.limit : 10;
     const wantSubjectId = req.subject?.id;
+    // Opt-in history: by default recall returns only live facts; set
+    // includeHistory to also surface superseded ones (with validAt/invalidAt).
+    const includeHistory = req.includeHistory === true;
     const results = [];
-    for (const [key, rec] of memory.entries()) {
+    for (const [key, versions] of memory.entries()) {
       // Scope to namespace + subject so one user's recall can't reach another's.
       if (req.namespace && !key.startsWith(`${req.namespace}::`)) continue;
-      if (wantSubjectId && rec.source?.subjectId && rec.source.subjectId !== wantSubjectId) continue;
-      const haystack = JSON.stringify(rec.value).toLowerCase();
-      // Naive keyword score: fraction of query terms found. A real backend
-      // would use full-text / vector retrieval here.
-      const hits = terms.filter((t) => haystack.includes(t)).length;
-      const score = terms.length === 0 ? 0 : hits / terms.length;
-      if (score > 0) results.push({ value: rec.value, source: rec.source, score });
+      for (const rec of versions) {
+        // Default recall excludes invalidated (superseded) facts — A.U.D.N. keeps
+        // history but stale facts must not pollute normal retrieval.
+        if (rec.invalidAt && !includeHistory) continue;
+        if (wantSubjectId && rec.source?.subjectId && rec.source.subjectId !== wantSubjectId) continue;
+        const haystack = JSON.stringify(rec.value).toLowerCase();
+        // Naive keyword score: fraction of query terms found. A real backend
+        // would use full-text / vector retrieval here.
+        const hits = terms.filter((t) => haystack.includes(t)).length;
+        const score = terms.length === 0 ? 0 : hits / terms.length;
+        if (score > 0) {
+          results.push({
+            value: rec.value,
+            source: rec.source,
+            score,
+            validAt: rec.validAt,
+            invalidAt: rec.invalidAt ?? undefined,
+          });
+        }
+      }
     }
     results.sort((a, b) => b.score - a.score);
     return { ok: true, results: results.slice(0, limit) };
@@ -484,6 +535,29 @@ const handlers = {
 
 function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** The single non-invalidated version in a key's history (or null). */
+function liveVersion(versions) {
+  if (!Array.isArray(versions)) return null;
+  return versions.find((v) => !v.invalidAt) ?? null;
+}
+
+/**
+ * Order-insensitive JSON for value-equality (A.U.D.N. no-op detection). Sorts
+ * object keys recursively so `{a,b}` and `{b,a}` compare equal. A real backend
+ * would reconcile *semantically*, not by canonical bytes — this only keeps the
+ * demo from spuriously superseding a record on key reordering.
+ */
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 // --- HTTP plumbing ----------------------------------------------------------

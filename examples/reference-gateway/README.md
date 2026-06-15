@@ -32,9 +32,9 @@ real backend persists it with the write). The inline comments in
 | `POST /execute` | `dryRun` → `preview`; otherwise → `result`; **replays the same result for a repeated `idempotencyKey`** so host retries can't double-write; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND` |
 | `POST /bulk_execute` | runs many operations in one round-trip (ADR-0036); per-op idempotency replay; `atomic` pre-validates then commits all-or-nothing; best-effort returns per-op `results[]` + `partial` |
 | `POST /task/status` | async task poll (ADR-0037); `submitAsync:true` on `/execute` returns a `taskId`, this returns its `{status, result?}` (idempotent by key; unknown id → `failed`, not 404) |
-| `POST /memory/get` | exact lookup by `(namespace, subject)`; returns `value` + `source` provenance |
-| `POST /memory/upsert` | stores (optionally merges) `value`; returns the stored value + `source` |
-| `POST /memory/search` | naive keyword match over stored JSON, scoped by namespace + subject; returns `{ value, source, score }[]` (ADR-0033) |
+| `POST /memory/get` | exact lookup by `(namespace, subject)`; returns the live `value` + `source` provenance + `validAt` |
+| `POST /memory/upsert` | A.U.D.N. reconciliation (ADR-0050): canonical-value equality → `no-op`; change → supersede (invalidate the old version, append a new one). Returns `value` + `source` + `validAt` + `op` |
+| `POST /memory/search` | naive keyword match over stored JSON, scoped by namespace + subject; returns `{ value, source, score, validAt, invalidAt? }[]` — live only by default, `includeHistory: true` adds superseded versions (ADR-0033, ADR-0050) |
 
 Every response carries `contractVersion: 1`. The `requesterSource='session'` vs
 `'agent-asserted'` gate on mutating operations is the contract's identity-trust

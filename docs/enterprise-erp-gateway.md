@@ -599,7 +599,9 @@ You control the payload shape, but keep it explicit. Recommended patterns:
   - audit id / request id for traceability
 - `/memory/search`
   - `ok: true | false`
-  - `results`: an array of `{ value, source?, score? }` (see below)
+  - `results`: an array of `{ value, source?, score?, validAt?, invalidAt? }`
+    (see [Memory search & provenance](#memory-search--provenance-adr-0033) and
+    [Memory curation & temporal validity](#memory-curation--temporal-validity-adr-0050))
 - `/memory/feedback` (optional; ADR-0043)
   - `ok: true | false`
   - `accepted: true | false` — whether you recorded the feedback
@@ -817,6 +819,61 @@ provenance block + an optional `score`:
 `/memory/get` may **optionally** add the same `source` block to its response.
 It is not required — an existing get backend that returns only a value stays
 conformant.
+
+### Memory curation & temporal validity (ADR-0050)
+
+`/memory/upsert` is a **write into a long-lived store**, not a blind overwrite.
+Over months, a `user.preferences` or `conversation.summary` namespace
+accumulates facts that drift, get superseded, or contradict each other. If your
+gateway just key-addresses and overwrites, stale facts linger and recall returns
+them as if current — and the agent has no way to tell. The `/memory/feedback`
+endpoint (ADR-0043) lets the agent/operator *flag* a bad record, but flagging
+isn't resolving; resolution is a **curation** step the backend owns.
+
+The recommended write-side shape is **A.U.D.N.** — on each upsert, reconcile the
+incoming fact against the existing neighbours for the same `(namespace,
+subject)` and choose:
+
+- **Add** — genuinely new fact → store it.
+- **Update** — refines/replaces an existing fact → supersede the old one.
+- **Delete** — a new fact contradicts an old one that should simply retire (no
+  replacement) → invalidate the old one.
+- **No-op** — the fact is already known → write nothing (don't churn timestamps
+  or inflate history).
+
+Deciding which is, in production, a **semantic** judgement (an LLM or domain
+rules comparing meaning, not bytes) — that lives entirely in your backend; the
+platform neither performs nor mandates it. The reference gateway
+(`examples/reference-gateway/server.mjs`) ships a **deterministic** stand-in
+(canonical-value equality for no-op detection, supersede-on-change) so you can
+see the shape run end-to-end.
+
+**Invalidate, don't delete.** When a fact is superseded or retired, keep the row
+and stamp it instead of dropping it — this preserves an audit trail and lets the
+agent ask "what did we believe before?". The contract carries two optional
+ISO-8601 fields on each search result for this:
+
+- **`validAt`** — when this version became the live fact.
+- **`invalidAt`** — when it was superseded/retired (absent ⇒ still live).
+
+```json
+{
+  "ok": true,
+  "results": [
+    { "value": { "city": "SF" },  "validAt": "2026-06-15T00:00:00Z" },
+    { "value": { "city": "NYC" }, "validAt": "2026-06-01T00:00:00Z",
+      "invalidAt": "2026-06-15T00:00:00Z" }
+  ]
+}
+```
+
+Both fields are optional + pass through, so a non-temporal backend stays
+conformant. Recommended retrieval behaviour: **default recall returns only live
+facts** (no `invalidAt`); surface superseded ones only when the caller opts in
+(the reference gateway uses an `includeHistory: true` request flag). The
+platform never interprets `validAt`/`invalidAt` — it forwards them inside the
+untrusted-memory fence like any other recalled field, and the agent decides
+whether a stale fact still matters.
 
 ### Backend hasn't implemented search yet
 

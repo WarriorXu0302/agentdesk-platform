@@ -4,6 +4,8 @@ import {
   bulkExecuteRequestSchema,
   bulkExecuteResponseSchema,
   executeRequestSchema,
+  memorySearchResponseSchema,
+  memorySearchResultSchema,
   REQUEST_SCHEMAS,
   RESPONSE_SCHEMAS,
   taskStatusRequestSchema,
@@ -133,5 +135,42 @@ describe('async task contract', () => {
   it('/task/status is registered as a gateway path on both sides', () => {
     expect('/task/status' in REQUEST_SCHEMAS).toBe(true);
     expect('/task/status' in RESPONSE_SCHEMAS).toBe(true);
+  });
+});
+
+// Temporal-validity memory contract (ADR-0050).
+describe('memory temporal validity', () => {
+  it('memorySearchResultSchema parses optional validAt / invalidAt', () => {
+    const live = memorySearchResultSchema.parse({
+      value: { city: 'SF' },
+      validAt: '2026-06-15T00:00:00.000Z',
+    });
+    expect(live.validAt).toBe('2026-06-15T00:00:00.000Z');
+    expect(live.invalidAt).toBeUndefined();
+
+    const superseded = memorySearchResultSchema.parse({
+      value: { city: 'NYC' },
+      validAt: '2026-06-01T00:00:00.000Z',
+      invalidAt: '2026-06-15T00:00:00.000Z',
+    });
+    expect(superseded.invalidAt).toBe('2026-06-15T00:00:00.000Z');
+  });
+
+  it('a result without temporal fields stays conformant (backward-compatible)', () => {
+    const parsed = memorySearchResultSchema.parse({ value: { ok: true }, score: 0.5 });
+    expect(parsed.validAt).toBeUndefined();
+    expect(parsed.invalidAt).toBeUndefined();
+  });
+
+  it('search response carries temporal results through the lenient envelope', () => {
+    const parsed = memorySearchResponseSchema.parse({
+      ok: true,
+      results: [
+        { value: { city: 'SF' }, validAt: '2026-06-15T00:00:00.000Z' },
+        { value: { city: 'NYC' }, validAt: '2026-06-01T00:00:00.000Z', invalidAt: '2026-06-15T00:00:00.000Z' },
+      ],
+    });
+    expect(parsed.results).toHaveLength(2);
+    expect(parsed.results?.[1]?.invalidAt).toBe('2026-06-15T00:00:00.000Z');
   });
 });
