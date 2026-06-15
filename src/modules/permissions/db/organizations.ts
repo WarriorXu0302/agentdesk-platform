@@ -66,6 +66,49 @@ export function removeOrgMember(organizationId: string, userId: string, removedB
   }
 }
 
+/**
+ * Assign an EXISTING agent group to an organization (ADR-0052 Stage C). To avoid
+ * locking out the group's current principals once the org prerequisite is live,
+ * this also enrolls every current group member + group-scoped admin into the org
+ * (mirrors the migration-035 backfill). Idempotent + audited. Returns the number
+ * of principals freshly enrolled.
+ */
+export function assignAgentGroupToOrg(
+  agentGroupId: string,
+  organizationId: string,
+  actor: string | null = null,
+): number {
+  const db = getDb();
+  db.prepare('UPDATE agent_groups SET organization_id = ? WHERE id = ?').run(organizationId, agentGroupId);
+  const principals = new Set<string>();
+  for (const r of db
+    .prepare('SELECT user_id FROM agent_group_members WHERE agent_group_id = ?')
+    .all(agentGroupId) as Array<{ user_id: string }>) {
+    principals.add(r.user_id);
+  }
+  for (const r of db.prepare('SELECT user_id FROM user_roles WHERE agent_group_id = ?').all(agentGroupId) as Array<{
+    user_id: string;
+  }>) {
+    principals.add(r.user_id);
+  }
+  let enrolled = 0;
+  const before = db
+    .prepare('SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?')
+    .get(organizationId) as { n: number };
+  for (const userId of principals) addOrgMember(organizationId, userId, actor);
+  const after = db
+    .prepare('SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?')
+    .get(organizationId) as { n: number };
+  enrolled = after.n - before.n;
+  recordEnterpriseAudit({
+    eventType: 'agent_group_org_assigned',
+    agentGroupId,
+    actor,
+    details: { organizationId, enrolledMembers: enrolled },
+  });
+  return enrolled;
+}
+
 export function isMemberOfOrg(userId: string, organizationId: string): boolean {
   const row = getDb()
     .prepare('SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1')

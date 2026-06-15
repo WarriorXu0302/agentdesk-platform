@@ -70,6 +70,19 @@ gateway authz (org never enters the gateway authz path). A deployment with no
 organizations behaves exactly as before (NULL-org = no prerequisite). See
 [isolation-model.md](isolation-model.md#organization-tenancy-adr-0052).
 
+Set up tenancy with the operator CLI `scripts/org.ts` (ADR-0052):
+
+```
+pnpm exec tsx scripts/org.ts create acme "Acme Inc"        # → org id 'org-acme'
+pnpm exec tsx scripts/org.ts assign <agentGroupId> acme    # tag a group into the org
+pnpm exec tsx scripts/org.ts grant-admin feishu:ou_x acme  # delegate org-admin
+pnpm exec tsx scripts/org.ts list
+```
+
+`assign` auto-enrolls the group's current members + scoped admins into the org so
+the prerequisite doesn't lock anyone out. Triage an org's fleet with
+`scripts/trace.ts --as <userId>` (results are org-scoped for a non-global actor).
+
 For **business-action authorization** (not just message admission), the
 enforcement point is your backend gateway: `gateway_authorize` / `gateway_execute`
 are evaluated per call against live backend state, so a revocation reflected in

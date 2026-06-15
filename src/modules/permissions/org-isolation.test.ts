@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDb, createAgentGroup, initTestDb, runMigrations } from '../../db/index.js';
 import { canAccessAgentGroup } from './access.js';
 import { addMember } from './db/agent-group-members.js';
-import { addOrgMember, createOrganization } from './db/organizations.js';
+import { addOrgMember, assignAgentGroupToOrg, createOrganization, isMemberOfOrg } from './db/organizations.js';
 import { createUser } from './db/users.js';
 import { grantRole, hasAdminPrivilege } from './db/user-roles.js';
 import { canOperate } from './operability.js';
@@ -135,6 +135,29 @@ describe('hasAdminPrivilege is org-aware (approval-card authority)', () => {
     grantRole({ userId: 'owner', role: 'owner', scope: { kind: 'global' }, grantedBy: null });
     expect(hasAdminPrivilege('owner', 'gX')).toBe(true);
     expect(hasAdminPrivilege('owner', 'gY')).toBe(true);
+  });
+});
+
+describe('assignAgentGroupToOrg auto-enrolls existing principals (Stage C, no lockout)', () => {
+  it('enrolls current members + scoped admins so they keep access after assignment', () => {
+    createUser({ id: 'm', kind: 'tg', display_name: null, created_at: now() });
+    createUser({ id: 'a', kind: 'tg', display_name: null, created_at: now() });
+    addMember({ user_id: 'm', agent_group_id: 'gLegacy', added_by: null, added_at: now() });
+    grantRole({ userId: 'a', role: 'admin', scope: { kind: 'group', agentGroupId: 'gLegacy' }, grantedBy: null });
+    // Before assignment gLegacy is null-org → both already have access.
+    expect(canAccessAgentGroup('m', 'gLegacy').allowed).toBe(true);
+
+    const enrolled = assignAgentGroupToOrg('gLegacy', 'org-x', null);
+    expect(enrolled).toBe(2); // m + a
+
+    // Now org-scoped, but the auto-enroll keeps both reachable (no lockout).
+    expect(isMemberOfOrg('m', 'org-x')).toBe(true);
+    expect(isMemberOfOrg('a', 'org-x')).toBe(true);
+    expect(canAccessAgentGroup('m', 'gLegacy').allowed).toBe(true);
+    // An outsider is now cross_org_denied on the freshly-orged group.
+    createUser({ id: 'outsider', kind: 'tg', display_name: null, created_at: now() });
+    addMember({ user_id: 'outsider', agent_group_id: 'gLegacy', added_by: null, added_at: now() });
+    expect((canAccessAgentGroup('outsider', 'gLegacy') as { reason: string }).reason).toBe('cross_org_denied');
   });
 });
 
