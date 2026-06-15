@@ -25,6 +25,8 @@
 **关键设计修正(ADR-0039 守卫挡下)**:初版按 `conversation_thread_id = ?` 查 → 触发既有 `conversation-thread-id-guard.test.ts`(该 id 是**纯关联**,绝不能成等值查找/授权键)。修正:**改按 `root_session_id` 查**(合法结构/路由键)+ classifications 按 `session_id` 查;conv id 仍**显示**(SELECT *,供与 OTel trace 交叉引用)但**绝不**做查找键。这比 conv-id 查更结构正确(root_session_id 就是委派树),且零守卫弱化。
 
 **只读 by construction**(纯 SELECT);读运营者自有的中央 DB,访问由"谁能跑 CLI"门控,无需 in-band 角色检查。
+（**更新**:ADR-0051 给这个面加了**可选** in-band 角色闸 `canOperate` + `trace.ts --as`——supersede 此处"仅 OS 门控"，
+不给 `--as` 时行为不变。）
 
 ## Consequences
 

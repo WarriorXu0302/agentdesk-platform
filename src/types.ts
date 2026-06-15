@@ -45,13 +45,20 @@ export interface User {
   created_at: string;
 }
 
-export type UserRoleKind = 'owner' | 'admin';
+export type UserRoleKind = 'owner' | 'admin' | 'operator' | 'viewer';
 
 /**
  * Role grant. Owner is always global. Admin is either global
  * (agent_group_id = null) or scoped to a specific agent group.
  * Admin @ A implicitly makes the user a member of A — we do not require
  * a separate agent_group_members row for admins.
+ *
+ * `operator` / `viewer` (ADR-0051) are OPERABILITY roles — they gate read-only
+ * fleet triage / governance on the HOST plane (the ADR-0049 operator surface),
+ * NOT message routing and NOT per-request business authz (which stays at the
+ * backend gateway, the only authorization path). They are global
+ * (agent_group_id = null) or scoped like admin, but they do NOT confer
+ * `hasAdminPrivilege` and do NOT make the user a routable member.
  */
 export interface UserRole {
   user_id: string;
