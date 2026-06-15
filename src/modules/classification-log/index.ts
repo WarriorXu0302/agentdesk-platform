@@ -13,16 +13,22 @@
  * Best-effort writes (same pattern as gateway_audit): a DB failure logs and
  * drops — don't block the container's message flow on metric bookkeeping.
  */
+import type Database from 'better-sqlite3';
+
 import { registerDeliveryAction } from '../../delivery.js';
 import { recordClassification, type ClassificationLogEntry } from '../../db/classification-log.js';
 import { recordEnterpriseAudit } from '../../db/enterprise-audit.js';
 import { log } from '../../log.js';
 import {
+  classificationActorRejectedTotal,
   classificationLogFailuresTotal,
   classificationsTotal,
   escalationTotal,
   routingFeedbackTotal,
 } from '../../metrics.js';
+// Pure leaf helper (type-only deps, no side effects) — reused so the actor
+// cross-validation uses the EXACT same namespacing as the a2a origin check.
+import { collectLegitimateOrigins } from '../agent-to-agent/origin-user.js';
 import type { Session } from '../../types.js';
 
 const ACTIONS: ReadonlyArray<ClassificationLogEntry['action']> = ['delegate', 'clarify', 'reject', 'answer_self'];
@@ -82,23 +88,73 @@ function toAction(raw: unknown): ClassificationLogEntry['action'] {
     : 'delegate';
 }
 
-async function handleClassifyIntent(content: Record<string, unknown>, session: Session): Promise<void> {
+/**
+ * Resolve the host-trusted actor for a recording-surface row (classify_intent /
+ * escalate / routing_feedback). These tables are audit-level ground truth, so
+ * the actor must stay host-anchored — never an agent-spoofable field:
+ *
+ *  - A session with a host-established owner (per-user / per-user-per-thread, or
+ *    a root-pinned session) IS the authoritative actor; a container-claimed
+ *    userId that disagrees is ignored + warned (prior behavior, unchanged).
+ *  - With NO owner (shared / per-thread / agent-shared frontdesk group sessions —
+ *    owner_user_id is NULL) a container-claimed userId is accepted ONLY if that
+ *    user genuinely appeared in this session, cross-validated against the
+ *    HOST-written inbound.db (the same check the a2a hop uses, ADR-0017). A
+ *    fabricated victim id that never entered the session is dropped to null +
+ *    counted, so a prompt-injected frontdesk/worker cannot stamp an arbitrary
+ *    actor into the audit corpus. (ADR-0017 identity trust chain; closes the
+ *    owner-NULL dead spot found by the as-merged recording-surface audit.)
+ */
+function resolveTrustedActor(
+  action: string,
+  session: Session,
+  claimedUserId: string | null,
+  inDb: Database.Database,
+): string | null {
+  if (session.owner_user_id) {
+    if (claimedUserId && claimedUserId !== session.owner_user_id) {
+      log.warn(`${action} userId mismatch — trusting session owner`, {
+        sessionId: session.id,
+        claimed: claimedUserId,
+        session: session.owner_user_id,
+      });
+    }
+    return session.owner_user_id;
+  }
+  // No host-established owner: a claimed id is only trustworthy if the host saw
+  // that user pass through this session. Anything else is unverifiable → null.
+  if (!claimedUserId) return null;
+  let legitimate: Set<string>;
+  try {
+    legitimate = collectLegitimateOrigins(inDb);
+  } catch (err) {
+    log.warn(`${action}: legitimate-origin lookup failed — dropping unverifiable actor`, {
+      sessionId: session.id,
+      err,
+    });
+    return null;
+  }
+  if (legitimate.has(claimedUserId)) return claimedUserId;
+  classificationActorRejectedTotal.labels(action).inc();
+  log.warn(`${action}: rejecting container-claimed userId not in session identity set`, {
+    sessionId: session.id,
+    claimed: claimedUserId,
+  });
+  return null;
+}
+
+async function handleClassifyIntent(
+  content: Record<string, unknown>,
+  session: Session,
+  inDb: Database.Database,
+): Promise<void> {
   const action = toAction(content.action_taken);
 
-  // Prefer the session's owner_user_id (host-established identity) over
-  // whatever the agent wrote in the payload. If they disagree we warn
-  // and still trust session. Matters because this table is documented as
-  // audit-level ground truth — it can't take an agent-spoofable field
-  // at face value.
+  // Host-anchored actor: session owner when set, else cross-validate the
+  // container-claimed userId against the host-written inbound.db (audit-level
+  // ground truth can't take an agent-spoofable field at face value).
   const claimedUserId = readString(content, 'userId') ?? null;
-  const trustedUserId = session.owner_user_id ?? claimedUserId ?? null;
-  if (claimedUserId && session.owner_user_id && claimedUserId !== session.owner_user_id) {
-    log.warn('classify_intent userId mismatch — trusting session owner', {
-      sessionId: session.id,
-      claimed: claimedUserId,
-      session: session.owner_user_id,
-    });
-  }
+  const trustedUserId = resolveTrustedActor('classify_intent', session, claimedUserId, inDb);
 
   const entry: ClassificationLogEntry = {
     classificationId: readString(content, 'classificationId') ?? null,
@@ -152,20 +208,16 @@ registerDeliveryAction('classify_intent', handleClassifyIntent);
  * which reads these records. reason/urgency are untrusted agent metadata: logged
  * + audited + (bucketed) metric label only, NEVER an input to any decision.
  */
-async function handleEscalate(content: Record<string, unknown>, session: Session): Promise<void> {
-  // Trust the host-established session owner over any agent-claimed userId —
-  // same rule as classify_intent (this is a frontdesk decision within the
-  // session, not a cross-session a2a hop, so origin cross-validation does not
-  // apply; the session owner is the authoritative actor).
+async function handleEscalate(
+  content: Record<string, unknown>,
+  session: Session,
+  inDb: Database.Database,
+): Promise<void> {
+  // Host-anchored actor: session owner when set, else accept the agent-claimed
+  // userId only if that user genuinely appeared in this session (owner-NULL
+  // shared/group frontdesk). See resolveTrustedActor.
   const claimedUserId = readString(content, 'userId') ?? null;
-  const trustedUserId = session.owner_user_id ?? claimedUserId ?? null;
-  if (claimedUserId && session.owner_user_id && claimedUserId !== session.owner_user_id) {
-    log.warn('escalate userId mismatch — trusting session owner', {
-      sessionId: session.id,
-      claimed: claimedUserId,
-      session: session.owner_user_id,
-    });
-  }
+  const trustedUserId = resolveTrustedActor('escalate', session, claimedUserId, inDb);
 
   const reason = readString(content, 'escalation_reason') ?? null;
   const urgency = coerceUrgency(content.urgency_level);
@@ -230,20 +282,16 @@ registerDeliveryAction('escalate', handleEscalate);
  * owner, kind is coerced to a closed enum, and the suggested-target is stored
  * verbatim for operator dashboards but NEVER resolved/authz-checked/routed.
  */
-async function handleRoutingFeedback(content: Record<string, unknown>, session: Session): Promise<void> {
-  // Trust the host-established session owner over any agent-claimed userId —
-  // same rule as escalate / classify_intent. routing_feedback is a decision
-  // WITHIN the worker's own session (a system action on its own outbound.db),
-  // not a cross-session a2a hop, so origin cross-validation does not apply.
+async function handleRoutingFeedback(
+  content: Record<string, unknown>,
+  session: Session,
+  inDb: Database.Database,
+): Promise<void> {
+  // Host-anchored actor: session owner when set, else accept the agent-claimed
+  // userId only if that user genuinely appeared in this session. See
+  // resolveTrustedActor.
   const claimedUserId = readString(content, 'userId') ?? null;
-  const trustedUserId = session.owner_user_id ?? claimedUserId ?? null;
-  if (claimedUserId && session.owner_user_id && claimedUserId !== session.owner_user_id) {
-    log.warn('routing_feedback userId mismatch — trusting session owner', {
-      sessionId: session.id,
-      claimed: claimedUserId,
-      session: session.owner_user_id,
-    });
-  }
+  const trustedUserId = resolveTrustedActor('routing_feedback', session, claimedUserId, inDb);
 
   const kind = coerceFeedbackKind(content.feedback_kind);
   const reason = readString(content, 'feedback_reason') ?? null;

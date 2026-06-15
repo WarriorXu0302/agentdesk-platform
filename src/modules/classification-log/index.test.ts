@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { closeDb, initTestDb, runMigrations } from '../../db/index.js';
@@ -5,6 +6,23 @@ import { queryClassificationLog } from '../../db/classification-log.js';
 import { getDb } from '../../db/connection.js';
 import type { DeliveryActionHandler } from '../../delivery.js';
 import type { Session } from '../../types.js';
+
+/**
+ * A minimal host-written inbound.db carrying the given namespaced origins as
+ * chat rows — the "legitimate identity set" the recording handlers cross-
+ * validate a container-claimed actor against on an owner-less session.
+ */
+function fakeInboundDb(origins: string[]): Database.Database {
+  const db = new Database(':memory:');
+  db.exec(
+    'CREATE TABLE messages_in (seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, origin_user_id TEXT, content TEXT, channel_type TEXT)',
+  );
+  const ins = db.prepare(
+    "INSERT INTO messages_in (kind, origin_user_id, content, channel_type) VALUES ('chat', ?, '{}', 'feishu')",
+  );
+  for (const o of origins) ins.run(o);
+  return db;
+}
 
 const captured: Map<string, DeliveryActionHandler> = new Map();
 
@@ -47,6 +65,9 @@ describe('classify_intent delivery action', () => {
     const handler = captured.get('classify_intent');
     expect(handler).toBeDefined();
 
+    // Owner-less (shared) session: the claimed actor is honored because alice
+    // genuinely appeared in this session's host-written inbound.db.
+    const inDb = fakeInboundDb(['feishu:ou_alice']);
     await handler!(
       {
         action: 'classify_intent',
@@ -59,8 +80,9 @@ describe('classify_intent delivery action', () => {
         action_taken: 'delegate',
       },
       session(),
-      {} as never,
+      inDb,
     );
+    inDb.close();
 
     const rows = queryClassificationLog();
     expect(rows).toHaveLength(1);
@@ -72,6 +94,51 @@ describe('classify_intent delivery action', () => {
       session_id: 'sess-1',
       agent_group_id: 'ag-frontdesk',
     });
+  });
+
+  it('owner-less session: DROPS a forged actor that never appeared in the session (+ counts the rejection)', async () => {
+    const { classificationActorRejectedTotal } = await import('../../metrics.js');
+    const sum = async () => (await classificationActorRejectedTotal.get()).values.reduce((s, v) => s + v.value, 0);
+    const before = await sum();
+
+    const handler = captured.get('classify_intent')!;
+    // Only alice is a legitimate origin; the container claims an arbitrary victim.
+    const inDb = fakeInboundDb(['feishu:ou_alice']);
+    await handler(
+      {
+        action: 'classify_intent',
+        userMessage: 'x',
+        confidence: 0.5,
+        action_taken: 'delegate',
+        userId: 'feishu:ou_victim',
+      },
+      session(),
+      inDb,
+    );
+    inDb.close();
+
+    // Forged attribution is dropped to null (not persisted as the victim).
+    expect(queryClassificationLog()[0]!.user_id).toBeNull();
+    expect(await sum()).toBeGreaterThan(before);
+  });
+
+  it('owner-less session: KEEPS a claimed actor that genuinely appeared in the session', async () => {
+    const handler = captured.get('classify_intent')!;
+    const inDb = fakeInboundDb(['feishu:ou_alice', 'feishu:ou_bob']);
+    await handler(
+      {
+        action: 'classify_intent',
+        userMessage: 'x',
+        confidence: 0.5,
+        action_taken: 'delegate',
+        userId: 'feishu:ou_bob',
+      },
+      session(),
+      inDb,
+    );
+    inDb.close();
+    // Correct attribution to a real session participant is preserved.
+    expect(queryClassificationLog()[0]!.user_id).toBe('feishu:ou_bob');
   });
 
   it('defaults to action=delegate when the payload omits a recognized action_taken', async () => {
@@ -210,6 +277,21 @@ describe('escalate delivery action (ADR-0038)', () => {
       {} as never,
     );
     expect(await sum()).toBeGreaterThan(before);
+  });
+
+  it('owner-less session: a forged actor lands as NULL in the agent_escalation audit (not the victim)', async () => {
+    const handler = captured.get('escalate')!;
+    const inDb = fakeInboundDb(['feishu:ou_alice']); // victim never appeared
+    await handler(
+      { action: 'escalate', escalation_reason: 'frame the victim', urgency_level: 'high', userId: 'feishu:ou_victim' },
+      session(),
+      inDb,
+    );
+    inDb.close();
+    const audit = auditRows();
+    expect(audit).toHaveLength(1);
+    expect(audit[0].actor).toBeNull(); // forged attribution dropped, not stamped as the victim
+    expect(queryClassificationLog()[0]!.user_id).toBeNull();
   });
 });
 

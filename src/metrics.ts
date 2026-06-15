@@ -317,6 +317,18 @@ export const a2aOriginRejectedTotal = new client.Counter({
   registers: [registry],
 });
 
+export const classificationActorRejectedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_classification_actor_rejected_total`,
+  help: 'Recording-surface (classify_intent/escalate/routing_feedback) rows whose container-claimed actor userId failed host-side cross-validation on an owner-less session',
+  // Non-zero means a prompt-injected frontdesk/worker tried to stamp an
+  // arbitrary actor into the audit/classification corpus on a shared /
+  // per-thread / agent-shared session (owner_user_id NULL). Recording-only, so
+  // no privilege/routing impact — but it falsifies audit ground truth. See
+  // ADR-0017 (identity trust chain) + ADR-0045-class as-merged audit.
+  labelNames: ['action'] as const,
+  registers: [registry],
+});
+
 export const engagePatternInvalidTotal = new client.Counter({
   name: `${METRIC_PREFIX}_engage_pattern_invalid_total`,
   help: 'Inbound messages skipped because an agent engage_pattern failed to compile',
