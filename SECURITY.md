@@ -93,7 +93,10 @@ landed in ≥0.217). The suppression has been removed from
 `package.json` → `pnpm.auditConfig.ignoreGhsas`.
 
 Reachable advisories are remediated via `pnpm.overrides` (currently
-`axios`, `ws`, `qs`, `protobufjs` pinned to patched in-major versions).
+`axios`, `ws`, `qs`, `protobufjs`, `form-data` pinned to patched in-major
+versions). `form-data` is pinned to `^4.0.6` to clear `GHSA-hmw2-7cc7-3qxx`
+(CRLF injection via unescaped multipart field/filenames) on the
+`@larksuiteoapi/node-sdk → axios → form-data` path — a same-major patch bump.
 
 ### Known-deferred (container)
 
