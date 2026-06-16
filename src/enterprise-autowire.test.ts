@@ -1,0 +1,140 @@
+import fs from 'fs';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// NOTE: vi.mock is hoisted above imports + consts, so the factory must use a
+// LITERAL path (it cannot reference TEST_DIR). Keep the two in sync.
+vi.mock('./config.js', async () => {
+  const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
+  return { ...actual, GROUPS_DIR: '/tmp/nanoclaw-test-autowire/groups', DATA_DIR: '/tmp/nanoclaw-test-autowire/data' };
+});
+const TEST_DIR = '/tmp/nanoclaw-test-autowire';
+
+import {
+  closeDb,
+  createAgentGroup,
+  createMessagingGroup,
+  getAllAgentGroups,
+  initTestDb,
+  runMigrations,
+} from './db/index.js';
+import { getAgentGroupByFolder } from './db/agent-groups.js';
+import { getMessagingGroupAgentByPair } from './db/messaging-groups.js';
+import { maybeAutowireEnterpriseFrontdesk } from './enterprise-autowire.js';
+import type { InboundEvent } from './channels/adapter.js';
+import type { MessagingGroup } from './types.js';
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+const ENV_KEYS = [
+  'ENTERPRISE_FRONTDESK_FOLDER',
+  'ENTERPRISE_AUTO_WIRE_CHANNELS',
+  'ENTERPRISE_AUTO_WIRE_P2P',
+  'ENTERPRISE_AUTO_WIRE_GROUPS',
+  'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED',
+];
+let savedEnv: Record<string, string | undefined>;
+
+function seedFrontdesk(): void {
+  createAgentGroup({ id: 'ag-fd', name: 'Frontdesk', folder: 'fd', agent_provider: null, created_at: now() });
+  fs.mkdirSync(`${TEST_DIR}/groups/fd`, { recursive: true });
+  fs.writeFileSync(`${TEST_DIR}/groups/fd/container.json`, JSON.stringify({ skills: ['lookup'] }));
+}
+
+/** Create a messaging group + the inbound event the router would hand autowire. */
+function seedChannel(platformId: string, isGroup: boolean): { mg: MessagingGroup; event: InboundEvent } {
+  const mg: MessagingGroup = {
+    id: `mg-${platformId}`,
+    channel_type: 'feishu',
+    platform_id: platformId,
+    name: isGroup ? 'Sales Chat' : null,
+    is_group: isGroup ? 1 : 0,
+    unknown_sender_policy: 'public',
+    created_at: now(),
+  } as MessagingGroup;
+  createMessagingGroup(mg);
+  const event = {
+    channelType: 'feishu',
+    platformId,
+    message: isGroup ? { isGroup: true, isMention: true, content: '{}' } : { isGroup: false, content: '{}' },
+  } as unknown as InboundEvent;
+  return { mg, event };
+}
+
+beforeEach(() => {
+  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  fs.mkdirSync(`${TEST_DIR}/groups`, { recursive: true });
+  runMigrations(initTestDb());
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  process.env.ENTERPRISE_FRONTDESK_FOLDER = 'fd';
+  process.env.ENTERPRISE_AUTO_WIRE_CHANNELS = 'feishu';
+  process.env.ENTERPRISE_AUTO_WIRE_GROUPS = 'true';
+  delete process.env.ENTERPRISE_AUTO_WIRE_P2P;
+  delete process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED;
+});
+
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+  closeDb();
+  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+});
+
+describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
+  it('ISOLATED on: a new group gets its OWN cloned agent, NOT the shared frontdesk', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+
+    const perGroup = getAgentGroupByFolder('fd-g-oc-sales');
+    expect(perGroup).toBeDefined();
+    expect(perGroup!.id).toBe('ag-fd-g-oc-sales');
+    expect(getMessagingGroupAgentByPair(mg.id, perGroup!.id)).toBeDefined();
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeUndefined(); // NOT the shared frontdesk
+    expect(fs.existsSync(`${TEST_DIR}/groups/fd-g-oc-sales/container.json`)).toBe(true); // cloned config
+  });
+
+  it('is idempotent: re-firing reuses the per-group agent (no duplicate)', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    const before = getAllAgentGroups().length;
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getAllAgentGroups().length).toBe(before); // no new agent group on re-fire
+  });
+
+  it('two different groups get two different agents', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    const a = seedChannel('oc_sales', true);
+    const b = seedChannel('oc_eng', true);
+    maybeAutowireEnterpriseFrontdesk(a.mg, a.event);
+    maybeAutowireEnterpriseFrontdesk(b.mg, b.event);
+    expect(getAgentGroupByFolder('fd-g-oc-sales')!.id).not.toBe(getAgentGroupByFolder('fd-g-oc-eng')!.id);
+  });
+
+  it('ISOLATED off (default): a group still wires to the shared frontdesk', () => {
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined();
+    expect(getAgentGroupByFolder('fd-g-oc-sales')).toBeUndefined();
+  });
+
+  it('ISOLATED on but a DM (p2p) stays on the shared frontdesk', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    process.env.ENTERPRISE_AUTO_WIRE_P2P = 'true';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('p2p_alice', false);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined(); // shared frontdesk, not isolated
+    expect(getAgentGroupByFolder('fd-g-p2p-alice')).toBeUndefined();
+  });
+});

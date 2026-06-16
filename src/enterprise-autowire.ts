@@ -1,7 +1,10 @@
+import fs from 'fs';
+import path from 'path';
+
 import { resolveFrontdeskFolderFromGroups } from './branding.js';
 import type { InboundEvent } from './channels/adapter.js';
 import { GROUPS_DIR } from './config.js';
-import { getAgentGroupByFolder } from './db/agent-groups.js';
+import { createAgentGroup, getAgentGroupByFolder } from './db/agent-groups.js';
 import { recordEnterpriseAudit } from './db/enterprise-audit.js';
 import {
   createMessagingGroupAgent,
@@ -9,8 +12,9 @@ import {
   updateMessagingGroup,
 } from './db/messaging-groups.js';
 import { readEnvFile } from './env.js';
+import { initGroupFilesystem } from './group-init.js';
 import { log } from './log.js';
-import type { MessagingGroup, MessagingGroupAgent } from './types.js';
+import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 
 const ENTERPRISE_ENV_KEYS = [
   'ENTERPRISE_FRONTDESK_FOLDER',
@@ -18,6 +22,7 @@ const ENTERPRISE_ENV_KEYS = [
   'ENTERPRISE_AUTO_WIRE_P2P',
   'ENTERPRISE_AUTO_WIRE_GROUPS',
   'ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE',
+  'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED',
   'ENTERPRISE_AUTO_WIRE_ALLOW_POLICY_DOWNGRADE',
 ] as const;
 
@@ -30,6 +35,10 @@ interface EnterpriseAutowireConfig {
     MessagingGroupAgent['session_mode'],
     'shared' | 'per-thread' | 'per-user' | 'per-user-per-thread'
   >;
+  // When true, each NEW group gets its OWN agent group (cloned from the frontdesk)
+  // instead of all groups sharing the frontdesk — isolated workspace + memory per
+  // group. DMs (p2p) still go to the shared frontdesk. (ADR-0053)
+  groupIsolated: boolean;
   allowPolicyDowngrade: boolean;
 }
 
@@ -80,6 +89,7 @@ function readConfig(): EnterpriseAutowireConfig {
     autoWireP2p: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_P2P'), false),
     autoWireGroups: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUPS'), false),
     groupSessionMode: parseGroupSessionMode(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE')),
+    groupIsolated: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED'), false),
     // Default true to preserve legacy behavior for existing deployments.
     // Operators who want strict-by-default can set this to false; autowire
     // will then refuse to flip unknown_sender_policy and will skip wiring
@@ -116,6 +126,72 @@ function buildAutoWiring(
   };
 }
 
+function slugifyPlatformId(platformId: string): string {
+  return (
+    platformId
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'group'
+  );
+}
+
+/**
+ * ISOLATED mode (ADR-0053): resolve — or, on first contact, create — the
+ * per-group agent for this messaging group. It's a clone of the frontdesk that
+ * gets its OWN workspace + memory (CLAUDE.local.md / conversations/) so groups
+ * don't share recall. Only `container.json` is cloned: CLAUDE.md is composed
+ * fresh per spawn and skills symlink at spawn from container.json, so nothing
+ * else needs copying. Idempotent — keyed on a deterministic folder derived from
+ * the messaging group's platform_id; a concurrent first-message that loses the
+ * create re-fetches the winner. Inherits the frontdesk's organization (ADR-0052).
+ */
+function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup): AgentGroup {
+  const folder = `${frontdesk.folder}-g-${slugifyPlatformId(mg.platform_id)}`;
+  const existing = getAgentGroupByFolder(folder);
+  if (existing) return existing;
+
+  const group: AgentGroup = {
+    id: `ag-${folder}`,
+    name: mg.name?.trim() || `Group ${mg.platform_id}`,
+    folder,
+    agent_provider: frontdesk.agent_provider,
+    created_at: new Date().toISOString(),
+    organization_id: frontdesk.organization_id ?? null,
+  };
+  try {
+    createAgentGroup(group);
+  } catch (err) {
+    // Concurrent first-message race: another inbound created the same folder/id.
+    const raced = getAgentGroupByFolder(folder);
+    if (raced) return raced;
+    throw err;
+  }
+  initGroupFilesystem(group);
+  // Clone the frontdesk's container.json (skills / MCP / gateway / resources) so
+  // the isolated agent behaves like the frontdesk; memory stays fresh + per-group.
+  try {
+    const src = path.join(GROUPS_DIR, frontdesk.folder, 'container.json');
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(GROUPS_DIR, folder, 'container.json'));
+    }
+  } catch (err) {
+    log.warn('Per-group agent: container.json clone failed — using defaults', { folder, err });
+  }
+  recordEnterpriseAudit({
+    eventType: 'autowire_group_agent_provisioned',
+    messagingGroupId: mg.id,
+    agentGroupId: group.id,
+    details: { folder, clonedFrom: frontdesk.folder, organizationId: group.organization_id },
+  });
+  log.info('Per-group isolated agent provisioned (ADR-0053)', {
+    folder,
+    id: group.id,
+    clonedFrom: frontdesk.folder,
+    messagingGroupId: mg.id,
+  });
+  return group;
+}
+
 export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: InboundEvent): boolean {
   const config = readConfig();
   if (!shouldAutowire(config, event)) return false;
@@ -139,37 +215,44 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
     return false;
   }
 
-  if (getMessagingGroupAgentByPair(mg.id, frontdesk.id)) {
+  const isGroup = event.message.isGroup === true;
+  const previousPolicy = mg.unknown_sender_policy;
+
+  // Decide the policy gate BEFORE provisioning a per-group agent, so a refused
+  // wiring never leaves an orphan agent group behind.
+  if (previousPolicy !== 'public' && !config.allowPolicyDowngrade) {
+    log.warn('Enterprise autowire skipped: policy downgrade disabled and sender policy is not public', {
+      messagingGroupId: mg.id,
+      channelType: event.channelType,
+      platformId: event.platformId,
+      unknownSenderPolicy: previousPolicy,
+    });
+    recordEnterpriseAudit({
+      eventType: 'autowire_policy_downgrade_skipped',
+      messagingGroupId: mg.id,
+      agentGroupId: frontdesk.id,
+      details: { channelType: event.channelType, platformId: event.platformId, previousPolicy },
+    });
+    return false;
+  }
+
+  // ISOLATED mode (ADR-0053): each NEW group gets its own cloned agent; DMs (p2p)
+  // stay on the shared frontdesk. Resolve-or-create is idempotent, so an already
+  // existing per-group agent is reused (no orphan on the already-wired path below).
+  const isolated = config.groupIsolated && isGroup;
+  const target = isolated ? resolveOrCreatePerGroupAgent(frontdesk, mg) : frontdesk;
+
+  if (getMessagingGroupAgentByPair(mg.id, target.id)) {
     return true;
   }
 
-  const previousPolicy = mg.unknown_sender_policy;
   if (previousPolicy !== 'public') {
-    if (!config.allowPolicyDowngrade) {
-      log.warn('Enterprise autowire skipped: policy downgrade disabled and sender policy is not public', {
-        messagingGroupId: mg.id,
-        channelType: event.channelType,
-        platformId: event.platformId,
-        unknownSenderPolicy: previousPolicy,
-      });
-      recordEnterpriseAudit({
-        eventType: 'autowire_policy_downgrade_skipped',
-        messagingGroupId: mg.id,
-        agentGroupId: frontdesk.id,
-        details: {
-          channelType: event.channelType,
-          platformId: event.platformId,
-          previousPolicy,
-        },
-      });
-      return false;
-    }
     updateMessagingGroup(mg.id, { unknown_sender_policy: 'public' });
     mg.unknown_sender_policy = 'public';
     recordEnterpriseAudit({
       eventType: 'autowire_policy_downgrade',
       messagingGroupId: mg.id,
-      agentGroupId: frontdesk.id,
+      agentGroupId: target.id,
       details: {
         channelType: event.channelType,
         platformId: event.platformId,
@@ -179,27 +262,29 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
     });
   }
 
-  const wiring = buildAutoWiring(config, mg.id, frontdesk.id, event.message.isGroup === true);
+  const wiring = buildAutoWiring(config, mg.id, target.id, isGroup);
   createMessagingGroupAgent(wiring);
   recordEnterpriseAudit({
     eventType: 'autowire_frontdesk',
     messagingGroupId: mg.id,
-    agentGroupId: frontdesk.id,
+    agentGroupId: target.id,
     details: {
       channelType: event.channelType,
       platformId: event.platformId,
-      isGroup: event.message.isGroup === true,
+      isGroup,
+      isolated,
       sessionMode: wiring.session_mode,
       engageMode: wiring.engage_mode,
     },
   });
   log.info('Enterprise frontdesk auto-wired', {
     messagingGroupId: mg.id,
-    agentGroupId: frontdesk.id,
-    folder: config.frontdeskFolder,
+    agentGroupId: target.id,
+    folder: target.folder,
+    isolated,
     channelType: event.channelType,
     platformId: event.platformId,
-    isGroup: event.message.isGroup === true,
+    isGroup,
     sessionMode: wiring.session_mode,
     engageMode: wiring.engage_mode,
   });

@@ -313,6 +313,16 @@ If you later enable `ENTERPRISE_AUTO_WIRE_GROUPS=true`, group mentions will
 wire with `mention-sticky` and `session_mode=per-user` so users keep
 isolated context inside the shared chat surface.
 
+**Per-group isolated agents (ADR-0053).** By default every auto-wired group
+shares the one frontdesk agent group — and so shares its workspace + memory
+(`conversations/`). Set `ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED=true` and each new
+group instead gets its **own** agent group, auto-cloned from the frontdesk
+(own workspace + memory; groups don't share recall), with no manual setup. DMs
+(p2p) still go to the shared frontdesk. It costs no extra containers (container
+count tracks active sessions, not agent-group count — same either way), only a
+small per-group workspace dir; the cloned `container.json` may drift from the
+frontdesk over time, which is intended for independent per-group agents.
+
 ## Generic backend pattern
 
 To keep this portable across different backend vendors, use the built-in
