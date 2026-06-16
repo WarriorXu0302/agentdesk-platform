@@ -35,6 +35,7 @@ pnpm exec tsx scripts/configure-enterprise-gateway.ts \
 | [`reference-gateway/`](reference-gateway/) | A **runnable backend gateway** — a zero-dependency Node server that answers all six contract endpoints with conformance-passing shapes. Start it, point a group at it, and the gateway tools work end to end. The executable companion to `docs/enterprise-erp-gateway.md`. |
 | [`lab-frontdesk/`](lab-frontdesk/) | A self-contained frontdesk that talks to a backend gateway directly (no worker pool). Originally a lab-automation assistant; a good template for a single-desk deployment with a rich domain prompt. |
 | [`echo-channel/`](echo-channel/) | A **fork-free channel extension** (ADR-0031): a minimal in-memory channel adapter you drop into `EXTENSIONS_DIR` to add a channel without forking the repo. See also `docs/channels/writing-a-channel.md`. |
+| [`multi-tenant/`](multi-tenant/) | **Org isolation walk-through** (ADR-0052): a runnable, self-checking demo (`tsx examples/multi-tenant/demo.ts`, in-memory DB) that sets up two tenants and asserts a user in org A can't reach org B. The readable companion to the `scripts/org.ts` operator CLI. |
 
 ## Worked walk-through: a frontdesk → worker topology on the reference gateway
 
