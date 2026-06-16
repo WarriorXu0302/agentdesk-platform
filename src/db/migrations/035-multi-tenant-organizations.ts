@@ -86,11 +86,13 @@ export const migration035: Migration = {
          UNION SELECT 'org-default', user_id, NULL, ? FROM user_roles`,
     ).run(iso, iso);
 
-    // Group-scoped role rows inherit their group's org; GLOBAL rows stay org NULL.
-    db.exec(`
-      UPDATE user_roles
-         SET organization_id = (SELECT ag.organization_id FROM agent_groups ag WHERE ag.id = user_roles.agent_group_id)
-       WHERE agent_group_id IS NOT NULL AND organization_id IS NULL;
-    `);
+    // NOTE: user_roles rows are NOT org-stamped here. Every row keeps exactly one
+    // scope axis (the single-scope-axis invariant, types.ts): a group-scoped row's
+    // org is derived by JOIN through its immutable agent_group_id (orgOfAgentGroup),
+    // never copied onto the row. Stamping org onto group rows would give them BOTH
+    // axes and silently break revokeRole's group-scope DELETE predicate
+    // (`agent_group_id = ? AND organization_id IS NULL`) → un-revocable grants.
+    // TODO(SQLite can't ALTER ADD CHECK): a real CHECK(at most one axis) would need
+    // a table rebuild; the 035 test asserts the invariant holds post-migration.
   },
 };

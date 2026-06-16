@@ -139,20 +139,23 @@ describe('hasAdminPrivilege is org-aware (approval-card authority)', () => {
 });
 
 describe('assignAgentGroupToOrg auto-enrolls existing principals (Stage C, no lockout)', () => {
-  it('enrolls current members + scoped admins so they keep access after assignment', () => {
+  it('enrolls current members + scoped admins + GLOBAL principals so they keep access (no lockout)', () => {
     createUser({ id: 'm', kind: 'tg', display_name: null, created_at: now() });
     createUser({ id: 'a', kind: 'tg', display_name: null, created_at: now() });
+    createUser({ id: 'go', kind: 'tg', display_name: null, created_at: now() });
     addMember({ user_id: 'm', agent_group_id: 'gLegacy', added_by: null, added_at: now() });
     grantRole({ userId: 'a', role: 'admin', scope: { kind: 'group', agentGroupId: 'gLegacy' }, grantedBy: null });
+    grantRole({ userId: 'go', role: 'owner', scope: { kind: 'global' }, grantedBy: null }); // global, agent_group_id NULL
     // Before assignment gLegacy is null-org → both already have access.
     expect(canAccessAgentGroup('m', 'gLegacy').allowed).toBe(true);
 
     const enrolled = assignAgentGroupToOrg('gLegacy', 'org-x', null);
-    expect(enrolled).toBe(2); // m + a
+    expect(enrolled).toBe(3); // m + a + the global owner (DEFECT-2 fix: mirrors migration 035)
 
-    // Now org-scoped, but the auto-enroll keeps both reachable (no lockout).
+    // Now org-scoped, but the auto-enroll keeps everyone reachable (no lockout).
     expect(isMemberOfOrg('m', 'org-x')).toBe(true);
     expect(isMemberOfOrg('a', 'org-x')).toBe(true);
+    expect(isMemberOfOrg('go', 'org-x')).toBe(true); // global owner enrolled too (DEFECT-2)
     expect(canAccessAgentGroup('m', 'gLegacy').allowed).toBe(true);
     // An outsider is now cross_org_denied on the freshly-orged group.
     createUser({ id: 'outsider', kind: 'tg', display_name: null, created_at: now() });

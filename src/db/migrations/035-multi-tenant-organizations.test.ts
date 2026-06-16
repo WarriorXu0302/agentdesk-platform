@@ -56,13 +56,32 @@ describe('migration 035 backfill (ADR-0052)', () => {
       .sort();
     expect(members).toEqual(['u-member', 'u-owner', 'u-sadmin']);
 
-    // group-scoped role inherits its group's org; the GLOBAL owner stays org-NULL
+    // SINGLE-SCOPE-AXIS INVARIANT: NO user_roles row is org-stamped by the migration.
+    // A group-scoped row keeps org NULL (its org is derived by JOIN, never copied),
+    // else revokeRole's group predicate (`agent_group_id=? AND organization_id IS NULL`)
+    // would silently miss it → un-revocable grant. (This test previously asserted the
+    // bug — expecting 'org-default' — which the red-team flagged.)
     expect(db.prepare("SELECT organization_id FROM user_roles WHERE user_id='u-sadmin'").get()).toEqual({
-      organization_id: 'org-default',
+      organization_id: null,
     });
     expect(db.prepare("SELECT organization_id FROM user_roles WHERE user_id='u-owner'").get()).toEqual({
       organization_id: null,
     });
+    // No row may carry BOTH scope axes.
+    expect(
+      db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM user_roles WHERE agent_group_id IS NOT NULL AND organization_id IS NOT NULL',
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+
+    // Exploit closed: the group-scope revoke predicate (revokeRole, kind:'group')
+    // still matches the migrated pre-existing group admin row → it can be revoked.
+    const del = db
+      .prepare('DELETE FROM user_roles WHERE user_id=? AND role=? AND agent_group_id=? AND organization_id IS NULL')
+      .run('u-sadmin', 'admin', 'ag-1');
+    expect(del.changes).toBe(1);
   });
 
   it('is idempotent and a no-op on an empty deployment (no default org materialized)', () => {

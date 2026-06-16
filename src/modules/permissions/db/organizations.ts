@@ -69,9 +69,11 @@ export function removeOrgMember(organizationId: string, userId: string, removedB
 /**
  * Assign an EXISTING agent group to an organization (ADR-0052 Stage C). To avoid
  * locking out the group's current principals once the org prerequisite is live,
- * this also enrolls every current group member + group-scoped admin into the org
- * (mirrors the migration-035 backfill). Idempotent + audited. Returns the number
- * of principals freshly enrolled.
+ * this enrolls the SAME set migration 035 backfills — current group members,
+ * group-scoped role holders, AND true-global role holders (owner / global-admin /
+ * global operability). Symmetric enrollment keeps orgsForUser consistent for the
+ * createNewAgentGroup org-inheritance heuristic. Idempotent + audited. Returns the
+ * number of principals freshly enrolled.
  */
 export function assignAgentGroupToOrg(
   agentGroupId: string,
@@ -89,6 +91,15 @@ export function assignAgentGroupToOrg(
   for (const r of db.prepare('SELECT user_id FROM user_roles WHERE agent_group_id = ?').all(agentGroupId) as Array<{
     user_id: string;
   }>) {
+    principals.add(r.user_id);
+  }
+  // Global role holders (owner / global-admin / global operability) too, mirroring
+  // migration 035's backfill so enrollment is symmetric (and orgsForUser stays
+  // consistent for the createNewAgentGroup org-inheritance heuristic). Scoped to
+  // TRUE global rows only — never another org's org-scoped grants.
+  for (const r of db
+    .prepare('SELECT DISTINCT user_id FROM user_roles WHERE agent_group_id IS NULL AND organization_id IS NULL')
+    .all() as Array<{ user_id: string }>) {
     principals.add(r.user_id);
   }
   let enrolled = 0;
