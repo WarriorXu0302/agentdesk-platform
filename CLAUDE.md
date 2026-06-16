@@ -98,6 +98,14 @@ context in **≤3 hops**.
   complete and load-bearing. Do not weaken any of these layers.
 - **Backend gateway is the only path** for business memory and authorization.
   Do not introduce parallel paths.
+- **Multi-tenant org isolation** (ADR-0052) — when an `agent_group` belongs to an
+  organization, cross-org access is denied at the HOST access gate
+  (`canAccessAgentGroup` + its `hasAdminPrivilege` / `canOperate` / operator-query
+  cousins). org must NEVER become a backend-gateway business-authz input — it stays
+  host-side (enforced by `operability-gateway-isolation.test.ts`). Each `user_roles`
+  row carries exactly one scope axis (global / group / org); a `global` revoke must
+  keep `… AND organization_id IS NULL`. NULL-org = legacy (no prerequisite). Do not
+  weaken cross-org denial or fold org into the gateway path.
 - **Three-DB single-writer invariant** — central DB and each session's
   inbound.db are host-written; outbound.db is container-written. The
   "open-write-close" pattern is required for cross-mount reliability, not an

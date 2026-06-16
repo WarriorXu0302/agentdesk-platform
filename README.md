@@ -68,6 +68,13 @@
 - fail-closed 安全默认:历史上三处 fail-open 的安全默认值统一收紧为 fail-closed(ADR-0019)
 - 名册定向私聊(roster DM):宿主强制的、本人显式同意的 per-scope 私聊授权,出站走槽位间接寻址闸,不放宽群聊写权限(ADR-0023)
 
+**治理与多租户(RBAC + org 隔离)**
+
+- 用户级 RBAC:`owner` / `admin`(全局或按 agent-group 限定)/ `org-admin`(按组织)/ `operator` / `viewer`(只读运维)——访问闸在路由前按角色门控,授予/撤销入 `enterprise_audit`(ADR-0051)
+- 真·多租户 org 隔离:agent group 归属某 organization,org X 的用户够不到 org Y 的组 / 会话 / 分诊数据;a2a 委派与渠道接线限定单 org;`owner` / `global_admin` 在租户边界之上;org 全程是 HOST 侧访问门控、绝不进网关业务授权;无 org 部署逐字兼容(NULL-org = 原 RBAC,ADR-0052)
+- 只读运营分诊面:按 agent-group / owner / 渠道 / 状态 / org 过滤会话队列 + 追一个请求的跨会话 fan-out;CLI `scripts/trace.ts`(`--as` 可选 in-band 角色门控,ADR-0049 / ADR-0051)
+- 运营 org 管理 CLI `scripts/org.ts`(建租户 / 分配组 / 授 org-admin / 成员,分配时自动 enroll 现有成员防锁死);可跑的隔离演示见 [`examples/multi-tenant/`](examples/multi-tenant/)
+
 **后端网关契约(可验证)**
 
 - `gateway_describe` / `gateway_authorize` / `gateway_execute`
@@ -198,9 +205,14 @@ pnpm build && pnpm start
 ```bash
 pnpm typecheck
 pnpm test
+pnpm run audit                                          # 供应链门:prod 依赖树 high+ advisory
 pnpm container:build
 pnpm init:enterprise
 pnpm configure:enterprise-gateway --base-url <gateway>
+
+# 治理 / 多租户运维(ADR-0049 / 0051 / 0052)
+pnpm exec tsx scripts/org.ts list                       # org 管理:create / assign / grant-admin / add-member
+pnpm exec tsx scripts/trace.ts --user <id>              # 只读会话分诊(--as <userId> 走 in-band 角色门控)
 ```
 
 ## 后端网关约定
@@ -216,8 +228,9 @@ pnpm configure:enterprise-gateway --base-url <gateway>
 
 - [docs/PLATFORM.md](docs/PLATFORM.md) — 平台总览 + 文档地图(新人优先)
 - [docs/architecture.md](docs/architecture.md) — message flow + identity model
-- [docs/isolation-model.md](docs/isolation-model.md) — session 隔离模式
-- [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md) — 多人共享 frontdesk 拓扑
+- [docs/isolation-model.md](docs/isolation-model.md) — session 隔离模式 + org 多租户隔离层(ADR-0052)
+- [docs/enterprise-multi-user.md](docs/enterprise-multi-user.md) — 多人共享 frontdesk 拓扑 + RBAC / org 治理与撤销时效
+- [examples/multi-tenant/](examples/multi-tenant/) — 可跑的多租户 org 隔离演示 + `scripts/org.ts` 配置菜谱
 - [docs/enterprise-erp-gateway.md](docs/enterprise-erp-gateway.md) — 后端网关协议
 - [docs/gateway-kickstart.md](docs/gateway-kickstart.md) — 从可运行参考接到你自己后端的上手指南(身份映射 / 权限拒绝 / 幂等重放 / 审计 / HMAC / 错误码菜谱 + Express 移植)
 - [docs/ENV-QUICK-START.md](docs/ENV-QUICK-START.md) — 环境变量按场景导航(最小 CLI / 生产 Feishu+网关 / 可选 tracing),先看哪些真的必填

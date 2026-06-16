@@ -81,30 +81,65 @@ CREATE TABLE users (
 );
 ```
 
-- **Writers/readers:** `src/db/users.ts`; channel auth flows
+- **Writers/readers:** `src/modules/permissions/db/users.ts`; channel auth flows
 
 ### 1.5 `user_roles`
 
-Permissions. **Privilege is user-level, never agent-group-level.**
+Permissions. **Privilege is user-level.** Roles: `owner`, `admin` (ADR-0051 added
+`operator` / `viewer` read-only operability; ADR-0052 added `org-admin` + the org scope).
 
 ```sql
 CREATE TABLE user_roles (
-  user_id        TEXT NOT NULL REFERENCES users(id),
-  role           TEXT NOT NULL,
-  agent_group_id TEXT REFERENCES agent_groups(id),
-  granted_by     TEXT REFERENCES users(id),
-  granted_at     TEXT NOT NULL,
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  role            TEXT NOT NULL,   -- owner | admin | org-admin | operator | viewer
+  agent_group_id  TEXT REFERENCES agent_groups(id),
+  organization_id TEXT REFERENCES organizations(id),   -- ADR-0052
+  granted_by      TEXT REFERENCES users(id),
+  granted_at      TEXT NOT NULL,
   PRIMARY KEY (user_id, role, agent_group_id)
 );
 CREATE INDEX idx_user_roles_scope ON user_roles(agent_group_id, role);
+CREATE INDEX idx_user_roles_org ON user_roles(organization_id);
+CREATE UNIQUE INDEX idx_user_roles_org_grant
+  ON user_roles(user_id, role, organization_id)
+  WHERE agent_group_id IS NULL AND organization_id IS NOT NULL;
 ```
 
 Invariants:
-- `role = 'owner'` → must be global (`agent_group_id IS NULL`). Enforced in `grantRole()`.
-- `role = 'admin'` → global (NULL) or scoped to one agent group.
+- **Exactly one scope axis per row** (enforced in `grantRole()`): global (both NULL) |
+  group (`agent_group_id` set) | org (`organization_id` set).
+- `role = 'owner'` → global only. `org-admin` → org-scoped. `admin` → global or group.
+- A `global` revoke matches `agent_group_id IS NULL AND organization_id IS NULL`, so it
+  can't collaterally strip an org-scoped grant (ADR-0052 red-team DEFECT 1).
 - Admin @ A implies membership in A — no `agent_group_members` row required.
+- `operator` / `viewer` are read-only operability (ADR-0049 surface); they do NOT confer
+  `hasAdminPrivilege` and are NOT routable members.
 
-Access layer: `src/db/user-roles.ts`, `src/access.ts`.
+Access layer: `src/modules/permissions/db/user-roles.ts`, `src/modules/permissions/access.ts`,
+`src/modules/permissions/operability.ts`.
+
+### 1.5a `organizations` + `organization_members` (ADR-0052)
+
+The multi-tenant tenant boundary. An `agent_group` belongs to at most one org
+(`agent_groups.organization_id`, nullable — NULL = legacy / un-orged). Membership is
+**reachability, not privilege**. Enforced host-side at the access gate
+(`canAccessAgentGroup`); never a gateway business-authz input.
+
+```sql
+CREATE TABLE organizations (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL, archived_at TEXT
+);
+CREATE TABLE organization_members (
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  added_by        TEXT REFERENCES users(id),
+  added_at        TEXT NOT NULL,
+  PRIMARY KEY (organization_id, user_id)
+);
+```
+
+Access layer: `src/modules/permissions/db/organizations.ts`. Operator CLI: `scripts/org.ts`.
 
 ### 1.6 `agent_group_members`
 
@@ -134,7 +169,7 @@ CREATE TABLE user_dms (
 );
 ```
 
-Populated lazily by `ensureUserDm()` in `src/user-dm.ts`.
+Populated lazily by `ensureUserDm()` in `src/modules/permissions/user-dm.ts`.
 
 ### 1.8 `sessions`
 

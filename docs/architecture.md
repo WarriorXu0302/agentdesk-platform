@@ -34,6 +34,7 @@ writing to the other side's DB.
 **Central DB (host process, `data/v2.db`):**
 - Agent groups, messaging groups, wirings, sessions
 - Users, user_roles, agent_group_members
+- Organizations + organization_members (multi-tenant isolation, ADR-0052)
 - Enterprise audit trail (`gateway_audit`, `enterprise_audit`)
 - Inbound message dedup, progress reactions, schema_version
 - Channel adapters don't touch this directly — the host does the lookup
@@ -416,7 +417,7 @@ Two patterns, both handled at the host level:
 
 In both cases, the approval and action execution happen on the host side, not the agent side.
 
-**Approval routing:** Privilege is a user-level concept. `user_roles` records `owner` (global only — first user to pair becomes owner) and `admin` (global or scoped to a specific `agent_group_id`). When an action requires approval, `pickApprover(agentGroupId)` returns candidates in order: scoped admins for that agent group → global admins → owners (deduplicated). `pickApprovalDelivery` then takes the first candidate reachable via `ensureUserDm` (with a same-channel-kind tie-break so a Discord approval request prefers a Discord-using approver). The approval card lands in the approver's DM messaging group, not the origin chat. Delivery is resolved through the Chat SDK's `openDM` for resolution-required channels (Discord/Slack/…) or the user's handle directly for direct-addressable channels (Telegram/WhatsApp/…), and the mapping is cached in `user_dms` for subsequent requests. See `src/access.ts`, `src/user-dm.ts`.
+**Approval routing:** Privilege is a user-level concept. `user_roles` records `owner` (global only — first user to pair becomes owner), `admin` (global or scoped to a specific `agent_group_id`), `org-admin` (scoped to an `organization_id`, ADR-0052), and the read-only operability roles `operator` / `viewer` (ADR-0051). When an action requires approval, `pickApprover(agentGroupId)` returns candidates in order: scoped admins for that agent group → org-admins of the group's org → global admins → owners (deduplicated). `pickApprovalDelivery` then takes the first candidate reachable via `ensureUserDm` (with a same-channel-kind tie-break so a Discord approval request prefers a Discord-using approver). The approval card lands in the approver's DM messaging group, not the origin chat. Delivery is resolved through the Chat SDK's `openDM` for resolution-required channels (Discord/Slack/…) or the user's handle directly for direct-addressable channels (Telegram/WhatsApp/…), and the mapping is cached in `user_dms` for subsequent requests. See `src/modules/permissions/access.ts`, `src/modules/permissions/user-dm.ts`, `src/modules/approvals/primitive.ts`.
 
 **Editing a sent message:**
 
@@ -800,16 +801,35 @@ CREATE TABLE users (
   created_at   TEXT NOT NULL
 );
 
--- Roles (owner is global only; admin can be global or scoped to an agent_group)
+-- Roles (ADR-0051 added operator/viewer; ADR-0052 added org-admin + the org scope).
+-- EXACTLY ONE scope axis per row (enforced in code): global (both NULL) |
+-- group (agent_group_id set) | org (organization_id set).
 CREATE TABLE user_roles (
   user_id         TEXT NOT NULL REFERENCES users(id),
-  role            TEXT NOT NULL,   -- 'owner' | 'admin'
-  agent_group_id  TEXT REFERENCES agent_groups(id),  -- NULL for global
+  role            TEXT NOT NULL,   -- 'owner' | 'admin' | 'org-admin' | 'operator' | 'viewer'
+  agent_group_id  TEXT REFERENCES agent_groups(id),        -- set ⇒ group-scoped
+  organization_id TEXT REFERENCES organizations(id),       -- set ⇒ org-scoped (ADR-0052)
   granted_by      TEXT,
   granted_at      TEXT NOT NULL,
   PRIMARY KEY (user_id, role, agent_group_id)
 );
--- owner rows must have agent_group_id = NULL (enforced in db/user-roles.ts)
+-- owner is global only; a 'global' revoke matches `... IS NULL AND organization_id IS NULL`
+-- so it can't collaterally strip an org grant (enforced in db/user-roles.ts).
+
+-- Organizations: the multi-tenant isolation boundary (ADR-0052). An agent_group
+-- belongs to at most one org (agent_groups.organization_id, nullable = legacy).
+-- organization_members is REACHABILITY (not privilege); enforced host-side at the
+-- access gate, never a gateway business-authz input.
+CREATE TABLE organizations (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+  archived_at TEXT
+);
+CREATE TABLE organization_members (
+  organization_id TEXT NOT NULL REFERENCES organizations(id),
+  user_id         TEXT NOT NULL REFERENCES users(id),
+  added_by        TEXT REFERENCES users(id), added_at TEXT NOT NULL,
+  PRIMARY KEY (organization_id, user_id)
+);
 
 -- Membership (explicit non-privileged access; admin/owner imply membership)
 CREATE TABLE agent_group_members (

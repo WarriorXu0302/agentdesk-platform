@@ -99,10 +99,12 @@ These rules are enforced by convention in `src/session-manager.ts` and `containe
 | `agent_groups` | central | `src/db/agent-groups.ts` | session resolver, delivery, router |
 | `messaging_groups` | central | `src/db/messaging-groups.ts`, channel setup | router, delivery, session resolver |
 | `messaging_group_agents` | central | `src/db/messaging-groups.ts` | router |
-| `users` | central | `src/db/users.ts`, auth flows | permission checks |
-| `user_roles` | central | `src/db/user-roles.ts` | `src/access.ts`, all permission gates |
-| `agent_group_members` | central | `src/db/agent-group-members.ts` | membership checks |
-| `user_dms` | central | `src/user-dm.ts` (`ensureUserDm`) | approval + pairing delivery |
+| `users` | central | `src/modules/permissions/db/users.ts`, auth flows | permission checks |
+| `user_roles` | central | `src/modules/permissions/db/user-roles.ts` | `src/modules/permissions/access.ts` + `operability.ts`, all permission gates |
+| `organizations` | central | `src/modules/permissions/db/organizations.ts`, `scripts/org.ts` | access gate (ADR-0052 multi-tenant) |
+| `organization_members` | central | `src/modules/permissions/db/organizations.ts` | access gate org prerequisite (reachability, not privilege) |
+| `agent_group_members` | central | `src/modules/permissions/db/agent-group-members.ts` | membership checks |
+| `user_dms` | central | `src/modules/permissions/user-dm.ts` (`ensureUserDm`) | approval + pairing delivery |
 | `sessions` | central | `src/db/sessions.ts`, `src/session-manager.ts` | delivery, sweep, container runner |
 | `pending_questions` | central | `src/db/sessions.ts` (via `ask_user_question`) | container response matcher |
 | `agent_destinations` | central | `src/db/agent-destinations.ts`, migration 004 backfill | `writeDestinations()`, delivery ACL |
