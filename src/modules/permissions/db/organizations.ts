@@ -144,6 +144,16 @@ export function isOrgAdmin(userId: string, organizationId: string): boolean {
   return !!row;
 }
 
+/** Every org-admin of org O (for approver-picking, ADR-0052 FIX-4b). */
+export function getOrgAdmins(organizationId: string): Array<{ user_id: string }> {
+  return getDb()
+    .prepare(
+      `SELECT user_id FROM user_roles
+       WHERE role = 'org-admin' AND organization_id = ? AND agent_group_id IS NULL ORDER BY granted_at`,
+    )
+    .all(organizationId) as Array<{ user_id: string }>;
+}
+
 /** Org-scoped operability (operator|viewer) over org O. */
 export function hasOrgOperabilityRole(userId: string, organizationId: string): boolean {
   const row = getDb()

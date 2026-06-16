@@ -12,6 +12,7 @@ import {
   teardownChannelAdapters,
 } from '../../channels/channel-registry.js';
 import { closeDb, createAgentGroup, initTestDb, runMigrations } from '../../db/index.js';
+import { createOrganization } from '../permissions/db/organizations.js';
 import { createUser } from '../permissions/db/users.js';
 import { grantRole } from '../permissions/db/user-roles.js';
 import { pickApprovalDelivery, pickApprover } from './primitive.js';
@@ -109,6 +110,30 @@ describe('pickApprover', () => {
 
   it('returns empty list when nobody is privileged', () => {
     expect(pickApprover('ag-1')).toEqual([]);
+  });
+
+  it('includes an org-admin of the group’s org (ADR-0052 FIX-4b)', () => {
+    createOrganization({ id: 'org-x', name: 'X', slug: 'x', created_at: now() });
+    createAgentGroup({
+      id: 'ag-org',
+      name: 'AGO',
+      folder: 'ago',
+      agent_provider: null,
+      created_at: now(),
+      organization_id: 'org-x',
+    });
+    seedUser('u-oa', 'telegram');
+    grantRole({
+      userId: 'u-oa',
+      role: 'org-admin',
+      scope: { kind: 'org', organizationId: 'org-x' },
+      grantedBy: null,
+      grantedAt: now(),
+    });
+    // org-admin of org-x is an eligible approver for ag-org (in org-x)…
+    expect(pickApprover('ag-org')).toContain('u-oa');
+    // …but not for a group in no org / another org.
+    expect(pickApprover('ag-1')).not.toContain('u-oa');
   });
 });
 

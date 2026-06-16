@@ -30,6 +30,7 @@ import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { MessagingGroup, Session } from '../../types.js';
+import { getOrgAdmins, orgOfAgentGroup } from '../permissions/db/organizations.js';
 import { getAdminsOfAgentGroup, getGlobalAdmins, getOwners } from '../permissions/db/user-roles.js';
 import { ensureUserDm } from '../permissions/user-dm.js';
 
@@ -117,6 +118,12 @@ export function pickApprover(agentGroupId: string | null): string[] {
 
   if (agentGroupId) {
     for (const r of getAdminsOfAgentGroup(agentGroupId)) add(r.user_id);
+    // FIX-4b (ADR-0052): an org-admin of the group's org is an eligible approver
+    // for that group (correct for sender-approval where the group is real;
+    // harmless for the channel-approval reference-group heuristic — connect-authz
+    // still gates the eventual wiring).
+    const org = orgOfAgentGroup(agentGroupId);
+    if (org) for (const r of getOrgAdmins(org)) add(r.user_id);
   }
   for (const r of getGlobalAdmins()) add(r.user_id);
   for (const r of getOwners()) add(r.user_id);

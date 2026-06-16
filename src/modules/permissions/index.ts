@@ -49,7 +49,7 @@ import {
   updatePendingChannelApprovalCard,
 } from './db/pending-channel-approvals.js';
 import { deletePendingSenderApproval, getPendingSenderApproval } from './db/pending-sender-approvals.js';
-import { addOrgMember, isMemberOfOrg, orgOfAgentGroup } from './db/organizations.js';
+import { addOrgMember, isMemberOfOrg, orgOfAgentGroup, orgsForUser } from './db/organizations.js';
 import { hasAdminPrivilege, isGlobalAdmin, isOwner } from './db/user-roles.js';
 import { getUser, upsertUser } from './db/users.js';
 import { requestSenderApproval } from './sender-approval.js';
@@ -377,7 +377,10 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     const adapter = getDeliveryAdapter();
     if (!adapter) return true;
 
-    const agentGroups = getAllAgentGroups();
+    // FIX-4b (ADR-0052): only offer groups this approver can actually access —
+    // an org-admin never sees another org's groups in the picker. owner/global-admin
+    // bypass (see all). The connect handler re-checks (defense-in-depth).
+    const agentGroups = getAllAgentGroups().filter((g) => canAccessAgentGroup(approverId, g.id).allowed);
     const options = buildAgentSelectionOptions(agentGroups);
     const title = '📋 Choose an agent';
     updatePendingChannelApprovalCard(row.messaging_group_id, title, JSON.stringify(options));
@@ -579,7 +582,11 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
   const row = getPendingChannelApproval(pending.channelMgId);
   if (!row) return true;
 
-  const ag = createNewAgentGroup(text);
+  // FIX-4b (ADR-0052): the new group inherits the approver's org when they have
+  // exactly one (so an org-admin's new group lands in their tenant); a global
+  // admin with no single org → NULL-org (assign later with `org assign`).
+  const approverOrgs = orgsForUser(userId);
+  const ag = createNewAgentGroup(text, approverOrgs.length === 1 ? approverOrgs[0]! : null);
   log.info('Channel registration: new agent group created', {
     messagingGroupId: row.messaging_group_id,
     agentGroupId: ag.id,

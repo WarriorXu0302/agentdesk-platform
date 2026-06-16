@@ -1,6 +1,6 @@
 # ADR-0052: 真·多租户 org 隔离（对标清单 #7 完整版,用户显式选择）
 
-- **Status**: Accepted（**Stage A + B + C 全落地全绿**;2 子决策已确认[① public-within-org ② owner/global_admin 跨 org 旁路];FIX-4b 选项/approver 过滤 + createNewAgentGroup org 继承 = **接受的 UX 残余**,见下)
+- **Status**: Accepted（**Stage A + B + C + FIX-4b 全落地全绿,ADR-0052 完整收尾**;2 子决策已确认[① public-within-org ② owner/global_admin 跨 org 旁路]）
 - **Date**: 2026-06-16
 - **Decider(s)**: 用户(在明确警告后选"要更强的完整多租户隔离");coding agent(design+9 视角对抗评审 workflow wf_ef5a7824 + 执行)
 - **Tags**: `multi-tenant`, `isolation`, `rbac`, `governance`, `identity-trust-chain`, `db`, `migration`, `security`, `fail-closed`
@@ -114,12 +114,11 @@ D2 冗余(创建 chokepoint 错 + gateway_audit org 列削弱不变量 2);D1 无
   专用运营 CLI `scripts/org.ts`(list/create/assign/add-member/remove-member/grant-admin/revoke-admin)+ docs
   setup 路径。**选专用 CLI 而非线程化 init-enterprise-topology**(低风险、单一职责,不动 753 行 bootstrap 脚本)。
 
-**接受的 UX 残余(非安全缺口,B2 connect-authz 已兜底)**:FIX-4b 选项/approver org 过滤 + createNewAgentGroup org 继承。
-诚实分析:① **不是安全洞**——渠道审批新建的组落 null-org 由**原 member/admin RBAC** 管(外人仍需成员资格才够得着),
-是"未分配租户"非跨租户泄漏;运营者可后续 `org assign`(已 enroll 防锁死)。② **approver-picking 对未接线渠道本就 ill-defined**
-——未接线渠道还没 agent group → 没有参考 org,无法"按 org 选 approver";故 B2 的 connect-authz(approver 必须能 access 目标组,
-跨组 approver 被拒)才是正确防线,而非依赖选项过滤。③ createNewAgentGroup org 继承与 part-2 耦合且无 part-2 时空转(全局 admin
-approver 无单一 org → null-org)。→ 纯 UX、低价值、设计上对未接线渠道不清晰 → 接受为残余,不强做。
+**FIX-4b 收尾(用户要求完整收尾,已落地)**:三件,均为安全路径之上的 UX 完整性(B2 connect-authz 仍是硬防线):
+- **org-admin 作 approver**(primitive.ts `pickApprover` + `getOrgAdmins`):某组的 org-admin 成为该组的合格审批人。对 sender-approval(组真实)语义正确;对 channel-approval(参考组是启发式)无害——connect-authz 仍门控最终接线。
+- **选项按 approver 可达过滤**(channel-approval `requestChannelApproval` 初始卡 + index.ts:380 agent-selection 卡):只给该 approver 展示其 `canAccessAgentGroup` 通过的组(owner/global-admin 见全部;org-admin 只见本 org)。
+- **createNewAgentGroup org 继承**:approver 恰有单一 org 时新组继承之(org-admin 的新组落本租户);全局 admin 无单一 org → null-org(运营者后续 `org assign`)。
+诚实定位:这些是 UX,非安全——**渠道审批新建的 null-org 组由原 member/admin RBAC 管**(外人仍需成员资格),不是跨租户泄漏;且对未接线渠道"按 org 选 approver"本就 ill-defined,故用"approver-可达过滤 + connect-authz"而非"按渠道 org 选 approver"。host 855/855。
 
 **2 项子决策(已由用户确认)**:① **采"public within org"**(非禁用 public,而是 org-scoped 组上 public 仍强制 org 成员前置,
 保留能力);② **owner/global_admin 跨 org 旁路**(平台运营者见所有租户)。子决策 ③(回填:自动把所有当前可达用户纳入

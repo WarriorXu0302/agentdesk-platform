@@ -59,6 +59,7 @@ import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
+import { canAccessAgentGroup } from './access.js';
 import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
 
 // ── Value constants (response handler in index.ts parses these) ──
@@ -199,7 +200,11 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   const channelName = originMg?.name ?? null;
   const title = isGroup ? '📣 Bot mentioned in new channel' : '💬 New direct message';
   const question = buildQuestionText(isGroup, senderName, channelName, originChannelType);
-  const options = normalizeOptions(buildApprovalOptions(agentGroups));
+  // FIX-4b (ADR-0052): only offer this approver the groups they can access
+  // (owner/global-admin see all; an org-admin sees only their org). The approver
+  // can always "Connect new agent" if none are visible. connect-authz re-checks.
+  const visibleGroups = agentGroups.filter((g) => canAccessAgentGroup(delivery.userId, g.id).allowed);
+  const options = normalizeOptions(buildApprovalOptions(visibleGroups));
 
   createPendingChannelApproval({
     messaging_group_id: messagingGroupId,
@@ -267,7 +272,7 @@ export function buildAgentSelectionOptions(agentGroups: AgentGroup[]): Normalize
  * Create a new agent group and initialize its filesystem. Handles
  * folder-name collisions with numeric suffixes.
  */
-export function createNewAgentGroup(name: string): AgentGroup {
+export function createNewAgentGroup(name: string, organizationId: string | null = null): AgentGroup {
   let folder = toFolder(name);
   const baseFolder = folder;
   let suffix = 2;
@@ -283,6 +288,10 @@ export function createNewAgentGroup(name: string): AgentGroup {
     folder,
     agent_provider: null,
     created_at: new Date().toISOString(),
+    // FIX-4b (ADR-0052): inherit the approver's org so a channel-approval-created
+    // group lands inside the right tenant (NULL when the approver has no single org,
+    // e.g. a global admin — operator can `org assign` it later).
+    organization_id: organizationId,
   });
 
   const ag = getAgentGroup(agId)!;
