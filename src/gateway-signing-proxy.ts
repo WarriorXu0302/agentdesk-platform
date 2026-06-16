@@ -286,6 +286,13 @@ export async function processSigningProxyRequest(
   const requesterSourceCoerced = !REQUESTER_SOURCES.has(rawRequesterSource);
   const requesterSource = requesterSourceCoerced ? 'agent-asserted' : rawRequesterSource;
   const requester = (parsed.requester as { userId?: unknown } | undefined) ?? undefined;
+  // NOTE: container-asserted, recorded into gateway_audit for forensics ONLY (never
+  // an authz input — see trusted-actor.ts). Its trust level is conveyed by the
+  // `requesterSource` recorded alongside it: a compromised container can craft any
+  // userId with requesterSource='session' — the explicitly ACCEPTED residual risk
+  // R5 (ADR-0017/0034; docs/gateway-kickstart.md §3.1). The proxy validates only
+  // the agent-group binding (below); damaging writes must be anchored backend-side,
+  // not on this field. (Red-teamed 2026-06: confirmed in-scope of accepted R5.)
   const userId = typeof requester?.userId === 'string' ? requester.userId : null;
   const operation = typeof parsed.operation === 'string' ? parsed.operation : null;
   const idempotencyKey = typeof parsed.idempotencyKey === 'string' ? parsed.idempotencyKey : null;

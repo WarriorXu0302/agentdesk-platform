@@ -27,7 +27,7 @@ function preMigrationDb(): Database.Database {
 }
 
 describe('migration 035 backfill (ADR-0052)', () => {
-  it('enrolls every reachable user into org-default and inherits group-scoped role orgs', () => {
+  it('enrolls every reachable user into org-default; user_roles rows keep a single scope axis', () => {
     const db = preMigrationDb();
     const t = '2026-06-16T00:00:00.000Z';
     db.prepare('INSERT INTO users VALUES (?,?,?,?)').run('u-owner', 'tg', null, t);
