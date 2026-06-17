@@ -29,8 +29,10 @@
 
 - **`shared`**(默认)—— `({ frontdesk }) => frontdesk`:所有群接到同一共享前台(**逐字保持原行为**)。
 - **`per-group`** —— `({ frontdesk, mg }) => resolveOrCreatePerGroupAgent(frontdesk, mg)`:**新群** autowire 时,用从
-  `platform_id` 派生的确定性 folder(`<frontdeskFolder>-g-<slug>`)**resolve-or-create** 一个**克隆自前台**的 per-group
-  agent_group(`initGroupFilesystem` + 拷前台 `container.json`),把群接到**它**。
+  `platform_id` 派生的确定性 folder(`<frontdeskFolder>-g-<slug>-<fp>`,`<fp>`=`sha1(platform_id)[:8]` 指纹)
+  **resolve-or-create** 一个**克隆自前台**的 per-group agent_group(`initGroupFilesystem` + 拷前台 `container.json`),
+  把群接到**它**。**指纹是防撞**:slug 会小写并把非字母数字段折叠成 `-`,`oc.sales` 与 `oc_sales` 会撞同一 slug;
+  指纹保证不同 `platform_id` 绝不落到同一 folder(否则两群静默共享一个 agent + 记忆,正是本模式要防的跨群外溢)。
 
 运营者用 `ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY=<name>` 选策略(默认 `shared`);老开关
 `ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED=true` 保留为 **`per-group` 的向后兼容别名**。**DM/p2p 永远走共享前台**(策略只对群生效)。
@@ -50,5 +52,6 @@
 - **非新安全闸绕过**:autowire 本身就是 opt-in 的"免审批";本特性只改"自动接到哪"(共享前台 → per-group 克隆),不新增绕过。
 - **边界**:per-group agent 的 gateway 签名 key 跟随克隆的 `container.json`(= 前台的);若需 per-group 不同 key,运营者另跑 `configure-enterprise-gateway`。
 
-验证:host 全绿(+8 autowire 用例:isolated 建独立 agent / 幂等 / 两群两 agent / 默认走共享前台 / DM 走共享前台 /
-显式 `STRATEGY=per-group` / **自定义策略**接管目标 agent / 未知策略名失败安全回退共享前台);tsc + prettier 干净。
+验证:host 全绿(+9 autowire 用例:isolated 建独立 agent / 幂等 / 两群两 agent / **同 slug 不同 `platform_id` 仍得独立
+agent(防撞)** / 默认走共享前台 / DM 走共享前台 / 显式 `STRATEGY=per-group` / **自定义策略**接管目标 agent /
+未知策略名失败安全回退共享前台);tsc + prettier 干净。

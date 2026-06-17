@@ -20,7 +20,11 @@ import {
 } from './db/index.js';
 import { getAgentGroupByFolder } from './db/agent-groups.js';
 import { getMessagingGroupAgentByPair } from './db/messaging-groups.js';
-import { maybeAutowireEnterpriseFrontdesk, registerGroupAgentStrategy } from './enterprise-autowire.js';
+import {
+  maybeAutowireEnterpriseFrontdesk,
+  perGroupAgentFolder,
+  registerGroupAgentStrategy,
+} from './enterprise-autowire.js';
 import type { InboundEvent } from './channels/adapter.js';
 import type { MessagingGroup } from './types.js';
 
@@ -94,12 +98,14 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
 
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
 
-    const perGroup = getAgentGroupByFolder('fd-g-oc-sales');
+    const folder = perGroupAgentFolder('fd', 'oc_sales');
+    expect(folder).toMatch(/^fd-g-oc-sales-[0-9a-f]{8}$/); // readable slug + fingerprint
+    const perGroup = getAgentGroupByFolder(folder);
     expect(perGroup).toBeDefined();
-    expect(perGroup!.id).toBe('ag-fd-g-oc-sales');
+    expect(perGroup!.id).toBe(`ag-${folder}`);
     expect(getMessagingGroupAgentByPair(mg.id, perGroup!.id)).toBeDefined();
     expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeUndefined(); // NOT the shared frontdesk
-    expect(fs.existsSync(`${TEST_DIR}/groups/fd-g-oc-sales/container.json`)).toBe(true); // cloned config
+    expect(fs.existsSync(`${TEST_DIR}/groups/${folder}/container.json`)).toBe(true); // cloned config
   });
 
   it('is idempotent: re-firing reuses the per-group agent (no duplicate)', () => {
@@ -119,7 +125,29 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     const b = seedChannel('oc_eng', true);
     maybeAutowireEnterpriseFrontdesk(a.mg, a.event);
     maybeAutowireEnterpriseFrontdesk(b.mg, b.event);
-    expect(getAgentGroupByFolder('fd-g-oc-sales')!.id).not.toBe(getAgentGroupByFolder('fd-g-oc-eng')!.id);
+    expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'oc_sales'))!.id).not.toBe(
+      getAgentGroupByFolder(perGroupAgentFolder('fd', 'oc_eng'))!.id,
+    );
+  });
+
+  it('two platform_ids that slugify identically still get DISTINCT agents (no collision)', () => {
+    // `oc_sales` and `oc.sales` both slugify to `oc-sales`; the folder fingerprint
+    // must keep them on separate per-group agents (no silent cross-group recall).
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    const a = seedChannel('oc_sales', true);
+    const b = seedChannel('oc.sales', true);
+    maybeAutowireEnterpriseFrontdesk(a.mg, a.event);
+    maybeAutowireEnterpriseFrontdesk(b.mg, b.event);
+
+    const folderA = perGroupAgentFolder('fd', 'oc_sales');
+    const folderB = perGroupAgentFolder('fd', 'oc.sales');
+    expect(folderA).not.toBe(folderB); // same slug, different fingerprint
+    expect(getMessagingGroupAgentByPair(a.mg.id, `ag-${folderA}`)).toBeDefined();
+    expect(getMessagingGroupAgentByPair(b.mg.id, `ag-${folderB}`)).toBeDefined();
+    // neither group is wired to the OTHER's agent
+    expect(getMessagingGroupAgentByPair(a.mg.id, `ag-${folderB}`)).toBeUndefined();
+    expect(getMessagingGroupAgentByPair(b.mg.id, `ag-${folderA}`)).toBeUndefined();
   });
 
   it('ISOLATED off (default): a group still wires to the shared frontdesk', () => {
@@ -127,7 +155,7 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     const { mg, event } = seedChannel('oc_sales', true);
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
     expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined();
-    expect(getAgentGroupByFolder('fd-g-oc-sales')).toBeUndefined();
+    expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'oc_sales'))).toBeUndefined();
   });
 
   it('ISOLATED on but a DM (p2p) stays on the shared frontdesk', () => {
@@ -137,7 +165,7 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     const { mg, event } = seedChannel('p2p_alice', false);
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
     expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined(); // shared frontdesk, not isolated
-    expect(getAgentGroupByFolder('fd-g-p2p-alice')).toBeUndefined();
+    expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'p2p_alice'))).toBeUndefined();
   });
 });
 
@@ -147,7 +175,7 @@ describe('enterprise autowire — pluggable group→agent strategy (ADR-0053)', 
     seedFrontdesk();
     const { mg, event } = seedChannel('oc_sales', true);
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
-    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd-g-oc-sales')).toBeDefined();
+    expect(getMessagingGroupAgentByPair(mg.id, `ag-${perGroupAgentFolder('fd', 'oc_sales')}`)).toBeDefined();
   });
 
   it('a CUSTOM registered strategy decides the target agent (pluggable, no core edit)', () => {

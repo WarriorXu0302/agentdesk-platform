@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -142,6 +143,23 @@ function slugifyPlatformId(platformId: string): string {
 }
 
 /**
+ * Deterministic, collision-free folder for a per-group agent (ADR-0053).
+ *
+ * The readable slug alone is lossy — it lowercases and collapses every
+ * non-alphanumeric run, so distinct platform_ids can slugify identically
+ * (`oc.sales`, `oc_sales`, `oc@SALES` → all `oc-sales`). If two different groups
+ * landed on the same folder they'd silently SHARE one per-group agent + its
+ * memory — the exact cross-group recall the isolation mode promises to prevent.
+ * Appending a short fingerprint of the FULL platform_id keeps the folder human
+ * readable while guaranteeing distinct groups never collide. Stable across
+ * re-runs, so resolve-or-create stays idempotent.
+ */
+export function perGroupAgentFolder(frontdeskFolder: string, platformId: string): string {
+  const fingerprint = createHash('sha1').update(platformId).digest('hex').slice(0, 8);
+  return `${frontdeskFolder}-g-${slugifyPlatformId(platformId)}-${fingerprint}`;
+}
+
+/**
  * ISOLATED mode (ADR-0053): resolve — or, on first contact, create — the
  * per-group agent for this messaging group. It's a clone of the frontdesk that
  * gets its OWN workspace + memory (CLAUDE.local.md / conversations/) so groups
@@ -152,7 +170,7 @@ function slugifyPlatformId(platformId: string): string {
  * create re-fetches the winner. Inherits the frontdesk's organization (ADR-0052).
  */
 function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup): AgentGroup {
-  const folder = `${frontdesk.folder}-g-${slugifyPlatformId(mg.platform_id)}`;
+  const folder = perGroupAgentFolder(frontdesk.folder, mg.platform_id);
   const existing = getAgentGroupByFolder(folder);
   if (existing) return existing;
 
