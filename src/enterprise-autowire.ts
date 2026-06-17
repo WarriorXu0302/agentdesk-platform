@@ -22,6 +22,7 @@ const ENTERPRISE_ENV_KEYS = [
   'ENTERPRISE_AUTO_WIRE_P2P',
   'ENTERPRISE_AUTO_WIRE_GROUPS',
   'ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE',
+  'ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY',
   'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED',
   'ENTERPRISE_AUTO_WIRE_ALLOW_POLICY_DOWNGRADE',
 ] as const;
@@ -35,10 +36,11 @@ interface EnterpriseAutowireConfig {
     MessagingGroupAgent['session_mode'],
     'shared' | 'per-thread' | 'per-user' | 'per-user-per-thread'
   >;
-  // When true, each NEW group gets its OWN agent group (cloned from the frontdesk)
-  // instead of all groups sharing the frontdesk — isolated workspace + memory per
-  // group. DMs (p2p) still go to the shared frontdesk. (ADR-0053)
-  groupIsolated: boolean;
+  // Which PLUGGABLE group→agent strategy to use for a new GROUP (ADR-0053):
+  // 'shared' (all groups share the frontdesk) | 'per-group' (each group gets its
+  // own cloned agent) | any operator-registered custom strategy name. DMs (p2p)
+  // always use the shared frontdesk regardless.
+  groupStrategy: string;
   allowPolicyDowngrade: boolean;
 }
 
@@ -89,7 +91,11 @@ function readConfig(): EnterpriseAutowireConfig {
     autoWireP2p: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_P2P'), false),
     autoWireGroups: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUPS'), false),
     groupSessionMode: parseGroupSessionMode(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_SESSION_MODE')),
-    groupIsolated: parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED'), false),
+    // Explicit strategy name wins; else the legacy boolean `*_GROUP_ISOLATED=true`
+    // is honored as an alias for 'per-group'; else 'shared'.
+    groupStrategy:
+      envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY')?.trim() ||
+      (parseBoolean(envValue(dotenv, 'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED'), false) ? 'per-group' : 'shared'),
     // Default true to preserve legacy behavior for existing deployments.
     // Operators who want strict-by-default can set this to false; autowire
     // will then refuse to flip unknown_sender_policy and will skip wiring
@@ -192,6 +198,35 @@ function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup)
   return group;
 }
 
+/**
+ * Pluggable group→agent strategy (ADR-0053). Given the frontdesk + a NEW group's
+ * messaging group, return the agent group the channel should wire to. Built-ins:
+ * `shared` (all groups share the frontdesk) and `per-group` (each group gets its
+ * own clone). Operators add custom strategies (by-department, by-attribute, …)
+ * with `registerGroupAgentStrategy` from a module loaded at startup — no core
+ * edit. Strategies apply to GROUPS only; DMs (p2p) always use the shared frontdesk.
+ * Keep it synchronous: the routing hot path is sync (router.ts).
+ */
+export type GroupAgentStrategy = (input: {
+  frontdesk: AgentGroup;
+  mg: MessagingGroup;
+  event: InboundEvent;
+}) => AgentGroup;
+
+const groupAgentStrategies = new Map<string, GroupAgentStrategy>();
+
+export function registerGroupAgentStrategy(name: string, strategy: GroupAgentStrategy): void {
+  groupAgentStrategies.set(name, strategy);
+}
+
+export function listGroupAgentStrategies(): string[] {
+  return [...groupAgentStrategies.keys()].sort();
+}
+
+// Built-in strategies.
+registerGroupAgentStrategy('shared', ({ frontdesk }) => frontdesk);
+registerGroupAgentStrategy('per-group', ({ frontdesk, mg }) => resolveOrCreatePerGroupAgent(frontdesk, mg));
+
 export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: InboundEvent): boolean {
   const config = readConfig();
   if (!shouldAutowire(config, event)) return false;
@@ -236,11 +271,26 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
     return false;
   }
 
-  // ISOLATED mode (ADR-0053): each NEW group gets its own cloned agent; DMs (p2p)
-  // stay on the shared frontdesk. Resolve-or-create is idempotent, so an already
-  // existing per-group agent is reused (no orphan on the already-wired path below).
-  const isolated = config.groupIsolated && isGroup;
-  const target = isolated ? resolveOrCreatePerGroupAgent(frontdesk, mg) : frontdesk;
+  // Resolve the target agent via the pluggable group→agent strategy (ADR-0053).
+  // DMs (p2p) always use the shared frontdesk. An unknown strategy name fails
+  // SAFE to 'shared' (never drops the message) + warns. Resolve-or-create
+  // strategies (e.g. 'per-group') are idempotent, so an already-existing
+  // per-group agent is reused (no orphan on the already-wired path below).
+  let strategyName = 'shared';
+  let target = frontdesk;
+  if (isGroup) {
+    strategyName = config.groupStrategy;
+    let strategy = groupAgentStrategies.get(strategyName);
+    if (!strategy) {
+      log.warn('Enterprise autowire: unknown group strategy — falling back to shared', {
+        strategy: strategyName,
+        known: listGroupAgentStrategies(),
+      });
+      strategyName = 'shared';
+      strategy = groupAgentStrategies.get('shared')!;
+    }
+    target = strategy({ frontdesk, mg, event });
+  }
 
   if (getMessagingGroupAgentByPair(mg.id, target.id)) {
     return true;
@@ -272,7 +322,7 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
       channelType: event.channelType,
       platformId: event.platformId,
       isGroup,
-      isolated,
+      strategy: strategyName,
       sessionMode: wiring.session_mode,
       engageMode: wiring.engage_mode,
     },
@@ -281,7 +331,7 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
     messagingGroupId: mg.id,
     agentGroupId: target.id,
     folder: target.folder,
-    isolated,
+    strategy: strategyName,
     channelType: event.channelType,
     platformId: event.platformId,
     isGroup,

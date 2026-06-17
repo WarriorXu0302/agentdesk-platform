@@ -20,7 +20,7 @@ import {
 } from './db/index.js';
 import { getAgentGroupByFolder } from './db/agent-groups.js';
 import { getMessagingGroupAgentByPair } from './db/messaging-groups.js';
-import { maybeAutowireEnterpriseFrontdesk } from './enterprise-autowire.js';
+import { maybeAutowireEnterpriseFrontdesk, registerGroupAgentStrategy } from './enterprise-autowire.js';
 import type { InboundEvent } from './channels/adapter.js';
 import type { MessagingGroup } from './types.js';
 
@@ -34,6 +34,7 @@ const ENV_KEYS = [
   'ENTERPRISE_AUTO_WIRE_P2P',
   'ENTERPRISE_AUTO_WIRE_GROUPS',
   'ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED',
+  'ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY',
 ];
 let savedEnv: Record<string, string | undefined>;
 
@@ -73,6 +74,7 @@ beforeEach(() => {
   process.env.ENTERPRISE_AUTO_WIRE_GROUPS = 'true';
   delete process.env.ENTERPRISE_AUTO_WIRE_P2P;
   delete process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED;
+  delete process.env.ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY;
 });
 
 afterEach(() => {
@@ -136,5 +138,38 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
     expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined(); // shared frontdesk, not isolated
     expect(getAgentGroupByFolder('fd-g-p2p-alice')).toBeUndefined();
+  });
+});
+
+describe('enterprise autowire — pluggable group→agent strategy (ADR-0053)', () => {
+  it('explicit STRATEGY=per-group behaves like the isolated alias', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY = 'per-group';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd-g-oc-sales')).toBeDefined();
+  });
+
+  it('a CUSTOM registered strategy decides the target agent (pluggable, no core edit)', () => {
+    // An operator-style custom strategy: pin every group to a pre-existing agent.
+    createAgentGroup({ id: 'ag-special', name: 'Special', folder: 'special', agent_provider: null, created_at: now() });
+    registerGroupAgentStrategy('test-pin-special', ({ frontdesk }) => {
+      void frontdesk;
+      return getAgentGroupByFolder('special')!;
+    });
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY = 'test-pin-special';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-special')).toBeDefined(); // wired by the custom strategy
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeUndefined();
+  });
+
+  it('an unknown strategy name fails SAFE to the shared frontdesk (never drops)', () => {
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY = 'does-not-exist';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined(); // fell back to shared
   });
 });

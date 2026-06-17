@@ -313,15 +313,43 @@ If you later enable `ENTERPRISE_AUTO_WIRE_GROUPS=true`, group mentions will
 wire with `mention-sticky` and `session_mode=per-user` so users keep
 isolated context inside the shared chat surface.
 
-**Per-group isolated agents (ADR-0053).** By default every auto-wired group
-shares the one frontdesk agent group — and so shares its workspace + memory
-(`conversations/`). Set `ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED=true` and each new
-group instead gets its **own** agent group, auto-cloned from the frontdesk
-(own workspace + memory; groups don't share recall), with no manual setup. DMs
-(p2p) still go to the shared frontdesk. It costs no extra containers (container
-count tracks active sessions, not agent-group count — same either way), only a
-small per-group workspace dir; the cloned `container.json` may drift from the
-frontdesk over time, which is intended for independent per-group agents.
+**Pluggable group→agent strategy (ADR-0053).** Which agent group a newly
+auto-wired chat lands on is a **registered strategy**, chosen with
+`ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY=<name>`. Two built-ins ship:
+
+- `shared` (default) — every group wires to the one frontdesk agent group, so
+  they share its workspace + memory (`conversations/`). This is the original
+  behavior.
+- `per-group` — each new group instead gets its **own** agent group, auto-cloned
+  from the frontdesk (own workspace + memory; groups don't share recall), with no
+  manual setup. To make this your standing default, set
+  `ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY=per-group` (the legacy
+  `ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED=true` is a back-compat alias for it).
+
+The strategy only fires on **new-group** autowire, so flipping it never disturbs
+groups already wired. DMs (p2p) always go to the shared frontdesk. `per-group`
+costs no extra containers (container count tracks active sessions, not
+agent-group count — same either way), only a small per-group workspace dir; the
+cloned `container.json` may drift from the frontdesk over time, which is intended
+for independent per-group agents.
+
+**Custom topologies without forking the core.** If neither built-in fits — say
+you want one agent per *organization*, per *channel*, or pinned to a named expert
+agent — register your own strategy at startup and select it by name:
+
+```ts
+import { registerGroupAgentStrategy } from './src/enterprise-autowire.js';
+
+registerGroupAgentStrategy('per-org', ({ frontdesk, mg }) => {
+  // return the AgentGroup this messaging group should wire to
+  return resolveOrgPoolAgent(frontdesk, mg);
+});
+// then: ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY=per-org
+```
+
+A strategy receives `{ frontdesk, mg, event }` and returns the target
+`AgentGroup`. An unknown strategy name fails **safe** — it logs a warning and
+falls back to `shared` rather than dropping the message.
 
 ## Generic backend pattern
 
