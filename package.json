@@ -50,7 +50,7 @@
     "@opentelemetry/resources": "^2.8.0",
     "@opentelemetry/sdk-node": "^0.219.0",
     "@opentelemetry/semantic-conventions": "^1.28.0",
-    "better-sqlite3": "11.10.0",
+    "better-sqlite3": "12.11.1",
     "chat": "^4.30.0",
     "cron-parser": "5.5.0",
     "prom-client": "15.1.3"
