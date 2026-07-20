@@ -28,7 +28,7 @@ fields are ignored. Most are set for you by
 
 | Field | Type | Default | Read by | What it does |
 |---|---|---|---|---|
-| `provider` | string | `claude` | both | LLM provider: `claude`, `openai`, `codex`, or `mock`. Resolution order is session → group → this field → `claude`. |
+| `provider` | string | `claude` | both | Legacy/single-role LLM provider: `claude`, `openai`, `codex`, `opencode-go`, or `mock`. Execution resolution is session → group → `llm.execution.provider` → this field → `claude`. |
 | `assistantName` | string | `''` | both | Display name the agent uses for itself. |
 | `groupName` | string | `''` | both | Human label for the group (logs, cards). |
 | `agentGroupId` | string | `''` | both | Stable id; normally set by the bootstrap script, not by hand. |
@@ -39,6 +39,32 @@ fields are ignored. Most are set for you by
 |---|---|---|---|---|
 | `maxMessagesPerPrompt` | number | `10` | container | Max pending messages folded into one prompt turn. |
 | `confidenceThreshold` | number in (0,1) | `0.70` | container | classify_intent clarify cutoff: below this, the advisory tells the frontdesk to `ask_user_question` before delegating. Raise for a stricter group (finance), lower for a looser one (support). Out-of-range values fall back to 0.70. (roadmap 2.4) |
+
+#### Enforced frontdesk dual-LLM routing (`llm`)
+
+`llm.routing` is default-off. When enabled on a frontdesk, the runner performs a stateless, tool-free Routing call before frontdesk Execution. Worker A2A turns bypass Routing. `llm.execution` may also be used by itself to select a provider/model while keeping the legacy single-phase flow. Routing and Execution may independently use `claude`, `openai`, `codex`, or `opencode-go`.
+
+Omitted policy fields take the documented defaults. Explicit invalid provider requirements, transport values, paths, integer ranges, confidence values, or fallback actions fail container startup; they are not silently coerced into a legacy or permissive route.
+
+| Sub-field | Type | Default / rule | What it does |
+|---|---|---|---|
+| `llm.routing.enabled` | boolean | `false` | Enables enforced Routing for channel-entry chat turns in this group. |
+| `llm.routing.provider` | string | required when enabled | Provider for Routing, independent of Execution. |
+| `llm.routing.model` | string | required when enabled | Lightweight Routing model. |
+| `llm.routing.transport` | `responses` \| `chat-completions` | `chat-completions` | Provider transport. OpenCode Go uses `chat-completions`. |
+| `llm.routing.promptFile` | relative string under `prompts/` | required | Request-time Routing policy file, nested-mounted read-only and SHA-256 correlated. Absolute/traversal/symlink escapes are rejected. |
+| `llm.routing.timeoutMs` | integer 1000..120000 | `10000` | Per Routing attempt timeout. |
+| `llm.routing.retryTimes` | integer 0..3 | `1` | Additional complete Routing attempts; maximum calls are `1 + retryTimes`. |
+| `llm.routing.context.maxMessages` | integer 1..10 | `4` | Maximum current-turn chat rows in the bounded Routing view. |
+| `llm.routing.context.maxChars` | integer 1000..50000 | `12000` | Character ceiling for the rendered Routing request. |
+| `llm.routing.confidence.threshold` | number 0..1 | `0.70` | A `delegate` below this confidence is replaced by `belowThresholdAction`. |
+| `llm.routing.confidence.belowThresholdAction` | `clarify` \| `reject` | `clarify` | Non-delegating action enforced for low-confidence delegation. |
+| `llm.routing.fallback.action` | `clarify` \| `reject` | `clarify` | Fail-closed action after prompt/transport/output validation failures. |
+| `llm.execution.provider` | string | legacy `provider` | Provider for frontdesk Execution. Session/group overrides remain higher precedence. |
+| `llm.execution.model` | string | provider default | Model for this Execution role. Ignored when a session/group provider override selects another provider. |
+| `llm.execution.transport` | `responses` \| `chat-completions` | provider default | Transport for this Execution role. |
+
+Routing outputs only `delegate`, `answer_self`, `clarify`, or `reject`. `delegate` is validated against the current live agent destinations and bypasses frontdesk Execution; the other actions call frontdesk Execution and forbid agent-destination sends for that turn. See [ADR-0054](decisions/ADR-0054-frontdesk-enforced-dual-llm-routing.md) and the [approved Spec](specs/frontdesk-dual-llm-routing.md).
 
 ### Memory & a2a
 

@@ -56,6 +56,26 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('does not deliver trailing DSML control markers emitted by compatible providers', async () => {
+    insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider(
+      {},
+      () => '<message to="discord-test">Hi Alice</｜｜DSML｜｜parameter>\n</message>',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Hi Alice');
+
+    await loopPromise.catch(() => {});
+  });
+
   it('should process multiple messages in a batch', async () => {
     insertMessage('m1', { sender: 'Alice', text: 'Hello' });
     insertMessage('m2', { sender: 'Bob', text: 'World' });

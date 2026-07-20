@@ -54,6 +54,40 @@ export interface BackendGatewayConfig {
 
 export type MemoryMode = 'workspace' | 'gateway';
 export type A2aSessionMode = 'agent-shared' | 'root-session';
+export type LlmTransport = 'responses' | 'chat-completions';
+export type RoutingFallbackAction = 'clarify' | 'reject';
+
+export interface RoutingLlmConfig {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  transport?: LlmTransport;
+  promptFile: string;
+  timeoutMs?: number;
+  retryTimes?: number;
+  context?: {
+    maxMessages?: number;
+    maxChars?: number;
+  };
+  confidence?: {
+    threshold?: number;
+    belowThresholdAction?: RoutingFallbackAction;
+  };
+  fallback?: {
+    action?: RoutingFallbackAction;
+  };
+}
+
+export interface ExecutionLlmConfig {
+  provider: string;
+  model?: string;
+  transport?: LlmTransport;
+}
+
+export interface DualLlmConfig {
+  routing?: RoutingLlmConfig;
+  execution?: ExecutionLlmConfig;
+}
 
 export interface AdditionalMountConfig {
   hostPath: string;
@@ -87,6 +121,8 @@ export interface ContainerConfig {
   skills: string[] | 'all';
   /** Agent provider name (e.g. "claude", "opencode"). Default: "claude". */
   provider?: string;
+  /** Optional frontdesk-only split between enforced Routing and Execution LLM roles. */
+  llm?: DualLlmConfig;
   /** Agent group display name (used in transcript archiving). */
   groupName?: string;
   /** Assistant display name (used in system prompt / responses). */
@@ -188,6 +224,137 @@ function normalizeA2aSessionMode(value: unknown): A2aSessionMode | undefined {
   return value === 'agent-shared' || value === 'root-session' ? value : undefined;
 }
 
+function requiredRoutingString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} is required`);
+  return value.trim();
+}
+
+function optionalRoutingInteger(value: unknown, field: string, min: number, max: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${field} must be an integer in [${min}, ${max}]`);
+  }
+  return value;
+}
+
+function routingAction(value: unknown, field: string): RoutingFallbackAction | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'clarify' && value !== 'reject') throw new Error(`${field} must be clarify or reject`);
+  return value;
+}
+
+function routingPromptFile(value: unknown): string {
+  const raw = requiredRoutingString(value, 'llm.routing.promptFile');
+  if (path.isAbsolute(raw)) throw new Error('llm.routing.promptFile must be relative');
+  const normalized = path.posix.normalize(raw.replaceAll('\\', '/'));
+  if (normalized === '..' || normalized.startsWith('../') || !normalized.startsWith('prompts/')) {
+    throw new Error('llm.routing.promptFile must stay inside prompts/');
+  }
+  return normalized;
+}
+
+function normalizeDualLlmConfig(value: unknown): DualLlmConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const out: DualLlmConfig = {};
+
+  if (raw.execution && typeof raw.execution === 'object' && !Array.isArray(raw.execution)) {
+    const execution = raw.execution as Record<string, unknown>;
+    if (typeof execution.provider === 'string' && execution.provider.trim()) {
+      if (
+        execution.transport !== undefined &&
+        execution.transport !== 'responses' &&
+        execution.transport !== 'chat-completions'
+      ) {
+        throw new Error('llm.execution.transport must be responses or chat-completions');
+      }
+      out.execution = {
+        provider: execution.provider.trim(),
+        ...(typeof execution.model === 'string' && execution.model.trim() ? { model: execution.model.trim() } : {}),
+        ...(execution.transport === 'responses' || execution.transport === 'chat-completions'
+          ? { transport: execution.transport }
+          : {}),
+      };
+    }
+  }
+
+  if (raw.routing && typeof raw.routing === 'object' && !Array.isArray(raw.routing)) {
+    const routing = raw.routing as Record<string, unknown>;
+    if (routing.enabled === true) {
+      const context =
+        routing.context && typeof routing.context === 'object' && !Array.isArray(routing.context)
+          ? (routing.context as Record<string, unknown>)
+          : undefined;
+      const confidence =
+        routing.confidence && typeof routing.confidence === 'object' && !Array.isArray(routing.confidence)
+          ? (routing.confidence as Record<string, unknown>)
+          : undefined;
+      const fallback =
+        routing.fallback && typeof routing.fallback === 'object' && !Array.isArray(routing.fallback)
+          ? (routing.fallback as Record<string, unknown>)
+          : undefined;
+      if (
+        routing.transport !== undefined &&
+        routing.transport !== 'responses' &&
+        routing.transport !== 'chat-completions'
+      ) {
+        throw new Error('llm.routing.transport must be responses or chat-completions');
+      }
+      const timeoutMs = optionalRoutingInteger(routing.timeoutMs, 'llm.routing.timeoutMs', 1000, 120_000);
+      const retryTimes = optionalRoutingInteger(routing.retryTimes, 'llm.routing.retryTimes', 0, 3);
+      const maxMessages = optionalRoutingInteger(context?.maxMessages, 'llm.routing.context.maxMessages', 1, 10);
+      const maxChars = optionalRoutingInteger(context?.maxChars, 'llm.routing.context.maxChars', 1000, 50_000);
+      let threshold: number | undefined;
+      if (confidence?.threshold !== undefined) {
+        if (
+          typeof confidence.threshold !== 'number' ||
+          !Number.isFinite(confidence.threshold) ||
+          confidence.threshold < 0 ||
+          confidence.threshold > 1
+        ) {
+          throw new Error('llm.routing.confidence.threshold must be a finite number in [0, 1]');
+        }
+        threshold = confidence.threshold;
+      }
+      const belowThresholdAction = routingAction(
+        confidence?.belowThresholdAction,
+        'llm.routing.confidence.belowThresholdAction',
+      );
+      const fallbackValue = routingAction(fallback?.action, 'llm.routing.fallback.action');
+      out.routing = {
+        enabled: true,
+        provider: requiredRoutingString(routing.provider, 'llm.routing.provider'),
+        model: requiredRoutingString(routing.model, 'llm.routing.model'),
+        promptFile: routingPromptFile(routing.promptFile),
+        ...(routing.transport === 'responses' || routing.transport === 'chat-completions'
+          ? { transport: routing.transport }
+          : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(retryTimes !== undefined ? { retryTimes } : {}),
+        ...(context
+          ? {
+              context: {
+                ...(maxMessages !== undefined ? { maxMessages } : {}),
+                ...(maxChars !== undefined ? { maxChars } : {}),
+              },
+            }
+          : {}),
+        ...(confidence
+          ? {
+              confidence: {
+                ...(threshold !== undefined ? { threshold } : {}),
+                ...(belowThresholdAction !== undefined ? { belowThresholdAction } : {}),
+              },
+            }
+          : {}),
+        ...(fallbackValue !== undefined ? { fallback: { action: fallbackValue } } : {}),
+      };
+    }
+  }
+
+  return out.routing || out.execution ? out : undefined;
+}
+
 /**
  * Accept a network value only if it is a string that looks like a safe Docker
  * network reference. Anything else (non-string, empty, or containing argv /
@@ -226,40 +393,43 @@ function configPath(folder: string): string {
 /**
  * Read the container config for a group, returning sensible defaults for
  * any missing fields (or an entirely empty config if the file is absent).
- * Never throws for missing / malformed files — corruption logs a warning
- * via console.error and falls back to empty.
+ * Missing / malformed JSON logs a warning and falls back to empty. A parsed
+ * config that explicitly enables Routing but violates its enforceable schema
+ * throws so container startup fails closed instead of silently disabling it.
  */
 export function readContainerConfig(folder: string): ContainerConfig {
   const p = configPath(folder);
   if (!fs.existsSync(p)) return emptyConfig();
+  let raw: Partial<ContainerConfig>;
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<ContainerConfig>;
-    return {
-      mcpServers: raw.mcpServers ?? {},
-      backendGateway: raw.backendGateway,
-      packages: {
-        apt: raw.packages?.apt ?? [],
-        npm: raw.packages?.npm ?? [],
-      },
-      imageTag: raw.imageTag,
-      additionalMounts: raw.additionalMounts ?? [],
-      skills: raw.skills ?? 'all',
-      provider: raw.provider,
-      groupName: raw.groupName,
-      assistantName: raw.assistantName,
-      memoryMode: normalizeMemoryMode(raw.memoryMode),
-      a2aSessionMode: normalizeA2aSessionMode(raw.a2aSessionMode),
-      agentGroupId: raw.agentGroupId,
-      maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
-      resources: normalizeResources(raw.resources),
-      network: normalizeNetwork(raw.network),
-      env: raw.env,
-      progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
-    };
+    raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<ContainerConfig>;
   } catch (err) {
     console.error(`[container-config] failed to parse ${p}: ${String(err)}`);
     return emptyConfig();
   }
+  return {
+    mcpServers: raw.mcpServers ?? {},
+    backendGateway: raw.backendGateway,
+    packages: {
+      apt: raw.packages?.apt ?? [],
+      npm: raw.packages?.npm ?? [],
+    },
+    imageTag: raw.imageTag,
+    additionalMounts: raw.additionalMounts ?? [],
+    skills: raw.skills ?? 'all',
+    provider: raw.provider,
+    llm: normalizeDualLlmConfig(raw.llm),
+    groupName: raw.groupName,
+    assistantName: raw.assistantName,
+    memoryMode: normalizeMemoryMode(raw.memoryMode),
+    a2aSessionMode: normalizeA2aSessionMode(raw.a2aSessionMode),
+    agentGroupId: raw.agentGroupId,
+    maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
+    resources: normalizeResources(raw.resources),
+    network: normalizeNetwork(raw.network),
+    env: raw.env,
+    progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
+  };
 }
 
 /**

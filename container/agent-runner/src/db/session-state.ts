@@ -14,13 +14,17 @@ import { getOutboundDb } from './connection.js';
 const LEGACY_KEY = 'sdk_session_id';
 
 function continuationKey(providerName: string): string {
+  return `continuation:execution:${providerName.toLowerCase()}`;
+}
+
+function preRoleContinuationKey(providerName: string): string {
   return `continuation:${providerName.toLowerCase()}`;
 }
 
 function getValue(key: string): string | undefined {
-  const row = getOutboundDb()
-    .prepare('SELECT value FROM session_state WHERE key = ?')
-    .get(key) as { value: string } | undefined;
+  const row = getOutboundDb().prepare('SELECT value FROM session_state WHERE key = ?').get(key) as
+    | { value: string }
+    | undefined;
   return row?.value;
 }
 
@@ -53,17 +57,21 @@ export function migrateLegacyContinuation(providerName: string): string | undefi
   const legacy = getValue(LEGACY_KEY);
   const currentKey = continuationKey(providerName);
   const current = getValue(currentKey);
+  const preRoleKey = preRoleContinuationKey(providerName);
+  const preRole = getValue(preRoleKey);
 
-  if (legacy === undefined) return current;
+  if (legacy === undefined && preRole === undefined) return current;
 
   // Always drop the legacy row so no future provider reads it.
-  deleteValue(LEGACY_KEY);
+  if (legacy !== undefined) deleteValue(LEGACY_KEY);
+  if (preRole !== undefined) deleteValue(preRoleKey);
 
   // Prefer the current provider's own slot if one already exists.
   if (current !== undefined) return current;
 
-  setValue(currentKey, legacy);
-  return legacy;
+  const adopted = preRole ?? legacy;
+  if (adopted !== undefined) setValue(currentKey, adopted);
+  return adopted;
 }
 
 export function getContinuation(providerName: string): string | undefined {

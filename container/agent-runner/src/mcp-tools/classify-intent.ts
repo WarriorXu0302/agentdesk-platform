@@ -22,6 +22,7 @@ import { getCurrentClassificationId, setCurrentClassificationId } from '../curre
 import { findByName } from '../destinations.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getRequestIdentity } from '../request-context.js';
+import { getRoutingGate } from '../routing/gate.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -154,6 +155,13 @@ export const classifyIntent: McpToolDefinition = {
     },
   },
   async handler(args) {
+    const routingGate = getRoutingGate();
+    if (routingGate) {
+      return err(
+        `This turn was already classified by enforced controller routing (decision ${routingGate.decisionId}). ` +
+          'Follow the injected action without calling classify_intent again.',
+      );
+    }
     const userMessage = typeof args.userMessage === 'string' ? args.userMessage : '';
     const recommendedWorker =
       typeof args.recommendedWorker === 'string' && args.recommendedWorker.length > 0 ? args.recommendedWorker : null;

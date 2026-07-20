@@ -1,12 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
 import { getOutboundDb, initTestSessionDb } from './connection.js';
-import {
-  clearContinuation,
-  getContinuation,
-  migrateLegacyContinuation,
-  setContinuation,
-} from './session-state.js';
+import { clearContinuation, getContinuation, migrateLegacyContinuation, setContinuation } from './session-state.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -16,6 +11,12 @@ function seedLegacy(value: string): void {
   getOutboundDb()
     .prepare('INSERT INTO session_state (key, value, updated_at) VALUES (?, ?, ?)')
     .run('sdk_session_id', value, new Date().toISOString());
+}
+
+function seedPreRoleProvider(provider: string, value: string): void {
+  getOutboundDb()
+    .prepare('INSERT INTO session_state (key, value, updated_at) VALUES (?, ?, ?)')
+    .run(`continuation:${provider}`, value, new Date().toISOString());
 }
 
 describe('session-state — per-provider continuations', () => {
@@ -50,6 +51,15 @@ describe('session-state — per-provider continuations', () => {
 });
 
 describe('session-state — legacy migration', () => {
+  test('moves the pre-role provider key into the execution role', () => {
+    seedPreRoleProvider('openai', 'response-1');
+    expect(migrateLegacyContinuation('openai')).toBe('response-1');
+    expect(getContinuation('openai')).toBe('response-1');
+    expect(
+      getOutboundDb().prepare('SELECT value FROM session_state WHERE key = ?').get('continuation:openai'),
+    ).toBeNull();
+  });
+
   test('adopts legacy value into current provider when current is empty', () => {
     seedLegacy('old-session-id');
 

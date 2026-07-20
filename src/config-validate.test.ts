@@ -43,6 +43,7 @@ const INSPECTED_KEYS = [
   'OPENAI_MODEL',
   'OPENAI_REASONING_EFFORT',
   'OPENAI_TIMEOUT_MS',
+  'OPENAI_FORCE_TRANSPORT',
   'OPENAI_COMPACT_MODEL',
   'OTEL_CAPTURE_CONTENT',
   'AGENTDESK_OPENAI_VIA_ONECLI',
@@ -184,6 +185,11 @@ describe('validateStartupConfig — OpenAI provider', () => {
 
   it('fails when OPENAI_MODEL is set but OPENAI_API_KEY is missing', () => {
     setEnv({ OPENAI_MODEL: 'gpt-5.4' });
+    expect(() => validateStartupConfig()).toThrow(/OPENAI_API_KEY/);
+  });
+
+  it('fails when OPENAI_FORCE_TRANSPORT is set but OPENAI_API_KEY is missing', () => {
+    setEnv({ OPENAI_FORCE_TRANSPORT: 'chat-completions' });
     expect(() => validateStartupConfig()).toThrow(/OPENAI_API_KEY/);
   });
 

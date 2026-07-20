@@ -420,8 +420,41 @@ export function resolveProviderName(
   sessionProvider: string | null | undefined,
   agentGroupProvider: string | null | undefined,
   containerConfigProvider: string | null | undefined,
+  executionProvider?: string | null,
 ): string {
-  return (sessionProvider || agentGroupProvider || containerConfigProvider || 'claude').toLowerCase();
+  return (
+    sessionProvider ||
+    agentGroupProvider ||
+    executionProvider ||
+    containerConfigProvider ||
+    'claude'
+  ).toLowerCase();
+}
+
+export function mergeProviderContributions(
+  contributions: ProviderContainerContribution[],
+): ProviderContainerContribution {
+  const env: Record<string, string> = {};
+  const mounts = new Map<string, VolumeMount>();
+  for (const contribution of contributions) {
+    for (const [key, value] of Object.entries(contribution.env ?? {})) {
+      if (key in env && env[key] !== value) {
+        throw new Error(`Conflicting provider env for ${key}`);
+      }
+      env[key] = value;
+    }
+    for (const mount of contribution.mounts ?? []) {
+      const existing = mounts.get(mount.containerPath);
+      if (existing && (existing.hostPath !== mount.hostPath || existing.readonly !== mount.readonly)) {
+        throw new Error(`Conflicting provider mount for ${mount.containerPath}`);
+      }
+      mounts.set(mount.containerPath, mount);
+    }
+  }
+  return {
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+    ...(mounts.size > 0 ? { mounts: [...mounts.values()] } : {}),
+  };
 }
 
 function resolveProviderContribution(
@@ -429,15 +462,24 @@ function resolveProviderContribution(
   agentGroup: AgentGroup,
   containerConfig: import('./container-config.js').ContainerConfig,
 ): { provider: string; contribution: ProviderContainerContribution } {
-  const provider = resolveProviderName(session.agent_provider, agentGroup.agent_provider, containerConfig.provider);
-  const fn = getProviderContainerConfig(provider);
-  const contribution = fn
-    ? fn({
-        sessionDir: sessionDir(agentGroup.id, session.id),
-        agentGroupId: agentGroup.id,
-        hostEnv: process.env,
-      })
-    : {};
+  const provider = resolveProviderName(
+    session.agent_provider,
+    agentGroup.agent_provider,
+    containerConfig.provider,
+    containerConfig.llm?.execution?.provider,
+  );
+  const providers = new Set([provider]);
+  if (containerConfig.llm?.routing?.enabled && containerConfig.llm.routing.provider) {
+    providers.add(containerConfig.llm.routing.provider.toLowerCase());
+  }
+  const context = {
+    sessionDir: sessionDir(agentGroup.id, session.id),
+    agentGroupId: agentGroup.id,
+    hostEnv: process.env,
+  };
+  const contribution = mergeProviderContributions(
+    [...providers].map((name) => getProviderContainerConfig(name)?.(context) ?? {}),
+  );
   return { provider, contribution };
 }
 
@@ -481,6 +523,10 @@ function buildMounts(
   const containerJsonPath = signingProxy?.redactedConfigPath ?? path.join(groupDir, 'container.json');
   if (fs.existsSync(containerJsonPath)) {
     mounts.push({ hostPath: containerJsonPath, containerPath: '/workspace/agent/container.json', readonly: true });
+  }
+
+  if (containerConfig.llm?.routing?.enabled) {
+    mounts.push(resolveRoutingPromptMount(groupDir, containerConfig.llm.routing.promptFile));
   }
 
   // Composer-managed CLAUDE.md artifacts — nested RO mounts. These are
@@ -538,6 +584,28 @@ function buildMounts(
   }
 
   return mounts;
+}
+
+export function resolveRoutingPromptMount(groupDir: string, promptFile: string): VolumeMount {
+  const normalized = path.posix.normalize(promptFile.replaceAll('\\', '/'));
+  if (
+    path.isAbsolute(promptFile) ||
+    normalized === '..' ||
+    normalized.startsWith('../') ||
+    !normalized.startsWith('prompts/')
+  ) {
+    throw new Error('Routing prompt must stay inside prompts/');
+  }
+  const promptsRoot = fs.realpathSync(path.join(groupDir, 'prompts'));
+  const hostPath = fs.realpathSync(path.join(groupDir, normalized));
+  if (hostPath !== promptsRoot && !hostPath.startsWith(`${promptsRoot}${path.sep}`)) {
+    throw new Error('Routing prompt symlink escape detected');
+  }
+  return {
+    hostPath,
+    containerPath: `/workspace/agent/${normalized}`,
+    readonly: true,
+  };
 }
 
 /**
@@ -838,6 +906,11 @@ export async function buildContainerArgs(
   // signing-header prefix the host uses. Defaults to `agentdesk` in the
   // runner if unset.
   args.push('-e', `BRAND_NAMESPACE=${PLATFORM_PROTOCOL_NAMESPACE}`);
+  // Host DB overrides (session/group) are more specific than container.json.
+  // Pass the already-resolved Execution provider into the runner so runtime
+  // provider creation follows the same precedence as host credential/mount
+  // assembly. This is host-owned internal state, not operator configuration.
+  args.push('-e', `AGENTDESK_EXECUTION_PROVIDER=${provider}`);
 
   // Tracing context (ADR-0026/0027) — inject OTEL_TRACEPARENT (+ endpoint,
   // tracestate, capture-content) so the runner continues the host trace.
@@ -866,11 +939,16 @@ export async function buildContainerArgs(
   // is on, openai/codex ALSO route through the vault (their key is withheld
   // from the container), so they take the apply path too. mock is always
   // offline and always skips.
-  const openaiViaVault = routeOpenAiThroughVault(provider, openaiViaOneCliEnabled());
-  if ((provider === 'openai' || provider === 'codex' || provider === 'mock') && !openaiViaVault) {
+  const roleProviders = [
+    provider,
+    ...(containerConfig.llm?.routing?.enabled ? [containerConfig.llm.routing.provider] : []),
+  ];
+  const vaultEnabled = openaiViaOneCliEnabled();
+  const openaiViaVault = roleProviders.some((name) => routeOpenAiThroughVault(name, vaultEnabled));
+  if (!shouldApplyOneCliGateway(roleProviders, vaultEnabled)) {
     log.info('Skipping OneCLI gateway for direct-credential provider', {
       containerName,
-      provider,
+      provider: roleProviders.join(','),
     });
   } else {
     // Treated as a transient hard failure: if we can't wire the gateway, we
@@ -1079,12 +1157,30 @@ export function findInjectedEnvValue(args: string[], key: string): string | unde
 
 /**
  * Should this provider's traffic route through the OneCLI vault for credential
- * injection instead of getting the key directly (ADR-0035)? Only openai/codex,
- * and only when the operator opted in. Pure + exported for testing. `mock` is
- * always offline and never routes.
+ * injection instead of getting the key directly (ADR-0035)? Applies to the
+ * OpenAI-compatible aliases (`openai`, `codex`, `opencode-go`) only when the
+ * operator opted in. `mock` is always offline and never routes.
  */
 export function routeOpenAiThroughVault(provider: string, enabled: boolean): boolean {
-  return enabled && (provider === 'openai' || provider === 'codex');
+  return enabled && isOpenAiCompatibleProvider(provider);
+}
+
+function isOpenAiCompatibleProvider(provider: string): boolean {
+  const normalized = provider.toLowerCase();
+  return normalized === 'openai' || normalized === 'codex' || normalized === 'opencode-go';
+}
+
+/**
+ * OneCLI is a container-wide network/auth layer, so the decision must include
+ * every configured LLM role rather than only the Execution provider.
+ */
+export function shouldApplyOneCliGateway(providers: string[], openaiViaVault: boolean): boolean {
+  return providers.some((provider) => {
+    const normalized = provider.toLowerCase();
+    if (normalized === 'mock') return false;
+    if (isOpenAiCompatibleProvider(normalized)) return openaiViaVault;
+    return true;
+  });
 }
 
 export function buildSecurityArgs(env: NodeJS.ProcessEnv): string[] {
