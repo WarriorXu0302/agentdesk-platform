@@ -21,10 +21,16 @@ export interface AgentProvider {
  * providers; individual providers may ignore any they don't need.
  */
 export interface ProviderOptions {
+  /** Runtime role. Routing must remain stateless and use one transport request per attempt. */
+  role?: 'routing' | 'execution';
   assistantName?: string;
   mcpServers?: Record<string, McpServerConfig>;
   env?: Record<string, string | undefined>;
   additionalDirectories?: string[];
+  /** Explicit model selected for this provider role. */
+  model?: string;
+  /** Whether this provider role may expose its normal execution tools. */
+  toolMode?: 'full' | 'none';
 }
 
 export interface QueryInput {

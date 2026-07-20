@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../db/connection.js';
 import { clearCurrentClassificationId, setCurrentClassificationId } from '../current-batch.js';
 import { setRequestIdentity, clearRequestIdentity } from '../request-context.js';
+import { setRoutingGate } from '../routing/gate.js';
 import { classifyIntent, confidenceAdvisory, escalateToHuman, reportRoutingFeedback } from './classify-intent.js';
 
 function seedWorkers(names: string[]): void {
@@ -24,6 +25,23 @@ afterEach(() => {
 });
 
 describe('classifyIntent tool handler', () => {
+  it('rejects duplicate model-side classification when controller routing is active', async () => {
+    setRoutingGate({ decisionId: 'route-1', anchorId: 'm1', action: 'answer_self' });
+
+    const result = await classifyIntent.handler({
+      userMessage: 'hello',
+      confidence: 0.9,
+      action: 'answer_self',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/already classified.*route-1/i);
+    expect(
+      (getOutboundDb().prepare("SELECT COUNT(*) AS n FROM messages_out WHERE kind = 'system'").get() as { n: number })
+        .n,
+    ).toBe(0);
+  });
+
   it('returns a classificationId in the tool result text', async () => {
     const result = await classifyIntent.handler({
       userMessage: 'please approve INV-001',

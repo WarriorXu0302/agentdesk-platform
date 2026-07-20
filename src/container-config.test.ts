@@ -156,5 +156,95 @@ describe('container.json read-modify-write safety', () => {
 
     writeRaw('skl3', JSON.stringify({ skills: 'all' }));
     expect(readContainerConfig('skl3').skills).toBe('all');
+
+describe('dual LLM configuration', () => {
+  it('round-trips centralized routing and execution configuration', () => {
+    writeContainerConfig('frontdesk', {
+      mcpServers: {},
+      packages: { apt: [], npm: [] },
+      additionalMounts: [],
+      skills: 'all',
+      llm: {
+        routing: {
+          enabled: true,
+          provider: 'opencode-go',
+          model: 'mimo-v2.5',
+          transport: 'chat-completions',
+          promptFile: 'prompts/frontdesk-routing.md',
+          timeoutMs: 10_000,
+          retryTimes: 1,
+          context: { maxMessages: 4, maxChars: 12_000 },
+          confidence: { threshold: 0.7, belowThresholdAction: 'clarify' },
+          fallback: { action: 'clarify' },
+        },
+        execution: {
+          provider: 'opencode-go',
+          model: 'deepseek-v4-flash',
+          transport: 'chat-completions',
+        },
+      },
+    });
+
+    expect(readContainerConfig('frontdesk').llm).toEqual({
+      routing: {
+        enabled: true,
+        provider: 'opencode-go',
+        model: 'mimo-v2.5',
+        transport: 'chat-completions',
+        promptFile: 'prompts/frontdesk-routing.md',
+        timeoutMs: 10_000,
+        retryTimes: 1,
+        context: { maxMessages: 4, maxChars: 12_000 },
+        confidence: { threshold: 0.7, belowThresholdAction: 'clarify' },
+        fallback: { action: 'clarify' },
+      },
+      execution: {
+        provider: 'opencode-go',
+        model: 'deepseek-v4-flash',
+        transport: 'chat-completions',
+      },
+    });
+  });
+
+  it('fails closed when an enabled routing config is explicitly invalid', () => {
+    const groupDir = path.join(tmpState.root, 'groups', 'invalid-frontdesk');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'container.json'),
+      JSON.stringify({
+        llm: {
+          routing: {
+            enabled: true,
+            provider: 'opencode-go',
+            model: 'mimo-v2.5',
+            promptFile: '../escape.md',
+            transport: 'bogus',
+          },
+        },
+      }),
+    );
+
+    expect(() => readContainerConfig('invalid-frontdesk')).toThrow(/llm\.routing/i);
+  });
+
+  it('rejects an explicit invalid routing transport even when the prompt path is valid', () => {
+    const groupDir = path.join(tmpState.root, 'groups', 'invalid-transport');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'container.json'),
+      JSON.stringify({
+        llm: {
+          routing: {
+            enabled: true,
+            provider: 'opencode-go',
+            model: 'mimo-v2.5',
+            promptFile: 'prompts/frontdesk-routing.md',
+            transport: 'bogus',
+          },
+        },
+      }),
+    );
+
+    expect(() => readContainerConfig('invalid-transport')).toThrow(/routing\.transport/i);
   });
 });

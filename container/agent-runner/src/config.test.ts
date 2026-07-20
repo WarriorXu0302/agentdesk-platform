@@ -70,4 +70,83 @@ describe('buildRunnerConfig (host→container container.json contract)', () => {
     expect(buildRunnerConfig({ confidenceThreshold: 1.5 }).confidenceThreshold).toBeUndefined();
     expect(buildRunnerConfig({ confidenceThreshold: 'high' }).confidenceThreshold).toBeUndefined();
   });
+
+  it('parses routing and execution roles with centralized policy defaults', () => {
+    const cfg = buildRunnerConfig({
+      llm: {
+        routing: {
+          enabled: true,
+          provider: 'opencode-go',
+          model: 'mimo-v2.5',
+          transport: 'chat-completions',
+          promptFile: 'prompts/frontdesk-routing.md',
+        },
+        execution: {
+          provider: 'opencode-go',
+          model: 'deepseek-v4-flash',
+          transport: 'chat-completions',
+        },
+      },
+    });
+
+    expect(cfg.llm?.routing).toEqual({
+      enabled: true,
+      provider: 'opencode-go',
+      model: 'mimo-v2.5',
+      transport: 'chat-completions',
+      promptFile: 'prompts/frontdesk-routing.md',
+      timeoutMs: 10_000,
+      retryTimes: 1,
+      context: { maxMessages: 4, maxChars: 12_000 },
+      confidence: { threshold: 0.7, belowThresholdAction: 'clarify' },
+      fallback: { action: 'clarify' },
+    });
+    expect(cfg.llm?.execution).toEqual({
+      provider: 'opencode-go',
+      model: 'deepseek-v4-flash',
+      transport: 'chat-completions',
+    });
+  });
+
+  it('rejects an enabled routing config that cannot be enforced safely', () => {
+    expect(() =>
+      buildRunnerConfig({
+        llm: { routing: { enabled: true, provider: 'opencode-go', model: '', promptFile: '../escape.md' } },
+      }),
+    ).toThrow(/routing/i);
+  });
+
+  it('fails closed on explicitly invalid routing transport and policy ranges', () => {
+    const base = {
+      enabled: true,
+      provider: 'opencode-go',
+      model: 'mimo-v2.5',
+      promptFile: 'prompts/frontdesk-routing.md',
+    };
+
+    expect(() => buildRunnerConfig({ llm: { routing: { ...base, transport: 'bogus' } } })).toThrow(
+      /routing\.transport/i,
+    );
+    expect(() => buildRunnerConfig({ llm: { routing: { ...base, retryTimes: 4 } } })).toThrow(/retryTimes/i);
+    expect(() => buildRunnerConfig({ llm: { routing: { ...base, confidence: { threshold: 1.1 } } } })).toThrow(
+      /confidence\.threshold/i,
+    );
+    expect(() => buildRunnerConfig({ llm: { routing: { ...base, fallback: { action: 'delegate' } } } })).toThrow(
+      /fallback\.action/i,
+    );
+  });
+
+  it('fails closed on an explicitly invalid execution transport', () => {
+    expect(() =>
+      buildRunnerConfig({
+        llm: { execution: { provider: 'opencode-go', transport: 'bogus' } },
+      }),
+    ).toThrow(/execution\.transport/i);
+  });
+
+  it('keeps legacy single-provider behavior when llm routing is absent', () => {
+    const cfg = buildRunnerConfig({ provider: 'claude' });
+    expect(cfg.provider).toBe('claude');
+    expect(cfg.llm).toBeUndefined();
+  });
 });

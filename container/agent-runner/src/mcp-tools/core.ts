@@ -14,6 +14,7 @@ import { getCurrentClassificationId, getCurrentInReplyTo } from '../current-batc
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { enforceRoutingDestination } from '../routing/gate.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -122,6 +123,8 @@ export const sendMessage: McpToolDefinition = {
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
+    const gate = enforceRoutingDestination(routing.channel_type, routing.platform_id, routing.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     // Explicit arg always wins (so a careful agent can still hand-link
     // a channel-side answer_self reply to its classification). Fallback
@@ -131,12 +134,10 @@ export const sendMessage: McpToolDefinition = {
     // otherwise it races to reconcile first and occupies outcome_ref
     // before the real delegation can link.
     const explicitClassificationId =
-      typeof args.classificationId === 'string' && args.classificationId.length > 0
-        ? args.classificationId
-        : undefined;
+      typeof args.classificationId === 'string' && args.classificationId.length > 0 ? args.classificationId : undefined;
     const isA2a = routing.channel_type === 'agent';
     const fallbackClassificationId = isA2a ? getCurrentClassificationId() : null;
-    const classificationId = explicitClassificationId ?? fallbackClassificationId ?? undefined;
+    const classificationId = gate.decisionId ?? explicitClassificationId ?? fallbackClassificationId ?? undefined;
     // Put classificationId in content (not outbound columns) so channel
     // adapters never have to look at it — only the host a2a / system
     // path cares. Inbound parsers ignore unknown top-level keys.
@@ -188,6 +189,8 @@ export const sendFile: McpToolDefinition = {
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
+    const gate = enforceRoutingDestination(routing.channel_type, routing.platform_id, routing.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
@@ -204,12 +207,10 @@ export const sendFile: McpToolDefinition = {
     // file-reply to the user doesn't race to link outcome_ref ahead of
     // a real delegation in the same turn).
     const explicitClassificationId =
-      typeof args.classificationId === 'string' && args.classificationId.length > 0
-        ? args.classificationId
-        : undefined;
+      typeof args.classificationId === 'string' && args.classificationId.length > 0 ? args.classificationId : undefined;
     const isA2a = routing.channel_type === 'agent';
     const fallbackClassificationId = isA2a ? getCurrentClassificationId() : null;
-    const classificationId = explicitClassificationId ?? fallbackClassificationId ?? undefined;
+    const classificationId = gate.decisionId ?? explicitClassificationId ?? fallbackClassificationId ?? undefined;
     const contentObj: Record<string, unknown> = { text: (args.text as string) || '', files: [filename] };
     if (classificationId) contentObj._classificationId = classificationId;
 
@@ -224,7 +225,9 @@ export const sendFile: McpToolDefinition = {
       origin_user_id: a2aOriginUserId(routing.channel_type),
     });
 
-    log(`send_file: ${id} → ${routing.resolvedName} (${filename})${classificationId ? ` cls=${classificationId}` : ''}`);
+    log(
+      `send_file: ${id} → ${routing.resolvedName} (${filename})${classificationId ? ` cls=${classificationId}` : ''}`,
+    );
     return ok(`File sent to ${routing.resolvedName} (id: ${id}, filename: ${filename})`);
   },
 };

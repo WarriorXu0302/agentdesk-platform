@@ -30,6 +30,9 @@ import {
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
 import { resolveBatchIdentity, splitBatchByTurn } from './request-identity.js';
+import type { RoutingLlmConfig } from './config.js';
+import { clearRoutingGate, enforceRoutingDestination, getRoutingGate, setRoutingGate } from './routing/gate.js';
+import { routeFrontdeskTurn, type EnforcedRoutingDecision, type RoutingUsage } from './routing/index.js';
 import {
   capContent,
   captureContentEnabled,
@@ -169,6 +172,122 @@ export interface PollLoopConfig {
    * until host-sweep kills it at the absolute ceiling (30 min).
    */
   idleExitMs?: number;
+  /** Optional abort signal used by controlled shutdowns and integration tests. */
+  signal?: AbortSignal;
+  /** Frontdesk-only enforced Routing phase. Omit for the exact legacy path. */
+  routing?: {
+    provider: AgentProvider;
+    config: RoutingLlmConfig;
+    agentRoot: string;
+  };
+}
+
+function routingEnabledForTurn(config: PollLoopConfig, messages: MessageInRow[], routing: RoutingContext): boolean {
+  return Boolean(
+    config.routing &&
+    routing.channelType !== 'agent' &&
+    messages.some((message) => message.trigger === 1 && (message.kind === 'chat' || message.kind === 'chat-sdk')),
+  );
+}
+
+function latestUserText(messages: MessageInRow[]): string {
+  const row = [...messages].reverse().find((message) => message.kind === 'chat' || message.kind === 'chat-sdk');
+  if (!row) return '';
+  try {
+    const parsed = JSON.parse(row.content) as Record<string, unknown>;
+    return typeof parsed.text === 'string' ? parsed.text.slice(0, 500) : '';
+  } catch {
+    return row.content.slice(0, 500);
+  }
+}
+
+function writeRoutingClassification(decision: EnforcedRoutingDecision, messages: MessageInRow[]): void {
+  const identity = getRequestIdentity();
+  writeMessageOut({
+    id: generateId(),
+    kind: 'system',
+    content: JSON.stringify({
+      action: 'classify_intent',
+      classificationId: decision.id,
+      userId: identity?.userId ?? null,
+      channelType: identity?.channelType ?? null,
+      platformId: identity?.platformId ?? null,
+      threadId: identity?.threadId ?? null,
+      userMessage: latestUserText(messages),
+      recommendedWorker: decision.target ?? null,
+      confidence: decision.confidence,
+      candidates: decision.target ? [decision.target] : [],
+      reasoning: decision.reason,
+      action_taken: decision.action,
+      decisionSource: decision.source,
+      routingProvider: decision.provider,
+      routingModel: decision.model,
+      promptHash: decision.promptHash,
+      attempts: decision.attempts,
+      fallbackReason: decision.fallbackReason ?? null,
+    }),
+  });
+}
+
+function writeRoutingUsage(usage: RoutingUsage, routing: RoutingContext): void {
+  writeMessageOut({
+    id: generateId(),
+    kind: 'llm-usage',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({
+      phase: usage.phase,
+      provider: usage.provider,
+      model: usage.model,
+      routingDecisionId: usage.decisionId,
+      attempt: usage.attempt,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      durationMs: usage.durationMs,
+      transport: usage.transport,
+    }),
+  });
+}
+
+function executionInstructions(base: string | undefined, decision: EnforcedRoutingDecision): string {
+  const actionInstruction =
+    decision.action === 'clarify'
+      ? 'Ask the user one concise clarification question. Do not delegate to any agent.'
+      : decision.action === 'reject'
+        ? 'Reply with a concise refusal. Do not delegate to any agent.'
+        : 'Handle the request yourself and reply to the origin channel. Do not delegate to any agent.';
+  const enforced = [
+    '## Enforced routing decision',
+    `decision_id: ${decision.id}`,
+    `action: ${decision.action}`,
+    actionInstruction,
+    'This decision is enforced by the runner and cannot be changed by model output or tools.',
+  ].join('\n');
+  return base ? `${base}\n\n${enforced}` : enforced;
+}
+
+function writeDirectDelegation(
+  decision: EnforcedRoutingDecision,
+  messages: MessageInRow[],
+  routing: RoutingContext,
+): void {
+  if (!decision.targetAgentGroupId) throw new Error('delegate decision is missing targetAgentGroupId');
+  writeMessageOut({
+    id: generateId(),
+    in_reply_to: routing.inReplyTo,
+    kind: 'chat',
+    platform_id: decision.targetAgentGroupId,
+    channel_type: 'agent',
+    thread_id: null,
+    content: JSON.stringify({
+      text: formatMessages(messages),
+      _classificationId: decision.id,
+      _routingDecisionId: decision.id,
+    }),
+    origin_user_id: a2aOriginUserId('agent'),
+  });
 }
 
 /**
@@ -202,6 +321,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
   let pollCount = 0;
   while (true) {
+    if (config.signal?.aborted) return;
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
     const messages = getPendingMessages().filter((m) => m.kind !== 'system');
     pollCount++;
@@ -333,28 +453,18 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    // Format messages: passthrough commands get raw text (only if the
-    // provider natively handles slash commands), others get XML.
-    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
-
-    log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
-
-    const query = config.provider.query({
-      prompt,
-      continuation,
-      cwd: config.cwd,
-      systemContext: config.systemContext,
-    });
-
     // Process the query while concurrently polling for new messages.
     // turnMessages already excludes the deferred rows (split happened
     // up-front), so we just filter out the turn's own /clear commands
     // and any rows the pre-task script gated.
     const skippedSet = new Set(skipped);
     const commandSet = new Set(commandIds);
-    const processingIds = turnMessages
-      .map((m) => m.id)
-      .filter((id) => !commandSet.has(id) && !skippedSet.has(id));
+    const processingIds = turnMessages.map((m) => m.id).filter((id) => !commandSet.has(id) && !skippedSet.has(id));
+    // A previous runner may have crashed after persisting its per-turn gate.
+    // Clear before every new claimed turn so an old decision/anchor can never
+    // constrain a replay or an unrelated legacy turn. A fresh routed decision
+    // is installed below before Execution starts.
+    clearRoutingGate();
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     // Use turnRouting (post-split) so deferred messages don't leak their
@@ -367,6 +477,57 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // cross-user misattribution in group/shared sessions.
     setRequestIdentity(resolveBatchIdentity(keep));
     try {
+      let enforcedDecision: EnforcedRoutingDecision | undefined;
+      if (routingEnabledForTurn(config, keep, turnRouting)) {
+        const routed = await routeFrontdeskTurn({
+          provider: config.routing!.provider,
+          config: config.routing!.config,
+          agentRoot: config.routing!.agentRoot,
+          messages: keep,
+          getWorkers: getAllDestinations,
+        });
+        enforcedDecision = routed.decision;
+        writeRoutingClassification(enforcedDecision, keep);
+        for (const usage of routed.usages) writeRoutingUsage(usage, turnRouting);
+        log(
+          `Routing decision enforced: id=${enforcedDecision.id} action=${enforcedDecision.action}` +
+            `${enforcedDecision.target ? ` target=${enforcedDecision.target}` : ''}` +
+            ` confidence=${enforcedDecision.confidence.toFixed(2)} model=${enforcedDecision.model}`,
+        );
+
+        if (enforcedDecision.action === 'delegate') {
+          writeDirectDelegation(enforcedDecision, keep, turnRouting);
+          markCompleted(processingIds);
+          log(`Completed ${turnMessages.length} message(s) by enforced delegation`);
+          continue;
+        }
+
+        setRoutingGate({
+          decisionId: enforcedDecision.id,
+          anchorId: turnRouting.inReplyTo ?? processingIds[0] ?? '',
+          action: enforcedDecision.action,
+          originChannelType: turnRouting.channelType ?? undefined,
+          originPlatformId: turnRouting.platformId ?? undefined,
+          originThreadId: turnRouting.threadId ?? null,
+        });
+      }
+
+      // Format messages only after Routing has selected the execution action.
+      const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+      log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
+      if (enforcedDecision) {
+        log(`Execution request started: decision=${enforcedDecision.id} provider=${config.providerName}`);
+      }
+      const query = config.provider.query({
+        prompt,
+        continuation,
+        cwd: config.cwd,
+        systemContext: {
+          instructions: enforcedDecision
+            ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
+            : config.systemContext?.instructions,
+        },
+      });
       const result = await processQuery(query, turnRouting, processingIds, config.providerName, prompt);
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -417,6 +578,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       clearCurrentInReplyTo();
       clearRequestIdentity();
       clearCurrentClassificationId();
+      clearRoutingGate();
     }
 
     // Ensure completed even if processQuery ended without a result event
@@ -737,6 +899,7 @@ async function runQuery(
             .catch((e) => log(`conversation.summary flush error: ${e instanceof Error ? e.message : String(e)}`));
         }
       } else if (event.type === 'usage') {
+        const activeRoutingGate = getRoutingGate();
         // provider.request (LLM) span (ADR-0026). Each usage event marks one
         // completed model invocation. agent.turn is the active span, so this
         // auto-nests as its child. Synchronous start+end: usage arrives after
@@ -754,6 +917,10 @@ async function runQuery(
           llmSpan.setAttribute('openinference.span.kind', 'LLM');
           llmSpan.setAttribute('llm.system', providerName);
           llmSpan.setAttribute('llm.model_name', event.model);
+          if (activeRoutingGate) {
+            llmSpan.setAttribute('llm.phase', 'execution');
+            llmSpan.setAttribute('routing.decision_id', activeRoutingGate.decisionId);
+          }
           if (event.inputTokens !== undefined) {
             llmSpan.setAttribute('llm.token_count.prompt', event.inputTokens);
           }
@@ -804,6 +971,13 @@ async function runQuery(
           channel_type: routing.channelType,
           thread_id: routing.threadId,
           content: JSON.stringify({
+            ...(activeRoutingGate
+              ? {
+                  phase: 'execution',
+                  provider: providerName,
+                  routingDecisionId: activeRoutingGate.decisionId,
+                }
+              : {}),
             model: event.model,
             inputTokens: event.inputTokens,
             outputTokens: event.outputTokens,
@@ -861,6 +1035,10 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  */
 export function normalizeMessageBlocks(text: string): string {
   return text
+    // Some OpenAI-compatible models leak their internal DSML parameter
+    // delimiter into otherwise valid final text. It is transport metadata,
+    // not user content, and must not cross the outbound message boundary.
+    .replace(/<\/?｜｜DSML｜｜parameter>/g, '')
     .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
     .replace(/<\s+message(?=\s+to=)/g, '<message')
     .replace(/<\/\s*message\s*>/g, '</message>')
@@ -932,11 +1110,22 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
 export function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
   const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
   const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  const isOriginChannel =
+    dest.type === 'channel' && channelType === routing.channelType && platformId === routing.platformId;
+  const candidateThreadId = isOriginChannel ? routing.threadId : null;
+  const gate = enforceRoutingDestination(channelType, platformId, candidateThreadId);
+  if (!gate.allowed) {
+    log(`Enforced routing rejected destination "${dest.name}" (${gate.reason}, decision=${gate.decisionId})`);
+    return;
+  }
   // Resolve thread_id per-destination from the most recent inbound message
   // that came from this same channel+platform. In agent-shared sessions,
   // different destinations have different thread contexts — using a single
   // routing.threadId would stamp one channel's thread onto another.
-  const destRouting = resolveDestinationThread(channelType, platformId);
+  const destRouting =
+    gate.decisionId && isOriginChannel
+      ? { threadId: routing.threadId, inReplyTo: routing.inReplyTo }
+      : resolveDestinationThread(channelType, platformId);
 
   // Attribution + classification closure for the main delegation
   // protocol: agents write <message to="worker">...</message> and this
@@ -956,7 +1145,7 @@ export function sendToDestination(dest: DestinationEntry, body: string, routing:
   // delegation-flow concept; don't leak it to channel acks.
   const content: Record<string, unknown> = { text: body };
   const isA2a = channelType === 'agent';
-  const classificationId = isA2a ? getCurrentClassificationId() : null;
+  const classificationId = gate.decisionId ?? (isA2a ? getCurrentClassificationId() : null);
   if (classificationId) content._classificationId = classificationId;
 
   writeMessageOut({

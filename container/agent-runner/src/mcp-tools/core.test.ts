@@ -16,6 +16,7 @@ import {
   setCurrentInReplyTo,
 } from '../current-batch.js';
 import { setRequestIdentity, clearRequestIdentity } from '../request-context.js';
+import { clearRoutingGate, setRoutingGate } from '../routing/gate.js';
 import { sendMessage } from './core.js';
 
 beforeEach(() => {
@@ -33,6 +34,7 @@ afterEach(() => {
   clearCurrentInReplyTo();
   clearCurrentClassificationId();
   clearRequestIdentity();
+  clearRoutingGate();
   closeSessionDb();
 });
 
@@ -170,5 +172,79 @@ describe('send_message MCP tool — classificationId scoping', () => {
 
     const out = getUndeliveredMessages();
     expect(JSON.parse(out[0].content)._classificationId).toBe('cls-explicit');
+  });
+});
+
+describe('send_message MCP tool — enforced routing gate', () => {
+  it('refuses an agent send during an answer_self execution turn', async () => {
+    setRoutingGate({ decisionId: 'route-answer', anchorId: 'm1', action: 'answer_self' });
+    const result = await sendMessage.handler({ to: 'peer', text: 'try to override route' });
+    expect(result.isError).toBe(true);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('auto-attaches the controller decision id to the allowed user-facing reply', async () => {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('chan', 'Chan', 'channel', 'cli', 'local', NULL)`,
+      )
+      .run();
+    setRoutingGate({
+      decisionId: 'route-answer',
+      anchorId: 'm1',
+      action: 'answer_self',
+      originChannelType: 'cli',
+      originPlatformId: 'local',
+    });
+    await sendMessage.handler({ to: 'chan', text: 'hello' });
+    expect(JSON.parse(getUndeliveredMessages()[0]!.content)._classificationId).toBe('route-answer');
+  });
+
+  it('refuses an MCP send to a non-origin channel during routed execution', async () => {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('origin', 'Origin', 'channel', 'cli', 'local', NULL),
+                ('other', 'Other', 'channel', 'feishu', 'feishu:group:other', NULL)`,
+      )
+      .run();
+    setRoutingGate({
+      decisionId: 'route-origin-only',
+      anchorId: 'm1',
+      action: 'reject',
+      originChannelType: 'cli',
+      originPlatformId: 'local',
+    });
+
+    const result = await sendMessage.handler({ to: 'other', text: 'wrong surface' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/non_origin_destination/);
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('keeps the controller decision id authoritative over a model-supplied classification id', async () => {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('origin', 'Origin', 'channel', 'cli', 'local', NULL)`,
+      )
+      .run();
+    setRoutingGate({
+      decisionId: 'route-authoritative',
+      anchorId: 'm1',
+      action: 'answer_self',
+      originChannelType: 'cli',
+      originPlatformId: 'local',
+    });
+
+    await sendMessage.handler({
+      to: 'origin',
+      text: 'hello',
+      classificationId: 'model-forged-id',
+    });
+
+    expect(JSON.parse(getUndeliveredMessages()[0]!.content)._classificationId).toBe('route-authoritative');
   });
 });
