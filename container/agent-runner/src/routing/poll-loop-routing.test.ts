@@ -51,6 +51,58 @@ class OneShotProvider implements AgentProvider {
   }
 }
 
+class HoldFirstExecutionProvider implements AgentProvider {
+  readonly supportsNativeSlashCommands = false;
+  calls: QueryInput[] = [];
+  pushCount = 0;
+  endCount = 0;
+  firstStarted = false;
+  private finishFirstTurn: (() => void) | undefined;
+
+  finishFirst(): void {
+    this.finishFirstTurn?.();
+  }
+
+  isSessionInvalid(): boolean {
+    return false;
+  }
+
+  query(input: QueryInput): AgentQuery {
+    this.calls.push(input);
+    const call = this.calls.length;
+    if (call > 1) {
+      return new OneShotProvider('<message to="cli-local">second turn</message>', 'deepseek-v4-flash').query(input);
+    }
+    const provider = this;
+    let release!: () => void;
+    const ended = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.finishFirstTurn = release;
+    return {
+      push() {
+        provider.pushCount += 1;
+      },
+      pushSystemReminder() {},
+      end() {
+        provider.endCount += 1;
+        release();
+      },
+      abort() {
+        release();
+      },
+      events: {
+        async *[Symbol.asyncIterator]() {
+          provider.firstStarted = true;
+          yield { type: 'init' as const, continuation: 'held-first-turn' };
+          await ended;
+          yield { type: 'result' as const, text: '<message to="cli-local">first turn</message>' };
+        },
+      },
+    };
+  }
+}
+
 let root = '';
 beforeEach(() => {
   initTestSessionDb();
@@ -103,6 +155,48 @@ async function waitFor(condition: () => boolean, timeoutMs = 2500): Promise<void
 }
 
 describe('poll loop enforced Routing + Execution', () => {
+  it('queues a same-session follow-up and routes it independently after the active execution finishes', async () => {
+    const routingProvider = new OneShotProvider(
+      JSON.stringify({ action: 'answer_self', confidence: 0.99, reason: 'answer locally' }),
+      'mimo-v2.5',
+    );
+    const executionProvider = new HoldFirstExecutionProvider();
+    const controller = new AbortController();
+    const loop = runPollLoop({
+      provider: executionProvider,
+      providerName: 'opencode-go',
+      cwd: root,
+      signal: controller.signal,
+      routing: { provider: routingProvider, config: routingConfig(), agentRoot: root },
+    });
+
+    await waitFor(() => executionProvider.firstStarted);
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in
+          (id, seq, kind, timestamp, status, trigger, platform_id, channel_type, thread_id, content)
+         VALUES ('m2', 4, 'chat', datetime('now'), 'pending', 1, 'local', 'cli', NULL,
+           '{"sender":"User","senderId":"local","text":"a distinct follow-up"}')`,
+      )
+      .run();
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(executionProvider.endCount).toBe(0);
+    expect(executionProvider.pushCount).toBe(0);
+    expect(routingProvider.calls).toHaveLength(1);
+
+    executionProvider.finishFirst();
+    await waitFor(() => routingProvider.calls.length === 2 && executionProvider.calls.length === 2);
+    controller.abort();
+    await loop;
+
+    expect(executionProvider.endCount).toBe(0);
+    expect(executionProvider.pushCount).toBe(0);
+    expect(routingProvider.calls[0].prompt).toContain('hello');
+    expect(routingProvider.calls[0].prompt).not.toContain('a distinct follow-up');
+    expect(routingProvider.calls[1].prompt).toContain('a distinct follow-up');
+  });
+
   it('runs mimo routing before deepseek execution and correlates both usage rows', async () => {
     const routingProvider = new OneShotProvider(
       JSON.stringify({ action: 'answer_self', confidence: 0.99, reason: 'greeting' }),

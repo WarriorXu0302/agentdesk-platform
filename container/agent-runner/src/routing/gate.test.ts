@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { closeSessionDb, initTestSessionDb } from '../db/connection.js';
-import { clearRoutingGate, enforceRoutingDestination, getRoutingGate, setRoutingGate } from './gate.js';
+import {
+  clearRoutingGate,
+  enforceRoutingDestination,
+  enforceRoutingOpaqueOutbound,
+  getRoutingGate,
+  setRoutingGate,
+} from './gate.js';
 
 beforeEach(() => initTestSessionDb());
 afterEach(() => closeSessionDb());
@@ -55,5 +61,24 @@ describe('cross-process routing gate', () => {
     clearRoutingGate();
     expect(getRoutingGate()).toBeUndefined();
     expect(enforceRoutingDestination('agent', 'ag-any')).toEqual({ allowed: true });
+  });
+
+  it('fails closed for a channel destination when a persisted gate has no origin route', () => {
+    setRoutingGate({ decisionId: 'route-4', anchorId: 'm4', action: 'answer_self' });
+    expect(enforceRoutingDestination('cli', 'local')).toEqual({
+      allowed: false,
+      decisionId: 'route-4',
+      reason: 'origin_destination_unavailable',
+    });
+  });
+
+  it('rejects opaque recipient operations whenever a routed execution gate is active', () => {
+    expect(enforceRoutingOpaqueOutbound()).toEqual({ allowed: true });
+    setRoutingGate({ decisionId: 'route-5', anchorId: 'm5', action: 'delegate', targetAgentGroupId: 'ag-finance' });
+    expect(enforceRoutingOpaqueOutbound()).toEqual({
+      allowed: false,
+      decisionId: 'route-5',
+      reason: 'opaque_destination_forbidden',
+    });
   });
 });

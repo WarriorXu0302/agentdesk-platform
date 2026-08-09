@@ -151,3 +151,21 @@ export function splitBatchByTurn(batch: MessageInRow[]): { keep: MessageInRow[];
   }
   return { keep, defer };
 }
+
+/**
+ * 即使用户身份和路由表面与前一条消息相同，用户 trigger 仍会开启新的路由
+ * 回合。仅按身份切分无法表达该边界：连续两条来自 Alice 的消息看似可以
+ * 合并，却会错误地共用同一个 Routing 决策。
+ *
+ * 已累积的上下文随前一个 trigger 保留，直到下一个 trigger 到来。调用方
+ * 只对保留片段应用 `splitBatchByTurn`；延后的行保持 pending，留给后续回合。
+ */
+export function splitBatchByTrigger(batch: MessageInRow[]): { keep: MessageInRow[]; defer: MessageInRow[] } {
+  let foundTrigger = false;
+  for (let index = 0; index < batch.length; index++) {
+    if (batch[index].trigger !== 1) continue;
+    if (foundTrigger) return { keep: batch.slice(0, index), defer: batch.slice(index) };
+    foundTrigger = true;
+  }
+  return { keep: batch, defer: [] };
+}
