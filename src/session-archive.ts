@@ -27,6 +27,7 @@ import {
   deleteSession,
   findArchivableSessions,
   findArchivedSessionsOlderThan,
+  getSession,
   updateSession,
 } from './db/sessions.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -100,11 +101,21 @@ async function spawnTarAsync(src: string, dst: string): Promise<void> {
 }
 
 /**
+ * Raised when a session woke up while its tar was running, so the destructive
+ * delete must be skipped. Not an error condition — the session is simply
+ * archived on a later tick, once it is genuinely idle again.
+ */
+class ArchiveAbortedError extends Error {}
+
+/**
  * Tar + gzip a session's directory into the archive tree. Async.
  * Idempotent: overwrites an existing archive with the same id (in
  * practice only happens if a prior archive crashed mid-run).
+ *
+ * `stillQuiescent` is re-checked AFTER the tar and BEFORE the delete; when it
+ * returns false the fresh tarball is discarded and ArchiveAbortedError is thrown.
  */
-export async function archiveSessionFiles(session: Session): Promise<string | null> {
+export async function archiveSessionFiles(session: Session, stillQuiescent?: () => boolean): Promise<string | null> {
   const src = sessionDir(session.agent_group_id, session.id);
   if (!fs.existsSync(src)) return null;
 
@@ -112,6 +123,20 @@ export async function archiveSessionFiles(session: Session): Promise<string | nu
   fs.mkdirSync(path.dirname(dst), { recursive: true });
 
   await spawnTarAsync(src, dst);
+
+  // RE-VALIDATE BEFORE THE DESTRUCTIVE DELETE. spawnTarAsync awaits a child
+  // process, which yields the event loop for the entire tar (up to
+  // ARCHIVE_BATCH_LIMIT of them concurrently), so the router keeps serving
+  // traffic. A user messaging this idle session mid-tar is still resolved to it
+  // (findSessionForAgent filters status='active', and the flip to 'archived'
+  // happens only after the tar), the host writes into <sessDir>/inbound.db and
+  // wakes a container mounted on that same dir — and this rmSync would then
+  // unlink inbound.db / outbound.db / outbox out from under it, losing the
+  // message. The candidate list is a pre-tar snapshot and cannot see that.
+  if (stillQuiescent && !stillQuiescent()) {
+    fs.rmSync(dst, { force: true });
+    throw new ArchiveAbortedError('session became active during archive');
+  }
 
   fs.rmSync(src, { recursive: true, force: true });
   return dst;
@@ -133,7 +158,18 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
   }
   archivesInProgress.add(session.id);
   try {
-    const archivePath = await archiveSessionFiles(session);
+    const archivePath = await archiveSessionFiles(session, () => {
+      // Anything that moved since the pre-tar snapshot means the session is live
+      // again: a new inbound bumps last_active, waking a container flips
+      // container_status, and a concurrent archive/close changes status.
+      const fresh = getSession(session.id);
+      return (
+        !!fresh &&
+        fresh.status === 'active' &&
+        fresh.container_status === 'stopped' &&
+        fresh.last_active === session.last_active
+      );
+    });
     // `archived_at` is the hard-delete gate. Set it to now so the retention
     // window (AGENTDESK_ARCHIVE_HARD_DELETE_DAYS) starts here, not at
     // last_active — otherwise an ancient idle session gets tarred and
@@ -157,6 +193,12 @@ export async function archiveSession(session: Session, now: Date = new Date()): 
     });
     return true;
   } catch (err) {
+    if (err instanceof ArchiveAbortedError) {
+      // Expected, not a failure: the session woke up mid-tar. Its directory is
+      // untouched and it stays 'active', so a later tick archives it.
+      log.info('Session archive aborted — session became active mid-archive', { sessionId: session.id });
+      return false;
+    }
     log.error('Session archive failed', { sessionId: session.id, err });
     return false;
   } finally {

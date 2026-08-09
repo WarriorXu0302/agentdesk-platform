@@ -318,6 +318,40 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           const startedAt = Date.now();
           // Capture the long-running listener promise via waitUntil
           let listenerPromise: Promise<unknown> | undefined;
+
+          // Hoisted OUT of the .then callback so it is reachable from every
+          // failure path. Previously the whole backoff machinery lived inside
+          // that callback and was wired only to `listenerPromise`, so two
+          // realistic failures ended the restart loop for good and the channel
+          // went permanently deaf: (1) startGatewayListener itself REJECTING
+          // (Discord GET /gateway/bot 429/503, a DNS/TLS blip at boot, an
+          // invalid token) became an unhandled rejection — the process only
+          // counts those — and (2) it resolving without ever calling waitUntil
+          // left listenerPromise undefined and the `if (!listenerPromise) return`
+          // bailed out silently.
+          const reschedule = (err?: unknown) => {
+            if (gatewayAbort?.signal.aborted) return;
+            const ranForMs = Date.now() - startedAt;
+            if (ranForMs > 5 * 60 * 1000) consecutiveFailures = 0;
+            else consecutiveFailures++;
+            const delayMs = Math.min(60 * 60 * 1000, 2 ** consecutiveFailures * 1000);
+            if (err) {
+              log.error('Gateway listener error, retrying', {
+                adapter: adapter.name,
+                err,
+                consecutiveFailures,
+                delayMs,
+              });
+            } else {
+              log.info('Gateway listener expired, restarting', {
+                adapter: adapter.name,
+                consecutiveFailures,
+                delayMs,
+              });
+            }
+            setTimeout(startGateway, delayMs);
+          };
+
           gatewayAdapter.startGatewayListener!(
             {
               waitUntil: (p: Promise<unknown>) => {
@@ -327,34 +361,17 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
             24 * 60 * 60 * 1000,
             gatewayAbort!.signal,
             webhookUrl,
-          ).then(() => {
-            // startGatewayListener resolves immediately with a Response;
-            // the actual work is in the listenerPromise passed to waitUntil
-            if (!listenerPromise) return;
-            const reschedule = (err?: unknown) => {
-              if (gatewayAbort?.signal.aborted) return;
-              const ranForMs = Date.now() - startedAt;
-              if (ranForMs > 5 * 60 * 1000) consecutiveFailures = 0;
-              else consecutiveFailures++;
-              const delayMs = Math.min(60 * 60 * 1000, 2 ** consecutiveFailures * 1000);
-              if (err) {
-                log.error('Gateway listener error, retrying', {
-                  adapter: adapter.name,
-                  err,
-                  consecutiveFailures,
-                  delayMs,
-                });
-              } else {
-                log.info('Gateway listener expired, restarting', {
-                  adapter: adapter.name,
-                  consecutiveFailures,
-                  delayMs,
-                });
+          )
+            .then(() => {
+              // startGatewayListener resolves immediately with a Response;
+              // the actual work is in the listenerPromise passed to waitUntil
+              if (!listenerPromise) {
+                reschedule(new Error('gateway listener resolved without calling waitUntil'));
+                return;
               }
-              setTimeout(startGateway, delayMs);
-            };
-            listenerPromise.then(() => reschedule()).catch(reschedule);
-          });
+              listenerPromise.then(() => reschedule()).catch(reschedule);
+            })
+            .catch(reschedule);
         };
         startGateway();
         log.info('Gateway listener started', { adapter: adapter.name });

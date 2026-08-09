@@ -86,11 +86,20 @@ export const PLATFORM_PROTOCOL_NAMESPACE = sanitizeNamespace(readBrandVar('BRAND
 export const MCP_SERVER_NAME = PLATFORM_PROTOCOL_NAMESPACE;
 
 /**
- * Prometheus metric prefix. Metric names allow only `[a-zA-Z0-9_:]`, so the
- * namespace's hyphens become underscores. e.g. namespace `my-brand` →
- * metric prefix `my_brand` → `my_brand_inbound_total`.
+ * Prometheus metric prefix. Metric names allow only `[a-zA-Z0-9_:]` AND must not
+ * start with a digit, so the namespace's hyphens become underscores and a leading
+ * digit gets an underscore prefix.
+ * e.g. `my-brand` → `my_brand` → `my_brand_inbound_total`; `3dlab` → `_3dlab`.
+ *
+ * The digit guard matters because `sanitizeNamespace` (and the documented rule,
+ * "lowercase [a-z0-9-]") allows a leading digit, which is fine for Docker labels
+ * and DNS labels but not for Prometheus. Without it, `BRAND_NAMESPACE=3dlab` made
+ * prom-client throw `Invalid metric name` while src/metrics.ts was still being
+ * imported — killing the host before any startup logging, with an error naming
+ * neither BRAND_NAMESPACE nor the offending metric.
  */
-export const METRIC_PREFIX = PLATFORM_PROTOCOL_NAMESPACE.replace(/-/g, '_');
+const rawMetricPrefix = PLATFORM_PROTOCOL_NAMESPACE.replace(/-/g, '_');
+export const METRIC_PREFIX = /^[0-9]/.test(rawMetricPrefix) ? `_${rawMetricPrefix}` : rawMetricPrefix;
 
 /**
  * Default frontdesk agent group folder + display name. A fresh install

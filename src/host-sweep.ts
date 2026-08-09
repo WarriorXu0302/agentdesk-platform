@@ -51,7 +51,7 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { DATA_DIR } from './config.js';
+import { CONTAINER_TIMEOUT, DATA_DIR } from './config.js';
 import {
   approvalEventsTotal,
   dataDirFreeRatio,
@@ -142,7 +142,13 @@ export function recentTokenUsage(outDb: Database.Database, windowSec: number, no
 // Absolute idle ceiling for a running container. If the heartbeat file hasn't
 // been touched in this long, the container is either stuck or doing genuinely
 // nothing — kill and restart on the next inbound.
-export const ABSOLUTE_CEILING_MS = 30 * 60 * 1000;
+//
+// Operator-tunable via CONTAINER_TIMEOUT (documented in .env.example as the
+// per-run hard timeout for a container). It used to be parsed and exported by
+// config.ts but read by NOTHING, so an operator who set it believed a cap was in
+// force when only this hard-coded 30 minutes applied. `Math.max(60_000, …)`
+// keeps a typo or `0` from disabling the kill path entirely.
+export const ABSOLUTE_CEILING_MS = Math.max(60_000, CONTAINER_TIMEOUT || 30 * 60 * 1000);
 // Stuck tolerance window applied per 'processing' claim — "did we see any
 // signs of life since this message was claimed?"
 export const CLAIM_STUCK_MS = 60 * 1000;

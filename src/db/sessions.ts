@@ -132,9 +132,19 @@ export function getAllSessions(): Session[] {
 }
 
 /**
- * Active sessions whose last_active is older than `beforeIso` and whose
- * container isn't currently running. Running sessions are never archived —
- * archival tears down the filesystem out from under the container.
+ * Active sessions idle since before `beforeIso` whose container isn't currently
+ * running. Running sessions are never archived — archival tears down the
+ * filesystem out from under the container.
+ *
+ * Idleness falls back to `created_at` when `last_active` is NULL. A session row
+ * and its on-disk dir are created by resolveSession BEFORE the command gate
+ * runs, so a first message that the gate filters (e.g. `/help`) leaves
+ * last_active NULL forever — nothing ever backfills it. With an
+ * `IS NOT NULL` predicate those rows were excluded from archiving permanently
+ * (and hard-delete only considers status='archived', so no other reaper could
+ * reach them): the dirs leaked and host-sweep re-opened both SQLite files for
+ * them on every tick. COALESCE keeps the young-session protection — a fresh
+ * session's created_at is recent — while letting never-used sessions age out.
  *
  * `limit` caps per-tick work so a huge backlog doesn't block the sweep.
  */
@@ -144,9 +154,8 @@ export function findArchivableSessions(beforeIso: string, limit: number): Sessio
       `SELECT * FROM sessions
          WHERE status = 'active'
            AND container_status = 'stopped'
-           AND last_active IS NOT NULL
-           AND last_active < ?
-         ORDER BY last_active ASC
+           AND COALESCE(last_active, created_at) < ?
+         ORDER BY COALESCE(last_active, created_at) ASC
          LIMIT ?`,
     )
     .all(beforeIso, limit) as Session[];

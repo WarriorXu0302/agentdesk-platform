@@ -21,7 +21,8 @@ vi.mock('./config.js', async () => {
 
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
 const { createAgentGroup } = await import('./db/agent-groups.js');
-const { createSession, getSession, getSessionsByAgentGroup } = await import('./db/sessions.js');
+const { createSession, getSession, getSessionsByAgentGroup, updateSession } = await import('./db/sessions.js');
+const { getDb } = await import('./db/connection.js');
 const { sessionDir } = await import('./session-manager.js');
 const { archiveSession, hardDeleteArchivedSession, runSessionLifecycleSweep } = await import('./session-archive.js');
 
@@ -85,6 +86,27 @@ describe('archiveSession', () => {
     const archivePath = path.join(tmpState.root, 'data', 'v2-sessions-archive', 'ag-1', 's1.tar.gz');
     expect(fs.existsSync(archivePath)).toBe(true);
     expect(getSession('s1')!.status).toBe('archived');
+  });
+
+  it('aborts the delete when the session wakes up mid-tar (no message loss)', async () => {
+    // Regression: the candidate list is a PRE-tar snapshot, and spawnTarAsync
+    // awaits a child process — so the router keeps serving traffic and a user can
+    // message this idle session mid-tar. The old code then rmSync'd the dir,
+    // unlinking inbound.db / outbound.db out from under the freshly woken
+    // container and losing the message. JS is single-threaded, so the update
+    // below is guaranteed to land while the tar child is still running.
+    seedSession({ id: 's1', agentGroupId: 'ag-1', lastActive: '2020-01-01T00:00:00.000Z' });
+    const src = sessionDir('ag-1', 's1');
+
+    const pending = archiveSession(getSession('s1')!);
+    updateSession('s1', { last_active: new Date().toISOString() }); // "user messaged it"
+    const ok = await pending;
+
+    expect(ok).toBe(false);
+    expect(fs.existsSync(src)).toBe(true); // dir (and its DBs) survived
+    expect(getSession('s1')!.status).toBe('active'); // still routable
+    // The half-useful tarball was discarded rather than left as a stale archive.
+    expect(fs.existsSync(path.join(tmpState.root, 'data', 'v2-sessions-archive', 'ag-1', 's1.tar.gz'))).toBe(false);
   });
 
   it('is idempotent-ish: missing source dir does not throw, status still flips', async () => {
@@ -157,12 +179,31 @@ describe('runSessionLifecycleSweep', () => {
     expect(getSession('s-alive')!.status).toBe('active');
   });
 
-  it('does not archive sessions with null last_active', async () => {
+  it('does not archive a YOUNG session with null last_active', async () => {
+    // Idleness falls back to created_at, which seedSession sets to now() — so a
+    // fresh never-used session is still protected.
     process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
     seedSession({ id: 's-fresh', agentGroupId: 'ag-1', lastActive: null });
 
     const result = await runSessionLifecycleSweep();
     expect(result.archived).toBe(0);
+  });
+
+  it('DOES archive an old session that never got a last_active', async () => {
+    // Regression: resolveSession creates the row + dir BEFORE the command gate,
+    // so a first message the gate filters (e.g. `/help`) leaves last_active NULL
+    // forever — nothing backfills it. The old `last_active IS NOT NULL` predicate
+    // excluded those rows from archiving permanently, and hard-delete only looks
+    // at status='archived', so no reaper could ever reach them: leaked dirs plus
+    // per-tick sweep work forever.
+    process.env.AGENTDESK_SESSION_TTL_DAYS = '1';
+    seedSession({ id: 's-stale', agentGroupId: 'ag-1', lastActive: null });
+    // Age the row's creation time past the TTL window.
+    getDb().prepare("UPDATE sessions SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 's-stale'").run();
+
+    const result = await runSessionLifecycleSweep();
+    expect(result.archived).toBe(1);
+    expect(getSession('s-stale')!.status).toBe('archived');
   });
 
   it('does NOT hard-delete a session the same tick it was archived', async () => {
