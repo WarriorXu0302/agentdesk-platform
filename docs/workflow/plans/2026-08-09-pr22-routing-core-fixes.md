@@ -59,3 +59,9 @@
 **步骤：** 每个任务后运行聚焦测试；随后运行 Runner typecheck/tests 和受 A2A 交付影响的 Host 测试。检查最终差异，避免意外扩大范围。
 
 **验收：** 所有选定测试通过；在用户审阅已完成差异前不创建最终 git commit。
+
+## 补充：CI 生产依赖审计修复
+
+PR 分支的 CI 在 `pnpm audit --prod --audit-level high` 阶段发现三条可修复的依赖链：`axios`、`@opentelemetry/propagator-jaeger` 和 `brace-expansion@2`。使用针对性的 `pnpm.overrides` 升级到公告要求的已修复同主版本，避免执行无差别 `pnpm update` 并扩大 lockfile 变更。
+
+审计命令显式传入 `--registry=https://registry.npmjs.org/`。这只覆盖本次命令的 registry，不修改开发者全局 pnpm/npm 配置；因此 CI 可稳定取得公开漏洞库，本地使用内部镜像的其他依赖安装命令不受影响。
