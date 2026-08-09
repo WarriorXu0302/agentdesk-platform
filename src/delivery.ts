@@ -1022,7 +1022,14 @@ async function deliverRosterMessage(
   // the same message reuses its standing reservation rather than charging again
   // (#4). On over-limit the transaction rolls back and nothing is consumed, so a
   // rejected attempt never burns quota.
-  const reservation = reserveRosterSend(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+  // Capture ONE timestamp and thread it through both reserve and the rollback
+  // below. Each defaults `now` to a fresh new Date(); if the adapter await
+  // crosses a rate-window boundary, an unpinned rollback would floor to a
+  // DIFFERENT ledger row than reserve charged, orphaning the original charge
+  // (and, since the fixed-window sentinel marker still deletes, letting the
+  // retry double-charge). A shared timestamp keeps both on the same window row.
+  const reservedAt = new Date();
+  const reservation = reserveRosterSend(msg.id, grant.id, rateKeys, rateWindows, deployQuota, reservedAt);
   if (!reservation.ok) {
     return reject(reservation.reason, {
       slotLabel,
@@ -1086,7 +1093,7 @@ async function deliverRosterMessage(
     // re-reserves fresh and sends a DUPLICATE (R5 / invariant 6). Treat a
     // carried-over reservation like the timeout branch: keep it and just rethrow.
     if (reservation.fresh) {
-      rollbackRosterReservation(msg.id, grant.id, rateKeys, rateWindows, deployQuota);
+      rollbackRosterReservation(msg.id, grant.id, rateKeys, rateWindows, deployQuota, reservedAt);
     }
     throw err;
   }

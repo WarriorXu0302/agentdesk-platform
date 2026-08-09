@@ -60,7 +60,11 @@ import type { InboundEvent } from '../../channels/adapter.js';
 import type { AgentGroup } from '../../types.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
 import { canAccessAgentGroup } from './access.js';
-import { createPendingChannelApproval, hasInFlightChannelApproval } from './db/pending-channel-approvals.js';
+import {
+  createPendingChannelApproval,
+  deletePendingChannelApproval,
+  hasInFlightChannelApproval,
+} from './db/pending-channel-approvals.js';
 
 // ── Value constants (response handler in index.ts parses these) ──
 
@@ -245,7 +249,17 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
       approver: delivery.userId,
     });
   } catch (err) {
-    log.error('Channel registration card delivery failed', { messagingGroupId, err });
+    // A TRANSIENT delivery failure must not strand the dedup row: the PK is
+    // messaging_group_id and hasInFlightChannelApproval is purely existential
+    // (no TTL, no sweeper), so a leftover row would silently drop every future
+    // mention/DM escalation for this channel — wedging onboarding forever.
+    // Delete it so the next inbound re-escalates, matching the documented
+    // "log + no row, so a future attempt can try again" contract.
+    deletePendingChannelApproval(messagingGroupId);
+    log.error('Channel registration card delivery failed — dedup row cleared for retry', {
+      messagingGroupId,
+      err,
+    });
   }
 }
 

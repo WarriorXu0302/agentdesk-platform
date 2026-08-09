@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
-import { getPendingMessages, markCompleted } from './db/messages-in.js';
+import { getPendingMessages, markCompleted, markProcessing, releaseProcessing } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
@@ -128,6 +128,32 @@ describe('accumulate gate (trigger column)', () => {
       .run();
     const [msg] = getPendingMessages();
     expect(msg.trigger).toBe(1);
+  });
+});
+
+describe('follow-up claim recovery (stranded-processing fix)', () => {
+  // When the poll handler claims a follow-up (markProcessing) and the outer
+  // query then finishes mid-await, the `if (done)` re-check must RELEASE the
+  // claim. This locks the mechanism that makes that necessary: getPendingMessages
+  // filters out ANY id in processing_ack regardless of status, so a stranded
+  // 'processing' row is invisible — and markCompleted does NOT recover it.
+  it('a claimed follow-up is hidden from pending; only releaseProcessing recovers it', () => {
+    insertMessage('m-A', 'chat', { text: 'in-flight turn' });
+    insertMessage('m-B', 'chat', { text: 'follow-up' });
+
+    // Handler claims the follow-up before awaiting pre-task scripts.
+    markProcessing(['m-B']);
+    expect(getPendingMessages().map((m) => m.id)).toEqual(['m-A']); // B hidden while claimed
+
+    // markCompleted would be WRONG here — B was never processed — and it keeps B
+    // hidden forever while the container stays warm (this is the old bug's effect).
+    markCompleted(['m-B']);
+    expect(getPendingMessages().map((m) => m.id)).toEqual(['m-A']); // still stranded
+
+    // The fix: releaseProcessing drops the ack row, returning B to pending so the
+    // next poll / host sweep re-delivers it.
+    releaseProcessing(['m-B']);
+    expect(getPendingMessages().map((m) => m.id).sort()).toEqual(['m-A', 'm-B']);
   });
 });
 

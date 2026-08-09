@@ -169,6 +169,28 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
   });
 });
 
+describe('enterprise autowire — owner-denied channels (control-bypass fix)', () => {
+  it('refuses to re-wire an owner-denied GROUP channel', () => {
+    seedFrontdesk();
+    const { mg, event } = seedChannel('oc_denied', true);
+    mg.denied_at = now();
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(false);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeUndefined();
+  });
+
+  it('refuses to re-wire an owner-denied DM (p2p) channel — not just groups', () => {
+    // Regression: the denial guard used to be `isGroup && denied_at`, so a
+    // denied DM was silently re-wired the moment ENTERPRISE_AUTO_WIRE_P2P was on
+    // (wiring the frontdesk lifts agentCount past the router's denied-drop branch).
+    process.env.ENTERPRISE_AUTO_WIRE_P2P = 'true';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('p2p_denied', false);
+    mg.denied_at = now();
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(false);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeUndefined();
+  });
+});
+
 describe('enterprise autowire — pluggable group→agent strategy (ADR-0053)', () => {
   it('explicit STRATEGY=per-group behaves like the isolated alias', () => {
     process.env.ENTERPRISE_AUTO_WIRE_GROUP_STRATEGY = 'per-group';

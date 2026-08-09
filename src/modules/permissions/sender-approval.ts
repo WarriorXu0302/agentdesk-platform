@@ -32,7 +32,11 @@ import { getDeliveryAdapter } from '../../delivery.js';
 import { log } from '../../log.js';
 import type { InboundEvent } from '../../channels/adapter.js';
 import { pickApprovalDelivery, pickApprover } from '../approvals/primitive.js';
-import { createPendingSenderApproval, hasInFlightSenderApproval } from './db/pending-sender-approvals.js';
+import {
+  createPendingSenderApproval,
+  deletePendingSenderApproval,
+  hasInFlightSenderApproval,
+} from './db/pending-sender-approvals.js';
 
 const APPROVAL_OPTIONS: RawOption[] = [
   { label: 'Allow', selectedLabel: '✅ Allowed', value: 'approve' },
@@ -143,7 +147,15 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
       agentGroupId,
     });
   } catch (err) {
-    log.error('Unknown-sender approval card delivery failed', {
+    // A TRANSIENT delivery failure (5xx / network blip / rate-limit) must not
+    // strand the dedup row: hasInFlightSenderApproval is purely existential
+    // (no TTL, no sweeper), so a leftover row would suppress every future card
+    // for this (group, sender) pair forever — permanently locking out a
+    // legitimate sender. Delete it so the next inbound message re-triggers a
+    // fresh card, matching this module's "row NOT created → a future attempt
+    // can try again" contract.
+    deletePendingSenderApproval(approvalId);
+    log.error('Unknown-sender approval card delivery failed — dedup row cleared for retry', {
       approvalId,
       err,
     });

@@ -188,6 +188,28 @@ describe('unknown-sender request_approval flow', () => {
     expect(count).toBe(1);
   });
 
+  it('a transient delivery failure clears the dedup row so a later message retries', async () => {
+    const { routeInbound } = await import('../../router.js');
+    const { getDb } = await import('../../db/connection.js');
+
+    // First card delivery throws (5xx / network blip). The INSERTed dedup row
+    // must NOT be left behind, or this stranger is locked out forever.
+    deliverMock.mockRejectedValueOnce(new Error('transient 5xx'));
+    await routeInbound(stranger('let me in'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(deliverMock).toHaveBeenCalledTimes(1);
+    const afterFail = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number }).c;
+    expect(afterFail).toBe(0); // row cleared — gate reopened
+
+    // A later message re-triggers a fresh card (deliver now succeeds).
+    await routeInbound(stranger('still there?'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(deliverMock).toHaveBeenCalledTimes(2);
+    const afterRetry = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number }).c;
+    expect(afterRetry).toBe(1);
+  });
+
   it('approve → adds member and replays the original message', async () => {
     const { routeInbound } = await import('../../router.js');
     const { getResponseHandlers } = await import('../../response-registry.js');

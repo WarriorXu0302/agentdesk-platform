@@ -249,11 +249,18 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
   const config = readConfig();
   if (!shouldAutowire(config, event)) return false;
 
-  if (event.message.isGroup && mg.denied_at) {
-    log.info('Enterprise autowire skipped for denied group channel', {
+  // An owner who explicitly denied this channel's registration set denied_at;
+  // the router drops such channels silently (router.ts, the agentCount===0
+  // branch). Autowire must honor that for EVERY channel type — not just groups.
+  // Gating this on isGroup let a denied DM (p2p) get re-wired the moment
+  // ENTERPRISE_AUTO_WIRE_P2P was on, because wiring the frontdesk lifts
+  // agentCount to 1 and skips the router's denied-drop branch entirely.
+  if (mg.denied_at) {
+    log.info('Enterprise autowire skipped for owner-denied channel', {
       messagingGroupId: mg.id,
       channelType: event.channelType,
       platformId: event.platformId,
+      isGroup: event.message.isGroup === true,
     });
     return false;
   }

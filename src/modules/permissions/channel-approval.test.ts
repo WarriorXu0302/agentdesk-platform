@@ -189,6 +189,29 @@ describe('unknown-channel registration flow', () => {
     expect(count).toBe(1);
   });
 
+  it('a transient delivery failure clears the dedup row so a later mention re-escalates', async () => {
+    const { routeInbound } = await import('../../router.js');
+    const { getDb } = await import('../../db/connection.js');
+
+    // First card delivery throws. The PK dedup row (messaging_group_id) must not
+    // be stranded, or this channel can never be registered.
+    deliverMock.mockRejectedValueOnce(new Error('transient 5xx'));
+    await routeInbound(groupMention('chat-flaky'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(deliverMock).toHaveBeenCalledTimes(1);
+    const afterFail = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
+    expect(afterFail).toBe(0); // row cleared — escalation reopened
+
+    // A later mention re-escalates (deliver now succeeds).
+    await routeInbound(groupMention('chat-flaky', '@bot still here'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(deliverMock).toHaveBeenCalledTimes(2);
+    const afterRetry = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
+      .c;
+    expect(afterRetry).toBe(1);
+  });
+
   it('approve → creates wiring, admits triggering sender, replays', async () => {
     const { routeInbound } = await import('../../router.js');
     const { getResponseHandlers } = await import('../../response-registry.js');

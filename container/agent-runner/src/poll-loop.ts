@@ -600,9 +600,18 @@ async function runQuery(
 
         if (keep.length === 0) return;
         // Re-check done — the outer query may have finished while the script
-        // was awaited. Pushing into a closed stream is wasted work; the
-        // claimed messages get released by the host's processing-claim sweep.
-        if (done) return;
+        // was awaited. Pushing into a closed stream is wasted work. RELEASE the
+        // claim taken above (line markProcessing): while this container stays
+        // warm the host's stuck-claim sweep can't recover these rows (the
+        // heartbeat keeps the claim looking live), getPendingMessages filters
+        // out any id in processing_ack regardless of status, and syncProcessingAcks
+        // only syncs completed/failed — so a stranded `processing` row silently
+        // withholds the follow-up until the container exits. Mirror the explicit
+        // releaseProcessing on the defer/turn-change paths below.
+        if (done) {
+          releaseProcessing(keep.map((m) => m.id));
+          return;
+        }
 
         // Batch-split the follow-up the same way the initial batch was
         // split: if the poll tick picked up rows from multiple
