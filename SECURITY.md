@@ -63,6 +63,29 @@ the trade-off — see `CLAUDE.md` and `docs/decisions/`):
   (e.g. disabling signing, opening container egress, running with placeholder
   secrets). These are documented operator decisions, not platform vulnerabilities.
 
+### Accepted residuals
+
+Deliberate trade-offs, re-affirmed by the maintainer. Please don't file these as
+vulnerabilities, and don't "fix" them without raising the trade-off first.
+
+- **`accumulate` stores non-engaging messages without consulting the access gate**
+  (`src/router.ts`, the `ignored_message_policy === 'accumulate'` branch). The
+  access/sender-scope gates are evaluated as `engages && …`, so a message that
+  never triggered the agent is stored as silent context with the gate
+  short-circuited. A sender the gate *would* refuse can therefore have their
+  message persisted into the agent's `inbound.db` — and, via
+  `writeSessionMessage` → `extractAttachmentFiles`, their **attachments staged to
+  disk** — simply by not triggering the agent; the accumulated rows then ride
+  along into the agent's context on the next legitimate trigger.
+  **Why accepted:** group messages are already public to everyone in that group,
+  and accumulate exists precisely so the agent can read the conversation it is
+  part of; gating it would leave the agent with a truncated view and visibly
+  "dropped" traffic. **Residual:** attachment bytes from a gate-refused sender do
+  land on the host filesystem (inside that session's `inbox/`, path-contained per
+  the session-dir row above). Revisit if untrusted-attachment storage becomes a
+  concern for a deployment — the narrow fix is to keep accumulating text while
+  refusing attachments from senders the gate would reject.
+
 ## Supply-chain / Dependency Posture
 
 - CI runs `pnpm run audit` (`pnpm audit --prod --audit-level high`) on every PR

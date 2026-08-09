@@ -477,6 +477,18 @@ async function routeInboundInner(event: InboundEvent): Promise<void> {
       // message (which also stages their attachments to disk via
       // writeSessionMessage → extractAttachmentFiles) is exactly what the
       // gate is meant to prevent.
+      //
+      // ACCEPTED RESIDUAL (re-affirmed 2026-08, see SECURITY.md "Accepted
+      // residuals"). Note that `accessOk`/`scopeOk` above are computed as
+      // `engages && …`, so on this non-engaging path the gates were never
+      // actually invoked: a sender the gate WOULD refuse can still get their
+      // message stored (and their attachments staged to disk) by simply not
+      // triggering the agent, and it rides along into the agent's context on the
+      // next legitimate trigger. Kept deliberately — group messages are already
+      // public within that group, and gating this would leave the agent with a
+      // truncated view of a conversation it is part of. Do not "fix" this
+      // silently; the narrow option, if a deployment needs it, is to keep
+      // accumulating text while refusing attachments from refused senders.
       await deliverToAgent(agent, agentGroup, mg, event, userId, effectiveSessionMode, false);
       accumulatedCount++;
       messagesRoutedTotal.inc({ agent_group_id: agent.agent_group_id, outcome: 'accumulated' });
