@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb } from '../db/connection.js';
-import { getUndeliveredMessages } from '../db/messages-out.js';
+import { getUndeliveredMessages, writeMessageOut } from '../db/messages-out.js';
 import {
   clearCurrentClassificationId,
   clearCurrentInReplyTo,
@@ -17,7 +17,7 @@ import {
 } from '../current-batch.js';
 import { setRequestIdentity, clearRequestIdentity } from '../request-context.js';
 import { clearRoutingGate, setRoutingGate } from '../routing/gate.js';
-import { sendMessage } from './core.js';
+import { addReaction, editMessage, sendMessage } from './core.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -246,5 +246,39 @@ describe('send_message MCP tool — enforced routing gate', () => {
     });
 
     expect(JSON.parse(getUndeliveredMessages()[0]!.content)._classificationId).toBe('route-authoritative');
+  });
+});
+
+describe('message mutation MCP tools — enforced routing gate', () => {
+  function seedPeerMessage(): number {
+    return writeMessageOut({
+      id: 'prior-peer-message',
+      kind: 'chat',
+      channel_type: 'agent',
+      platform_id: 'ag-peer',
+      content: JSON.stringify({ text: 'already sent' }),
+    });
+  }
+
+  it('refuses edits that would mutate an unapproved destination', async () => {
+    const seq = seedPeerMessage();
+    setRoutingGate({ decisionId: 'route-answer', anchorId: 'm1', action: 'answer_self' });
+
+    const result = await editMessage.handler({ messageId: seq, text: 'mutate remote worker message' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/agent_destination_forbidden/);
+    expect(getUndeliveredMessages()).toHaveLength(1);
+  });
+
+  it('refuses reactions that would mutate an unapproved destination', async () => {
+    const seq = seedPeerMessage();
+    setRoutingGate({ decisionId: 'route-answer', anchorId: 'm1', action: 'answer_self' });
+
+    const result = await addReaction.handler({ messageId: seq, emoji: 'thumbs_up' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/agent_destination_forbidden/);
+    expect(getUndeliveredMessages()).toHaveLength(1);
   });
 });

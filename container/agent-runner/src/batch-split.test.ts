@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import type { MessageInRow } from './db/messages-in.js';
-import { splitBatchByTurn } from './request-identity.js';
+import { splitBatchByTrigger, splitBatchByTurn } from './request-identity.js';
 
 function row(partial: Partial<MessageInRow> & { id: string }): MessageInRow {
   return {
@@ -90,5 +90,25 @@ describe('splitBatchByTurn', () => {
     const { keep, defer } = splitBatchByTurn([aliceA2a, bobA2a]);
     expect(keep.map((m) => m.id)).toEqual(['a']);
     expect(defer.map((m) => m.id)).toEqual(['b']);
+  });
+});
+
+describe('splitBatchByTrigger', () => {
+  it('keeps accumulated context with the first trigger and defers the next trigger', () => {
+    const context = row({ id: 'context', trigger: 0 });
+    const first = row({ id: 'first', trigger: 1 });
+    const between = row({ id: 'between', trigger: 0 });
+    const second = row({ id: 'second', trigger: 1 });
+    const split = splitBatchByTrigger([context, first, between, second]);
+    expect(split.keep.map((m) => m.id)).toEqual(['context', 'first', 'between']);
+    expect(split.defer.map((m) => m.id)).toEqual(['second']);
+  });
+
+  it('separates same-user consecutive user triggers', () => {
+    const first = row({ id: 'first', trigger: 1 });
+    const second = row({ id: 'second', trigger: 1 });
+    const split = splitBatchByTrigger([first, second]);
+    expect(split.keep.map((m) => m.id)).toEqual(['first']);
+    expect(split.defer.map((m) => m.id)).toEqual(['second']);
   });
 });

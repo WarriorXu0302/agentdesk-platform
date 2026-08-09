@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
@@ -29,7 +31,7 @@ import {
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
-import { resolveBatchIdentity, splitBatchByTurn } from './request-identity.js';
+import { resolveBatchIdentity, splitBatchByTrigger, splitBatchByTurn } from './request-identity.js';
 import type { RoutingLlmConfig } from './config.js';
 import { clearRoutingGate, enforceRoutingDestination, getRoutingGate, setRoutingGate } from './routing/gate.js';
 import { routeFrontdeskTurn, type EnforcedRoutingDecision, type RoutingUsage } from './routing/index.js';
@@ -274,20 +276,83 @@ function writeDirectDelegation(
   routing: RoutingContext,
 ): void {
   if (!decision.targetAgentGroupId) throw new Error('delegate decision is missing targetAgentGroupId');
+  const id = generateId();
+  const files = stageDirectDelegationAttachments(messages, id);
   writeMessageOut({
-    id: generateId(),
+    id,
     in_reply_to: routing.inReplyTo,
     kind: 'chat',
     platform_id: decision.targetAgentGroupId,
     channel_type: 'agent',
     thread_id: null,
     content: JSON.stringify({
-      text: formatMessages(messages),
+      text: formatMessages(messages, { includeAttachments: false }),
+      ...(files.length > 0 ? { files } : {}),
       _classificationId: decision.id,
       _routingDecisionId: decision.id,
     }),
     origin_user_id: a2aOriginUserId('agent'),
   });
+}
+
+function safeAttachmentName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const name = value.trim();
+  if (!name || name === '.' || name === '..' || path.basename(name) !== name) return undefined;
+  return name;
+}
+
+/**
+ * 将 Host 写入的入站附件重新暂存到直接委派消息的 outbox 中。
+ * Host 的 A2A 路由器只会从该消息对应的 outbox 目录传输 `content.files`
+ * 中声明的文件，因此源 inbox 路径本身绝不能作为有效的委派引用。
+ */
+export function stageDirectDelegationAttachments(
+  messages: MessageInRow[],
+  outgoingMessageId: string,
+  workspaceRoot: string = '/workspace',
+): string[] {
+  const files: string[] = [];
+  const outboxDir = path.join(workspaceRoot, 'outbox', outgoingMessageId);
+  const names = new Set<string>();
+  let collisionIndex = 0;
+
+  for (const message of messages) {
+    let content: Record<string, unknown>;
+    try {
+      content = JSON.parse(message.content) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(content.attachments)) continue;
+    for (const attachment of content.attachments) {
+      if (!attachment || typeof attachment !== 'object') continue;
+      const record = attachment as Record<string, unknown>;
+      const name = safeAttachmentName(record.name ?? record.filename);
+      if (!name) continue;
+      // 绝不信任消息内容中的 localPath。唯一允许的来源是 Host 写入的、
+      // 与当前入站消息精确对应的目录。
+      const source = path.join(workspaceRoot, 'inbox', message.id, name);
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(source);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+
+      let stagedName = name;
+      while (names.has(stagedName)) {
+        collisionIndex += 1;
+        stagedName = `${collisionIndex}-${name}`;
+      }
+      names.add(stagedName);
+      fs.mkdirSync(outboxDir, { recursive: true });
+      fs.copyFileSync(source, path.join(outboxDir, stagedName));
+      files.push(stagedName);
+    }
+  }
+  return files;
 }
 
 /**
@@ -361,7 +426,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // messages from the same user keep the container warm.
     lastWorkAt = Date.now();
 
-    const ids = messages.map((m) => m.id);
+    // 同一用户的后续消息仍是新的用户意图。先按 trigger 切分再领取，
+    // 使每个 trigger 都获得独立的 Routing 决策，而不是继承首条消息的策略。
+    const triggerSplit = splitBatchByTrigger(messages);
+    if (triggerSplit.defer.length > 0) {
+      log(
+        `Trigger split: kept ${triggerSplit.keep.length} row(s), deferred ${triggerSplit.defer.length} for a new routed turn`,
+      );
+    }
+    const firstTriggerBatch = triggerSplit.keep;
+    const ids = firstTriggerBatch.map((m) => m.id);
     markProcessing(ids);
 
     // Batch-split FIRST — before /clear handling and before routing
@@ -379,7 +453,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     //
     // Splitting early means both /clear and extractRouting see only the
     // rows that belong to this turn's anchor identity.
-    const split = splitBatchByTurn(messages);
+    const split = splitBatchByTurn(firstTriggerBatch);
     if (split.defer.length > 0) {
       releaseProcessing(split.defer.map((m) => m.id));
       log(
@@ -708,13 +782,24 @@ async function runQuery(
   // will kill the container and messages get reset to pending.
   let pollInFlight = false;
   let endedForCommand = false;
+  let hasPendingUserTurn = false;
   const pollHandle = setInterval(() => {
-    if (done || pollInFlight || endedForCommand) return;
+    if (done || pollInFlight || endedForCommand || hasPendingUserTurn) return;
     pollInFlight = true;
 
     void (async () => {
       try {
         const pending = getPendingMessages();
+
+        // 新到的用户 trigger 必须获得新的 Routing 回合，即使用户与会话
+        // 表面完全相同。让它保持 pending，交给外层循环处理；不要注入当前
+        // query，也不要中断正在运行的 Execution。这是 Session 的串行执行
+        // 通道：当前回合自然结束后，下一回合再带着自己的决策和 Gate 被路由。
+        if (pending.some((m) => (m.kind === 'chat' || m.kind === 'chat-sdk') && m.trigger === 1)) {
+          log('Pending user trigger — leaving it queued for a fresh routed turn after this execution completes');
+          hasPendingUserTurn = true;
+          return;
+        }
 
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands

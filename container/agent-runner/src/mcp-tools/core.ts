@@ -257,6 +257,8 @@ export const editMessage: McpToolDefinition = {
     if (!routing || !routing.channel_type || !routing.platform_id) {
       return err(`Cannot determine destination for message #${seq}`);
     }
+    const gate = enforceRoutingDestination(routing.channel_type, routing.platform_id, routing.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     const id = generateId();
     writeMessageOut({
@@ -298,6 +300,8 @@ export const addReaction: McpToolDefinition = {
     if (!routing || !routing.channel_type || !routing.platform_id) {
       return err(`Cannot determine destination for message #${seq}`);
     }
+    const gate = enforceRoutingDestination(routing.channel_type, routing.platform_id, routing.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     const id = generateId();
     writeMessageOut({
