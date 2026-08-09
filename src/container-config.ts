@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
+import { log } from './log.js';
 
 export interface McpServerConfig {
   command: string;
@@ -224,42 +225,94 @@ function configPath(folder: string): string {
 }
 
 /**
+ * Normalize the `skills` field. `'all'` is a legal bare string here, which makes
+ * `"skills": "knowledge"` a natural operator typo — and a bare string is
+ * ITERABLE, so both consumers used to walk it character by character:
+ * claude-md-compose matched zero skill fragments, and the runner's symlink sync
+ * pruned every real skill and created dangling one-letter links. Anything that
+ * is neither 'all' nor a string array falls back to 'all' with a warning.
+ */
+function normalizeSkills(raw: unknown): 'all' | string[] {
+  if (raw === undefined || raw === 'all') return 'all';
+  if (Array.isArray(raw)) {
+    const kept = raw.filter((s): s is string => typeof s === 'string' && /^[A-Za-z0-9._-]+$/.test(s));
+    if (kept.length !== raw.length) {
+      log.warn('container.json: dropped invalid skill name(s)', { rejected: raw.length - kept.length });
+    }
+    return kept;
+  }
+  log.warn('container.json: `skills` must be "all" or an array of names — falling back to "all"', {
+    got: typeof raw,
+  });
+  return 'all';
+}
+
+/**
  * Read the container config for a group, returning sensible defaults for
  * any missing fields (or an entirely empty config if the file is absent).
- * Never throws for missing / malformed files — corruption logs a warning
- * via console.error and falls back to empty.
+ *
+ * A MISSING file legitimately means "defaults". A CORRUPT file does not: it is a
+ * config the operator did write, and it carries the group's isolation settings
+ * (`network: "none"`, `resources`, the `skills` whitelist, `memoryMode`,
+ * `provider`). Falling back to empty there silently DROPPED those — egress
+ * lockdown off, cgroup limits gone, every skill re-enabled — and the very next
+ * `ensureRuntimeFields` write-back persisted the empty config, destroying the
+ * evidence. So corruption now fails CLOSED: the original is copied aside and the
+ * error is rethrown, refusing to start the group.
  */
 export function readContainerConfig(folder: string): ContainerConfig {
   const p = configPath(folder);
   if (!fs.existsSync(p)) return emptyConfig();
+  let raw: Partial<ContainerConfig> & Record<string, unknown>;
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<ContainerConfig>;
-    return {
-      mcpServers: raw.mcpServers ?? {},
-      backendGateway: raw.backendGateway,
-      packages: {
-        apt: raw.packages?.apt ?? [],
-        npm: raw.packages?.npm ?? [],
-      },
-      imageTag: raw.imageTag,
-      additionalMounts: raw.additionalMounts ?? [],
-      skills: raw.skills ?? 'all',
-      provider: raw.provider,
-      groupName: raw.groupName,
-      assistantName: raw.assistantName,
-      memoryMode: normalizeMemoryMode(raw.memoryMode),
-      a2aSessionMode: normalizeA2aSessionMode(raw.a2aSessionMode),
-      agentGroupId: raw.agentGroupId,
-      maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
-      resources: normalizeResources(raw.resources),
-      network: normalizeNetwork(raw.network),
-      env: raw.env,
-      progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
-    };
+    raw = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<ContainerConfig> & Record<string, unknown>;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`expected a JSON object, got ${Array.isArray(raw) ? 'array' : typeof raw}`);
+    }
   } catch (err) {
-    console.error(`[container-config] failed to parse ${p}: ${String(err)}`);
-    return emptyConfig();
+    // Preserve the operator's file before anything can overwrite it.
+    let preserved: string | undefined;
+    try {
+      preserved = `${p}.corrupt`;
+      fs.copyFileSync(p, preserved, fs.constants.COPYFILE_EXCL);
+    } catch {
+      preserved = undefined; // a previous copy already exists — keep the first one
+    }
+    log.error('container.json is unparseable — refusing to start this group with default isolation settings', {
+      path: p,
+      preserved,
+      err,
+    });
+    throw new Error(`container-config: failed to parse ${p}: ${String(err)}`);
   }
+
+  // Spread `raw` FIRST so operator-set keys this interface doesn't model
+  // (idleExitMs, confidenceThreshold — both documented and read by the runner)
+  // survive the read-modify-write round trip that every mutator performs.
+  // Without this, one write-back silently deleted them for good.
+  return {
+    ...raw,
+    mcpServers: raw.mcpServers ?? {},
+    backendGateway: raw.backendGateway,
+    packages: {
+      apt: raw.packages?.apt ?? [],
+      npm: raw.packages?.npm ?? [],
+    },
+    imageTag: raw.imageTag,
+    additionalMounts: raw.additionalMounts ?? [],
+    skills: normalizeSkills(raw.skills),
+    provider: raw.provider,
+    groupName: raw.groupName,
+    assistantName: raw.assistantName,
+    memoryMode: normalizeMemoryMode(raw.memoryMode),
+    a2aSessionMode: normalizeA2aSessionMode(raw.a2aSessionMode),
+    agentGroupId: raw.agentGroupId,
+    maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
+    resources: normalizeResources(raw.resources),
+    network: normalizeNetwork(raw.network),
+    env: raw.env,
+    progressiveDisclosure: raw.progressiveDisclosure === 'lean' ? 'lean' : raw.progressiveDisclosure === true,
+  };
 }
 
 /**

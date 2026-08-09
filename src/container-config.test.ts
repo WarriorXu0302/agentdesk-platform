@@ -97,3 +97,64 @@ describe('container resources normalization', () => {
     expect(cfg.resources).toBeUndefined();
   });
 });
+
+describe('container.json read-modify-write safety', () => {
+  function writeRaw(folder: string, text: string): string {
+    const dir = path.join(tmpState.root, 'groups', folder);
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, 'container.json');
+    fs.writeFileSync(p, text);
+    return p;
+  }
+
+  it('fails CLOSED on a corrupt file and preserves it instead of overwriting', () => {
+    // Regression: a parse failure returned emptyConfig(), silently dropping the
+    // group's isolation settings (network:"none", resources, skills whitelist,
+    // memoryMode, provider) — and the next ensureRuntimeFields write-back
+    // persisted that empty config, destroying the operator's file.
+    const p = writeRaw('broken', '{ "network": "none", }'); // trailing comma
+
+    expect(() => readContainerConfig('broken')).toThrow(/failed to parse/);
+    // Original still on disk, plus a preserved copy for the operator.
+    expect(fs.readFileSync(p, 'utf8')).toContain('"network"');
+    expect(fs.existsSync(`${p}.corrupt`)).toBe(true);
+  });
+
+  it('rejects a non-object top level', () => {
+    writeRaw('arr', '[1,2,3]');
+    expect(() => readContainerConfig('arr')).toThrow(/failed to parse/);
+  });
+
+  it('preserves operator keys this interface does not model (round-trip is lossless)', () => {
+    // Regression: the reader mapped only its known keys into a fresh object, so
+    // documented runner-read fields (idleExitMs, confidenceThreshold) vanished
+    // and the next write-back deleted them permanently.
+    writeRaw('extra', JSON.stringify({ idleExitMs: 300000, confidenceThreshold: 0.85, network: 'none' }));
+
+    const cfg = readContainerConfig('extra') as unknown as Record<string, unknown>;
+    expect(cfg.idleExitMs).toBe(300000);
+    expect(cfg.confidenceThreshold).toBe(0.85);
+
+    // Survives the read-modify-write round trip every mutator performs.
+    writeContainerConfig('extra', cfg as never);
+    const again = readContainerConfig('extra') as unknown as Record<string, unknown>;
+    expect(again.idleExitMs).toBe(300000);
+    expect(again.confidenceThreshold).toBe(0.85);
+    expect(again.network).toBe('none');
+  });
+
+  it('normalizes a bare-string `skills` instead of iterating it per character', () => {
+    // Regression: 'all' is a legal bare string, so "skills": "knowledge" was a
+    // natural typo — and a string is iterable, so consumers walked it letter by
+    // letter: zero skill fragments composed, and every real skill symlink pruned
+    // in favour of dangling one-letter links.
+    writeRaw('skl', JSON.stringify({ skills: 'knowledge' }));
+    expect(readContainerConfig('skl').skills).toBe('all');
+
+    writeRaw('skl2', JSON.stringify({ skills: ['knowledge', '../escape', 42] }));
+    expect(readContainerConfig('skl2').skills).toEqual(['knowledge']);
+
+    writeRaw('skl3', JSON.stringify({ skills: 'all' }));
+    expect(readContainerConfig('skl3').skills).toBe('all');
+  });
+});

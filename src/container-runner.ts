@@ -839,6 +839,24 @@ export async function buildContainerArgs(
   // runner if unset.
   args.push('-e', `BRAND_NAMESPACE=${PLATFORM_PROTOCOL_NAMESPACE}`);
 
+  // Operator-declared per-group env from container.json (`env: {KEY: VALUE}`).
+  // Documented as "passed verbatim via docker run -e" but previously never
+  // forwarded — the map was inert for its documented purpose, so a skill
+  // reading e.g. CAMERA_BASE_URL silently fell back to its built-in default.
+  // Pushed FIRST so the system blocks below (provider / OneCLI / proxy / OTEL)
+  // still win on a key collision, as documented. Keys must be valid shell env
+  // identifiers; anything else is dropped with a warning rather than handed to
+  // docker as a malformed token.
+  if (containerConfig.env) {
+    for (const [key, value] of Object.entries(containerConfig.env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        log.warn('container.json env: skipping invalid variable name', { group: agentGroup.folder, key });
+        continue;
+      }
+      args.push('-e', `${key}=${String(value)}`);
+    }
+  }
+
   // Tracing context (ADR-0026/0027) — inject OTEL_TRACEPARENT (+ endpoint,
   // tracestate, capture-content) so the runner continues the host trace.
   // MUST be pushed here, with the other `-e` vars and BEFORE the image tag:
