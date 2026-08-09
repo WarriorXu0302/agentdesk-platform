@@ -93,10 +93,21 @@ landed in ≥0.217). The suppression has been removed from
 `package.json` → `pnpm.auditConfig.ignoreGhsas`.
 
 Reachable advisories are remediated via `pnpm.overrides` (currently
-`axios`, `ws`, `qs`, `protobufjs`, `form-data` pinned to patched in-major
-versions). `form-data` is pinned to `^4.0.6` to clear `GHSA-hmw2-7cc7-3qxx`
-(CRLF injection via unescaped multipart field/filenames) on the
-`@larksuiteoapi/node-sdk → axios → form-data` path — a same-major patch bump.
+`axios`, `ws`, `qs`, `protobufjs`, `form-data`, `brace-expansion`,
+`@opentelemetry/propagator-jaeger` pinned to patched in-major versions).
+Notable pins:
+
+| Override | Clears | Path / rationale |
+|---|---|---|
+| `form-data@^4.0.6` | `GHSA-hmw2-7cc7-3qxx` | CRLF injection via unescaped multipart field/filenames on `@larksuiteoapi/node-sdk → axios → form-data` — same-major patch bump. |
+| `axios@^1.18.0` | `GHSA-gcfj-64vw-6mp9` | Node HTTP adapter can use an inherited proxy config; reached through the Feishu SDK's own axios dependency. |
+| `brace-expansion@^2.1.4` | `GHSA-3jxr-9vmj-r5cp`, `GHSA-mh99-v99m-4gvg`, `GHSA-rgw5-rvv9-x895` | Three DoS advisories (exponential-time / unbounded expansion) on the `@opentelemetry/auto-instrumentations-node → … → minimatch → brace-expansion` path. One pin clears all three. |
+| `@opentelemetry/propagator-jaeger@^2.9.0` | `GHSA-45rx-2jwx-cxfr` | OTEL propagator DoS, pulled in transitively by `@opentelemetry/sdk-node`. |
+
+These four were fresh transitive advisories that turned the CI audit gate red
+without any dependency change on our side — a reminder that a green local test
+run does not imply green CI. Reproduce the gate locally with `pnpm run audit`
+before assuming a push is clean.
 
 ### Known-deferred (container)
 
