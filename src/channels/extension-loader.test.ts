@@ -19,7 +19,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { getRegisteredChannelNames, getRegisteredFactory, unregisterChannelAdapter } from './channel-registry.js';
+import {
+  getRegisteredChannelNames,
+  getRegisteredFactory,
+  registerChannelAdapter,
+  unregisterChannelAdapter,
+} from './channel-registry.js';
 import { loadChannelExtensions, readHostVersion } from './extension-loader.js';
 import { parseChannelExtensionManifest } from './extension-manifest.js';
 
@@ -325,6 +330,99 @@ describe('loadChannelExtensions', () => {
     // Sanity: the real host version parses to a 2.x semver. The contract gate
     // and version gate both depend on this being read correctly.
     expect(readHostVersion()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it('readHostVersion does NOT fall back to 0.0.0 (percent-encoded install path)', () => {
+    // Regression: the walk used `new URL(import.meta.url).pathname`, which stays
+    // percent-encoded — any install path with a space or non-ASCII char made
+    // every package.json read fail, silently yielding '0.0.0' and skipping EVERY
+    // version-gated extension with a bogus reason. fileURLToPath fixes it.
+    expect(readHostVersion()).not.toBe('0.0.0');
+  });
+
+  it('refuses an extension that REPLACES an existing registration, and restores the original', async () => {
+    // Regression (critical): registerChannelAdapter overwrites, and the loader
+    // diffed only NAMES — so hijacking a built-in was the one case the gate
+    // could not see. It reported "entry did not call registerChannelAdapter"
+    // while leaving the hijacker registered, reaching setup() ungated.
+    const victim = 'incumbent-chan';
+    registerChannelAdapter(victim, {
+      factory: () => ({
+        name: victim,
+        channelType: victim,
+        supportsThreads: false,
+        async setup() {},
+        async teardown() {},
+        isConnected() {
+          return false;
+        },
+        async deliver() {
+          return undefined;
+        },
+      }),
+    });
+    registeredInTest.push(victim);
+    const original = getRegisteredFactory(victim);
+
+    writeExtension({
+      dirName: 'hijacker',
+      manifest: {
+        id: 'hijacker',
+        kind: 'channel',
+        name: 'Hijacker',
+        channelType: victim,
+        minHostVersion: '*',
+        entry: './index.ts',
+      },
+      entrySource: conformingEntrySource(victim), // re-registers the SAME name
+    });
+
+    const summary = await loadChannelExtensions({ extensionsDir: rootDir, hostVersion: HOST_VERSION });
+    expect(summary.loaded).toHaveLength(0);
+    expect(summary.skipped[0].reason).toMatch(/replaced existing channel registration/);
+    // The incumbent's factory is back in place — the takeover was rolled back.
+    expect(getRegisteredFactory(victim)).toBe(original);
+  });
+
+  it('rejects an adapter whose channelType disagrees with the manifest', async () => {
+    // Regression: registry name and adapter.channelType are separate namespaces.
+    // An extension could register under a harmless fresh name, pass the gate,
+    // and still report a channelType a built-in serves — then win the
+    // activeAdapters routing key.
+    const regName = 'mismatch-reg';
+    writeExtension({
+      dirName: 'mismatch',
+      manifest: {
+        id: 'mismatch',
+        kind: 'channel',
+        name: 'Mismatch',
+        channelType: 'mismatch-declared',
+        minHostVersion: '*',
+        entry: './index.ts',
+      },
+      // Adapter reports 'feishu' while the manifest declares 'mismatch-declared'.
+      entrySource: `
+import { registerChannelAdapter } from ${JSON.stringify(REGISTRY_PATH)};
+registerChannelAdapter(${JSON.stringify(regName)}, {
+  factory: () => ({
+    name: ${JSON.stringify(regName)},
+    channelType: 'feishu',
+    supportsThreads: false,
+    async setup() {},
+    async teardown() {},
+    isConnected() { return false; },
+    async deliver() { return undefined; },
+  }),
+});
+`,
+    });
+    registeredInTest.push(regName);
+
+    const summary = await loadChannelExtensions({ extensionsDir: rootDir, hostVersion: HOST_VERSION });
+    expect(summary.loaded).toHaveLength(0);
+    expect(summary.skipped[0].reason).toMatch(/does not match manifest channelType/);
+    // Backed out, so initChannelAdapters can never set it up.
+    expect(getRegisteredChannelNames()).not.toContain(regName);
   });
 
   // Keep the contract module path referenced so a rename surfaces here too.

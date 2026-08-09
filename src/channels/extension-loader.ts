@@ -17,9 +17,15 @@
  *   3. Dynamic-import the resolved entry. The module is expected to call
  *      `registerChannelAdapter(...)` on import, exactly like cli/feishu.
  *   4. Contract gate: instantiate the freshly registered factory and run it
- *      through `assertChannelAdapterContract`. On violation: log.error,
+ *      through `assertChannelAdapterContract`, and require the adapter's
+ *      `channelType` to match the manifest's. On violation: log.error,
  *      `unregisterChannelAdapter` (so initChannelAdapters never sets it up),
- *      and skip.
+ *      and skip. Two guards make that promise actually hold (see ADR-0031's
+ *      hardening patch): a REPLACED registration is rolled back here (a name
+ *      diff cannot see an overwrite), and `initChannelAdapters` re-runs the
+ *      contract gate on the instance it actually sets up — because the factory
+ *      is invoked a second time there — while refusing to take over a
+ *      channelType that is already live.
  *   5. fail-open: any error at any step is caught, logged, and that ONE
  *      extension is skipped — a single bad extension must never crash host
  *      startup.
@@ -31,12 +37,19 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { pathToFileURL } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
+import type { ChannelRegistration } from './adapter.js';
 import { PLATFORM_PROTOCOL_NAMESPACE } from '../branding.js';
 import { log } from '../log.js';
 import { assertChannelAdapterContract } from './channel-contract.js';
-import { getRegisteredChannelNames, getRegisteredFactory, unregisterChannelAdapter } from './channel-registry.js';
+import {
+  getChannelRegistration,
+  getRegisteredChannelNames,
+  getRegisteredFactory,
+  registerChannelAdapter,
+  unregisterChannelAdapter,
+} from './channel-registry.js';
 import { parseChannelExtensionManifest } from './extension-manifest.js';
 import { satisfies } from './semver-range.js';
 
@@ -95,7 +108,12 @@ export function resolveExtensionsDir(): string {
 export function readHostVersion(): string {
   // From src/channels/ (or dist/channels/), package.json is two dirs up.
   // Walk a few levels defensively in case the layout differs.
-  let dir = path.dirname(new URL(import.meta.url).pathname);
+  // fileURLToPath, NOT `new URL(...).pathname`: pathname stays percent-ENCODED,
+  // so an install path containing a space or any non-ASCII character (e.g.
+  // "/Users/ops/My Apps/agentdesk") made every candidate read fail, silently
+  // fell through to '0.0.0', and then skipped EVERY version-gated extension
+  // with a bogus "host version 0.0.0 does not satisfy ..." reason.
+  let dir = path.dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 6; i++) {
     const candidate = path.join(dir, 'package.json');
     try {
@@ -199,16 +217,37 @@ async function loadOne(name: string, extDir: string, hostVersion: string): Promi
       return skip(`entry not found: ${manifest.entry}`, manifest.id);
     }
 
-    const before = new Set(getRegisteredChannelNames());
+    // Snapshot the REGISTRATIONS, not just the names: `registerChannelAdapter`
+    // overwrites an existing entry, and a name diff is blind to exactly that
+    // case — the one where an extension takes over a built-in.
+    const before = new Map<string, ChannelRegistration>();
+    for (const n of getRegisteredChannelNames()) {
+      const reg = getChannelRegistration(n);
+      if (reg) before.set(n, reg);
+    }
     try {
       await import(pathToFileURL(entryAbs).href);
     } catch (err) {
       return skip(`entry import threw: ${(err as Error).message}`, manifest.id);
     }
 
-    // Find what the entry registered (diff the registry names).
     const after = getRegisteredChannelNames();
     const newlyRegistered = after.filter((n) => !before.has(n));
+
+    // HIJACK GUARD: a name that already existed but whose registration object
+    // CHANGED means the entry replaced a built-in (or an earlier extension).
+    // Without this the loader reported "entry did not call
+    // registerChannelAdapter" — a misleading skip — while leaving the replacement
+    // in the registry, so an ungated adapter reached initChannelAdapters().setup()
+    // and served that channel. Restore the originals, drop anything this entry
+    // added, and refuse the extension.
+    const replaced = after.filter((n) => before.has(n) && getChannelRegistration(n) !== before.get(n));
+    if (replaced.length > 0) {
+      for (const n of replaced) registerChannelAdapter(n, before.get(n)!);
+      for (const n of newlyRegistered) unregisterChannelAdapter(n);
+      return skip(`entry replaced existing channel registration(s): ${replaced.join(', ')}`, manifest.id);
+    }
+
     if (newlyRegistered.length === 0) {
       return skip('entry did not call registerChannelAdapter on import', manifest.id);
     }
@@ -232,6 +271,17 @@ async function loadOne(name: string, extDir: string, hostVersion: string): Promi
           continue;
         }
         assertChannelAdapterContract(adapter);
+        // The manifest's declared channelType is the one value we can
+        // cross-check. Enforce it (the manifest docs already say it "must match
+        // the adapter's own channelType"), so an extension cannot pass the gate
+        // under a harmless registry name while reporting a channelType that a
+        // built-in serves. `initChannelAdapters` refuses the takeover too; this
+        // rejects it earlier, with a precise reason.
+        if (adapter.channelType !== manifest.channelType) {
+          throw new Error(
+            `adapter channelType "${adapter.channelType}" does not match manifest channelType "${manifest.channelType}"`,
+          );
+        }
         acceptedChannelType ??= adapter.channelType;
       } catch (err) {
         lastReason = (err as Error).message;

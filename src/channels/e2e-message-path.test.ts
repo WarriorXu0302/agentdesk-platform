@@ -46,7 +46,13 @@ import { findSession } from '../db/sessions.js';
 import { routeInbound, setSenderResolver } from '../router.js';
 import { setDeliveryAdapter, deliverSessionMessages } from '../delivery.js';
 import { resolveSession, inboundDbPath, outboundDbPath } from '../session-manager.js';
-import { registerChannelAdapter, initChannelAdapters, getChannelAdapter } from './channel-registry.js';
+import {
+  registerChannelAdapter,
+  initChannelAdapters,
+  getChannelAdapter,
+  teardownChannelAdapters,
+  unregisterChannelAdapter,
+} from './channel-registry.js';
 import { assertChannelAdapterContract } from './channel-contract.js';
 import type { ChannelAdapter, ChannelSetup, InboundEvent, InboundMessage, OutboundMessage } from './adapter.js';
 
@@ -156,7 +162,15 @@ beforeEach(() => {
   runMigrations(db);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Release the channelType each test claimed. `activeAdapters` is a
+  // module-level map, and initChannelAdapters now REFUSES to let a second
+  // registration take over a channelType that is already live (a built-in
+  // channel must not be hijackable). Both tests below use channelType
+  // 'memchan' under different registry names, so without this teardown the
+  // second one would be correctly refused — test pollution, not a product bug.
+  await teardownChannelAdapters();
+  for (const name of ['memchan-e2e-in', 'memchan-e2e-out']) unregisterChannelAdapter(name);
   closeDb();
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });

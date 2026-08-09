@@ -5,6 +5,7 @@
  * to instantiate and set up all registered adapters.
  */
 import type { ChannelAdapter, ChannelRegistration, ChannelSetup } from './adapter.js';
+import { assertChannelAdapterContract } from './channel-contract.js';
 import { log } from '../log.js';
 
 const SETUP_RETRY_DELAYS_MS = [2000, 5000, 10000];
@@ -45,6 +46,17 @@ export function unregisterChannelAdapter(name: string): boolean {
  */
 export function getRegisteredFactory(name: string): ChannelRegistration['factory'] | undefined {
   return registry.get(name)?.factory;
+}
+
+/**
+ * Return the whole registration for a channel name (or undefined). The extension
+ * loader snapshots these around a dynamic import so it can tell a genuinely NEW
+ * registration from one that REPLACED an existing entry (`registry.set` happily
+ * overwrites, and a name diff cannot see that) — and restore the original if an
+ * extension tried to take over a built-in.
+ */
+export function getChannelRegistration(name: string): ChannelRegistration | undefined {
+  return registry.get(name);
 }
 
 /** Get a live adapter by channel type. */
@@ -88,6 +100,29 @@ export async function initChannelAdapters(setupFn: (adapter: ChannelAdapter) => 
       const adapter = await registration.factory();
       if (!adapter) {
         log.warn('Channel credentials missing, skipping', { channel: name });
+        continue;
+      }
+
+      // Structural gate on the instance that is ACTUALLY used. The extension
+      // loader gates the instance IT creates at load time, but the factory is
+      // invoked again here — so a factory that returned null (or a different
+      // shape) at load time would otherwise reach setup() unchecked. Cheap,
+      // dependency-free, and it hardens the built-ins too.
+      assertChannelAdapterContract(adapter);
+
+      // The registry key (`name`) and the routing key (`adapter.channelType`)
+      // are different namespaces: a fresh-named registration can still report a
+      // channelType a built-in already serves, and `activeAdapters.set` would
+      // silently hand that channel's delivery to it. First registration wins
+      // (built-ins register first, before extensions load) — refuse BEFORE
+      // setup() so the loser never binds sockets/webhooks.
+      const claimed = activeAdapters.get(adapter.channelType);
+      if (claimed && claimed !== adapter) {
+        log.error('Channel type already served by another adapter; refusing to take it over', {
+          channel: name,
+          type: adapter.channelType,
+          incumbent: claimed.name,
+        });
         continue;
       }
 

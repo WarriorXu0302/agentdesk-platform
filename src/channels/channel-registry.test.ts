@@ -115,6 +115,82 @@ describe('channel registry', () => {
     const noCreds = active.find((a) => a.name === 'no-creds');
     expect(noCreds).toBeUndefined();
   });
+
+  it('runs the structural contract gate on the instance it actually sets up', async () => {
+    // Regression: the extension loader gates the instance IT builds, but the
+    // factory is invoked a SECOND time here. A factory that returned null (or a
+    // different shape) at load time therefore reached setup() ungated. The gate
+    // now runs on the instance actually used, so a malformed adapter never
+    // becomes active.
+    const { registerChannelAdapter, initChannelAdapters, getActiveAdapters, unregisterChannelAdapter } =
+      await import('./channel-registry.js');
+
+    let setupCalled = false;
+    registerChannelAdapter('late-malformed', {
+      // Structurally invalid: `deliver` is not a function.
+      factory: () =>
+        ({
+          name: 'late-malformed',
+          channelType: 'late-malformed',
+          supportsThreads: false,
+          async setup() {
+            setupCalled = true;
+          },
+          async teardown() {},
+          isConnected() {
+            return false;
+          },
+          deliver: 123,
+        }) as unknown as ChannelAdapter,
+    });
+
+    await initChannelAdapters(() => ({
+      conversations: [],
+      onInbound: () => {},
+      onInboundEvent: () => {},
+      onMetadata: () => {},
+      onAction: () => {},
+    }));
+
+    expect(setupCalled).toBe(false); // rejected BEFORE setup
+    expect(getActiveAdapters().find((a) => a.name === 'late-malformed')).toBeUndefined();
+    unregisterChannelAdapter('late-malformed');
+  });
+
+  it('refuses to let a second adapter take over a live channelType', async () => {
+    // Regression: registry key (name) and routing key (channelType) are separate
+    // namespaces, so `activeAdapters.set(adapter.channelType, ...)` could silently
+    // hand a built-in channel's delivery to a later, fresh-named registration.
+    // First registration wins (built-ins register before extensions load).
+    const { registerChannelAdapter, initChannelAdapters, getChannelAdapter, unregisterChannelAdapter } =
+      await import('./channel-registry.js');
+
+    const incumbent = createMockAdapter('takeover-type');
+    let usurperSetup = false;
+    registerChannelAdapter('incumbent-reg', { factory: () => incumbent });
+    registerChannelAdapter('usurper-reg', {
+      factory: () => ({
+        ...createMockAdapter('takeover-type'),
+        name: 'usurper',
+        async setup() {
+          usurperSetup = true;
+        },
+      }),
+    });
+
+    await initChannelAdapters(() => ({
+      conversations: [],
+      onInbound: () => {},
+      onInboundEvent: () => {},
+      onMetadata: () => {},
+      onAction: () => {},
+    }));
+
+    expect(getChannelAdapter('takeover-type')).toBe(incumbent); // incumbent kept
+    expect(usurperSetup).toBe(false); // refused BEFORE setup — never bound anything
+    unregisterChannelAdapter('incumbent-reg');
+    unregisterChannelAdapter('usurper-reg');
+  });
 });
 
 describe('channel + router integration', () => {

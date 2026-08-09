@@ -82,6 +82,29 @@ import，然后重新构建。这对开源生态是劝退点：
    未注册）都被 try/catch 包住、log + 跳过该扩展，**绝不让一个坏扩展拖垮宿主启动**。
    加载器返回 `{loaded, skipped+reason}` 摘要。
 
+### 加固补丁（2026-08，对抗式复审后）
+
+上面第 4 条「使不合规 adapter **永远到不了 `initChannelAdapters().setup()`**」原先**有三个缺口**，
+均由一次对抗式复审发现并已修（逐条带回归用例，回退修复后用例变红）：
+
+- **注册名劫持（critical）**：`registerChannelAdapter` 就是 `registry.set`，**会覆盖**已有项；
+  而加载器只 diff **名字**。于是 entry 只要用内置名（如 `feishu`）重新注册，diff 结果为空 →
+  加载器报「entry did not call registerChannelAdapter」并**跳过，却不回滚**——被替换的工厂留在
+  registry 里，绕过契约门直达 `setup()`，接管该通道全部收发，运营者只看到一条误导性的 skip 日志。
+  现在加载器快照**完整注册项**，检测「名字已存在但注册对象变了」→ 恢复原注册 + 注销该 entry 新增的项 + 拒绝扩展。
+- **channelType 劫持（high）**：注册名与路由键 `adapter.channelType` 是**两个命名空间**，只有前者被查重。
+  扩展可用无害的新名字过门，却把 `channelType` 报成内置类型，`activeAdapters.set` 便把该通道交给它。
+  现在加载期强制 `adapter.channelType === manifest.channelType`（manifest 文档本就这么要求），
+  且 `initChannelAdapters` **拒绝接管已被占用的 channelType**（先注册者胜；内置先于扩展注册）。
+- **二次实例化绕门（high）**：契约门只校验**加载期**那个实例，而 `initChannelAdapters` 会**再调一次
+  factory**，用的是**未校验**的第二个实例（加载期返回 `null` 时更是完全跳过校验）。
+  现在 `initChannelAdapters` 在 `setup()` 前对**实际使用的实例**跑 `assertChannelAdapterContract`
+  ——顺带也给内置通道加了同一道结构闸。
+
+附带修掉一个静默失效：`readHostVersion` 用 `new URL(import.meta.url).pathname`（**保持百分号编码**），
+安装路径含空格或非 ASCII 时全部 package.json 读取失败 → 回落 `'0.0.0'` → **每个**声明了版本范围的扩展
+都被以「host version 0.0.0 不满足…」这种假原因跳过。改用 `fileURLToPath`。
+
 6. **接线**：在 `src/index.ts` 的 `initChannelAdapters` **之前**调 `loadChannelExtensions()`，
    让外部通道先 self-register，从而被 `initChannelAdapters` 一视同仁地 setup（不重复 setup
    内置通道）。
