@@ -33,6 +33,36 @@ export async function handleApprovalsResponse(payload: ResponsePayload): Promise
   const approval = getPendingApproval(payload.questionId);
   if (!approval) return false;
 
+  // The expiry sweep only flips `status` to 'expired' — it leaves the row in
+  // place, and getPendingApproval has no status predicate. Without this gate a
+  // stale card (chat-sdk buttons stay clickable forever on Discord/Slack/Telegram)
+  // still dispatched to the privileged handler days after it was audited as
+  // expired, making the whole expiry mechanism advisory. Fail closed: audit the
+  // dead click and drop the row so it cannot be replayed.
+  if (approval.status !== 'pending') {
+    log.warn('Approval click on a non-pending row — refusing', {
+      approvalId: approval.approval_id,
+      action: approval.action,
+      status: approval.status,
+      clickedBy: payload.userId ?? null,
+    });
+    recordEnterpriseAudit({
+      eventType: 'approval_resolved',
+      actor: payload.userId ?? null,
+      agentGroupId: approval.agent_group_id,
+      details: {
+        approvalId: approval.approval_id,
+        action: approval.action,
+        result: 'rejected',
+        outcome: `stale_click_${approval.status}`,
+        sessionId: approval.session_id,
+      },
+    });
+    approvalEventsTotal.inc({ action: approval.action, result: 'rejected' });
+    deletePendingApproval(approval.approval_id);
+    return true;
+  }
+
   if (approval.action === ONECLI_ACTION) {
     // Row exists but the in-memory resolver is gone (timer fired or the process
     // was in a weird state). Nothing to do — just drop the row.

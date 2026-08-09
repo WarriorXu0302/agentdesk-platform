@@ -45,7 +45,17 @@ export function buildAuditExport(opts: AuditExportOptions = {}): AuditExport {
   const since = opts.since ?? null;
   const until = opts.until ?? null;
   const requested = opts.tables && opts.tables.length ? opts.tables : [...AUDIT_TABLES];
-  const tables = requested.filter((t): t is AuditTable => (AUDIT_TABLES as readonly string[]).includes(t));
+  // REJECT unknown table names instead of filtering them out. Silently dropping
+  // them produced a cryptographically valid bundle attesting ZERO audit activity
+  // — e.g. `--tables gateway-audit` (hyphens, the spelling used in migration
+  // filenames and doc prose) filtered to [], the row loop never ran, and the
+  // operator handed an auditor a signed false negative. The whitelist stays as
+  // the injection guard for the interpolated table name below.
+  const unknown = requested.filter((t) => !(AUDIT_TABLES as readonly string[]).includes(t));
+  if (unknown.length > 0) {
+    throw new Error(`unknown audit table(s): ${unknown.join(', ')} — valid tables are ${[...AUDIT_TABLES].join(', ')}`);
+  }
+  const tables = requested as AuditTable[];
   const db = getDb();
   const rows: Record<string, Array<Record<string, unknown>>> = {};
   const rowCounts: Record<string, number> = {};

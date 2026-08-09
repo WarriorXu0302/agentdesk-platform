@@ -2,7 +2,7 @@ import crypto from 'crypto';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { exportAuditForCompliance } from './audit-export.js';
+import { buildAuditExport, exportAuditForCompliance } from './audit-export.js';
 import { recordEnterpriseAudit } from './enterprise-audit.js';
 import { closeDb, initTestDb, runMigrations } from './index.js';
 
@@ -53,5 +53,21 @@ describe('exportAuditForCompliance (roadmap 5.4)', () => {
     expect(Object.keys((JSON.parse(out.payload) as { rows: Record<string, unknown> }).rows)).toEqual([
       'enterprise_audit',
     ]);
+  });
+});
+
+describe('audit export input validation', () => {
+  it('rejects an unknown table instead of signing an empty bundle', () => {
+    // Regression: unknown names were filtered out, so a typo like the
+    // hyphenated spelling used in migration filenames / doc prose produced a
+    // signed bundle attesting ZERO audit activity for the window — a
+    // cryptographically valid false negative handed to an auditor.
+    expect(() => buildAuditExport({ tables: ['gateway-audit' as never] })).toThrow(/unknown audit table/);
+    expect(() => buildAuditExport({ tables: ['gateway_audit', 'nope' as never] })).toThrow(/nope/);
+  });
+
+  it('still accepts the real table names', () => {
+    const out = buildAuditExport({ tables: ['gateway_audit'] });
+    expect(out.generatedFor.tables).toEqual(['gateway_audit']);
   });
 });

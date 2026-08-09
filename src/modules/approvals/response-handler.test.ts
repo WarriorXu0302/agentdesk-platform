@@ -144,3 +144,29 @@ describe('approval handler registry audit (roadmap 5.10)', () => {
     expect(typeof details.count).toBe('number');
   });
 });
+
+describe('stale (expired) approval clicks', () => {
+  it('refuses to run the handler after the expiry sweep marked the row expired', async () => {
+    // Regression: expireStalePendingApprovals only flips status to 'expired' and
+    // leaves the row; getPendingApproval has no status predicate; and the handler
+    // never inspected status. Chat-sdk buttons (Discord/Slack/Telegram) stay
+    // clickable forever, so an admin scrolling back days later still executed a
+    // privileged action that had already been audited as expired.
+    seed('install_packages');
+    let applied = false;
+    registerApprovalHandler('install_packages', async () => {
+      applied = true;
+    });
+    getDb().prepare("UPDATE pending_approvals SET status = 'expired' WHERE approval_id = 'ap-1'").run();
+
+    expect(await handleApprovalsResponse(payload('approve'))).toBe(true);
+
+    expect(applied).toBe(false); // privileged handler NOT run
+    const rows = auditRows('approval_resolved');
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].details!)).toMatchObject({ result: 'rejected', outcome: 'stale_click_expired' });
+    // Row dropped so the dead card cannot be replayed.
+    const left = getDb().prepare('SELECT COUNT(*) AS c FROM pending_approvals').get() as { c: number };
+    expect(left.c).toBe(0);
+  });
+});
