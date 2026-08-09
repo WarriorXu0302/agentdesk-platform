@@ -49,6 +49,7 @@ the trade-off — see `CLAUDE.md` and `docs/decisions/`):
 | **Fail-closed defaults** | Missing admin table → deny; uncompilable engage regex → drop, never hijack; approval card without an actor → deny; config validation rejects placeholder secrets at startup | ADR-0019, ADR-0025 |
 | **Ingress durability** | Persist-before-route: the raw envelope is persisted before routing; failures are retained + operator-replayable, not silently dropped | ADR-0022 |
 | **Session isolation** | Per-user / per-thread session isolation; each session maps to its own container with per-group cgroup limits | `docs/isolation-model.md` |
+| **Session-dir path containment** | The session dir is bind-mounted RW into the container, so every host-side attachment path (`inbox/`, `outbox/`, and the a2a file forwarder) resolves its containment root through `resolveSessionIoRoot`, which lstats the `inbox`/`outbox` component itself and anchors containment at the **session root** — the mount source, which the container cannot replace. Never derive a containment root by realpath'ing a path that traverses a container-writable component. | `src/session-manager.ts` |
 | **Memory / prompt-injection** | Long-term business memory lives only behind the backend gateway; retrieved memory is fenced with a nonce-delimited injection boundary | ADR-0033 |
 | **Observability is read-only** | The Phoenix/Grafana + OpenTelemetry stack must never mutate the identity trust chain or message flow; trace content capture is opt-in and off by default | ADR-0007, ADR-0027 |
 

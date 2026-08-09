@@ -148,6 +148,70 @@ describe('session manager', () => {
     expect(fs.existsSync(path.join(victimDir, 'keep.txt'))).toBe(true);
   });
 
+  // The session dir is bind-mounted RW into the container, so a compromised agent
+  // can replace the `outbox`/`inbox` COMPONENT ITSELF with a symlink:
+  //   rm -rf /workspace/outbox && ln -s /any/host/path /workspace/outbox
+  // lstat only refuses a symlink at the LAST component, and the old containment
+  // root was computed by realpath'ing that same replaced component — so the root
+  // moved with the attack and the check could never fail. These three lock the
+  // fix (containment anchored at the session ROOT).
+  it('refuses a symlinked outbox ROOT instead of rm -rf-ing the host target', () => {
+    initSessionFolder('ag-1', 'sess-test');
+    const dir = sessionDir('ag-1', 'sess-test');
+    const victimRoot = path.join(TEST_DIR, 'victim-root');
+    fs.mkdirSync(path.join(victimRoot, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(victimRoot, 'src', 'keep.txt'), 'do not delete');
+
+    // Agent swaps the outbox component for a link to an arbitrary host dir, then
+    // writes a messages_out row whose id it controls ('src').
+    fs.rmSync(path.join(dir, 'outbox'), { recursive: true, force: true });
+    fs.symlinkSync(victimRoot, path.join(dir, 'outbox'));
+
+    clearOutbox('ag-1', 'sess-test', 'src');
+
+    expect(fs.existsSync(path.join(victimRoot, 'src', 'keep.txt'))).toBe(true);
+  });
+
+  it('refuses to read host files through a symlinked outbox ROOT', () => {
+    initSessionFolder('ag-1', 'sess-test');
+    const dir = sessionDir('ag-1', 'sess-test');
+    const victimRoot = path.join(TEST_DIR, 'victim-root-read');
+    fs.mkdirSync(path.join(victimRoot, 'msg-1'), { recursive: true });
+    fs.writeFileSync(path.join(victimRoot, 'msg-1', 'secret.txt'), 'exfil');
+
+    fs.rmSync(path.join(dir, 'outbox'), { recursive: true, force: true });
+    fs.symlinkSync(victimRoot, path.join(dir, 'outbox'));
+
+    expect(readOutboxFiles('ag-1', 'sess-test', 'msg-1', ['secret.txt'])).toBeUndefined();
+  });
+
+  it('refuses to write attachments through a symlinked inbox ROOT', () => {
+    initSessionFolder('ag-1', 'sess-test');
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    // Replace the `inbox` COMPONENT of the live session with a link to an
+    // arbitrary host dir (distinct from the existing test, which symlinks the
+    // per-message dir INSIDE a real inbox).
+    const victimRoot = path.join(TEST_DIR, 'victim-root-write');
+    fs.mkdirSync(victimRoot, { recursive: true });
+    const inboxRoot = path.join(sessionDir('ag-1', session.id), 'inbox');
+    fs.rmSync(inboxRoot, { recursive: true, force: true });
+    fs.symlinkSync(victimRoot, inboxRoot);
+
+    writeSessionMessage('ag-1', session.id, {
+      id: 'msg-evil',
+      kind: 'chat',
+      timestamp: now(),
+      content: JSON.stringify({
+        text: 'evil',
+        attachments: [{ name: 'planted.txt', data: Buffer.from('planted').toString('base64'), size: 7 }],
+      }),
+    });
+
+    // Nothing was written into the attacker-chosen directory.
+    expect(fs.existsSync(path.join(victimRoot, 'msg-evil'))).toBe(false);
+  });
+
   it('should still read and clear normal basename outbox files', () => {
     initSessionFolder('ag-1', 'sess-test');
     const dir = sessionDir('ag-1', 'sess-test');

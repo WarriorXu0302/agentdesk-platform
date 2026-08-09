@@ -51,6 +51,62 @@ export function sessionsBaseDir(): string {
   return path.join(DATA_DIR, 'v2-sessions');
 }
 
+/**
+ * Resolve `<sessionDir>/<kind>` to a real path, anchored at the SESSION ROOT.
+ *
+ * SECURITY (do not "simplify" this away). Every containment check on the
+ * attachment paths used to derive its root by realpath'ing the `inbox`/`outbox`
+ * dir itself — a path that already traverses a component the CONTAINER can
+ * replace, because the session dir is bind-mounted RW at /workspace as the host
+ * uid. A compromised agent could do:
+ *
+ *     rm -rf /workspace/outbox && ln -s /any/host/path /workspace/outbox
+ *
+ * `lstat` only refuses a symlink at the LAST component, so the replaced `outbox`
+ * was followed silently; and because the containment root was computed by
+ * resolving through that same symlink, the root moved with the attack and
+ * `isPathInside()` could never fail. That yielded host-side arbitrary recursive
+ * delete (clearOutbox), arbitrary host file read into a delivered message
+ * (readOutboxFiles) and an attacker-chosen write location (extractAttachmentFiles).
+ *
+ * The session root itself is the mount SOURCE — the container cannot swap it —
+ * so it is the only trustworthy anchor. Returns null when the `kind` component
+ * is not a real directory or does not resolve inside the real session root; every
+ * caller must treat null as "refuse the operation".
+ */
+export function resolveSessionIoRoot(
+  agentGroupId: string,
+  sessionId: string,
+  kind: 'inbox' | 'outbox',
+  opts: { ensure?: boolean } = {},
+): string | null {
+  const root = sessionDir(agentGroupId, sessionId);
+  const kindPath = path.join(root, kind);
+  try {
+    if (opts.ensure && !fs.existsSync(kindPath)) fs.mkdirSync(kindPath, { recursive: true });
+    const stat = fs.lstatSync(kindPath);
+    // Validate the intermediate component instead of following it.
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      log.warn('Rejecting session I/O root that is not a real directory', {
+        agentGroupId,
+        sessionId,
+        kind,
+      });
+      return null;
+    }
+    const realRoot = fs.realpathSync(root);
+    const realKind = fs.realpathSync(kindPath);
+    if (!isPathInside(realRoot, realKind)) {
+      log.warn('Session I/O root escaped the session dir', { agentGroupId, sessionId, kind, realKind });
+      return null;
+    }
+    return realKind;
+  } catch (err) {
+    log.warn('Failed to resolve session I/O root', { agentGroupId, sessionId, kind, err });
+    return null;
+  }
+}
+
 /** Directory for a specific session: sessions/{agent_group_id}/{session_id}/ */
 export function sessionDir(agentGroupId: string, sessionId: string): string {
   return path.join(sessionsBaseDir(), agentGroupId, sessionId);
@@ -368,7 +424,13 @@ function extractAttachmentFiles(
       });
     }
 
-    const inboxDir = path.join(sessionDir(agentGroupId, sessionId), 'inbox', messageId);
+    // Anchor at the session root (see resolveSessionIoRoot): deriving the root
+    // from the `inbox` component itself let a container-placed symlink redirect
+    // the host's writes to an attacker-chosen directory.
+    const realInboxBase = resolveSessionIoRoot(agentGroupId, sessionId, 'inbox', { ensure: true });
+    if (!realInboxBase) continue;
+
+    const inboxDir = path.join(realInboxBase, messageId);
 
     // Refuse to mkdir through a symlink that the container may have pre placed
     // at inboxDir. With recursive:true, mkdirSync would silently no op on a
@@ -380,7 +442,12 @@ function extractAttachmentFiles(
         continue;
       }
     }
-    fs.mkdirSync(inboxDir, { recursive: true });
+    try {
+      fs.mkdirSync(inboxDir, { recursive: true });
+    } catch (err) {
+      log.warn('Failed to create inbox directory', { messageId, err });
+      continue;
+    }
 
     let realInboxDir: string;
     try {
@@ -389,8 +456,7 @@ function extractAttachmentFiles(
       log.warn('Failed to resolve inbox directory', { messageId, err });
       continue;
     }
-    const inboxRoot = path.join(sessionDir(agentGroupId, sessionId), 'inbox');
-    if (!isPathInside(fs.realpathSync(inboxRoot), realInboxDir)) {
+    if (!isPathInside(realInboxBase, realInboxDir)) {
       log.warn('Inbox directory escaped session inbox root', { messageId, inboxDir });
       continue;
     }
@@ -551,7 +617,13 @@ export function readOutboxFiles(
     return undefined;
   }
 
-  const outboxDir = path.join(sessionDir(agentGroupId, sessionId), 'outbox', messageId);
+  // Anchor at the session root (see resolveSessionIoRoot): deriving the root from
+  // the `outbox` component itself let a container-placed symlink turn these reads
+  // into arbitrary host file disclosure, delivered straight into a chat message.
+  const realOutboxBase = resolveSessionIoRoot(agentGroupId, sessionId, 'outbox');
+  if (!realOutboxBase) return undefined;
+
+  const outboxDir = path.join(realOutboxBase, messageId);
   if (!fs.existsSync(outboxDir)) return undefined;
 
   let realOutboxDir: string;
@@ -562,6 +634,10 @@ export function readOutboxFiles(
       return undefined;
     }
     realOutboxDir = fs.realpathSync(outboxDir);
+    if (!isPathInside(realOutboxBase, realOutboxDir)) {
+      log.warn('Rejecting outbox directory outside session outbox', { messageId, outboxDir });
+      return undefined;
+    }
   } catch (err) {
     log.warn('Failed to inspect outbox directory', { messageId, err });
     return undefined;
@@ -606,7 +682,13 @@ export function clearOutbox(agentGroupId: string, sessionId: string, messageId: 
     return;
   }
 
-  const outboxDir = path.join(sessionDir(agentGroupId, sessionId), 'outbox', messageId);
+  // Anchor at the session root (see resolveSessionIoRoot): deriving the root from
+  // the `outbox` component itself let a container-placed symlink turn this rmSync
+  // into an arbitrary host-side `rm -rf`.
+  const realOutboxBase = resolveSessionIoRoot(agentGroupId, sessionId, 'outbox');
+  if (!realOutboxBase) return;
+
+  const outboxDir = path.join(realOutboxBase, messageId);
   if (!fs.existsSync(outboxDir)) return;
   try {
     const stat = fs.lstatSync(outboxDir);
@@ -614,7 +696,6 @@ export function clearOutbox(agentGroupId: string, sessionId: string, messageId: 
       log.warn('Rejecting unsafe outbox cleanup directory', { messageId, outboxDir });
       return;
     }
-    const realOutboxBase = fs.realpathSync(path.join(sessionDir(agentGroupId, sessionId), 'outbox'));
     const realOutboxDir = fs.realpathSync(outboxDir);
     if (!isPathInside(realOutboxBase, realOutboxDir)) {
       log.warn('Rejecting outbox cleanup outside session outbox', { messageId, outboxDir });

@@ -34,7 +34,7 @@ import { getSession, setSessionConversationThreadId } from '../../db/sessions.js
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
 import { a2aOriginRejectedTotal } from '../../metrics.js';
-import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
+import { openInboundDb, resolveSession, resolveSessionIoRoot, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 import { hasDestination } from './db/agent-destinations.js';
 import { orgOfAgentGroup } from '../permissions/db/organizations.js';
@@ -83,7 +83,28 @@ export function forwardAttachedFiles(
 ): ForwardedAttachment[] {
   if (source.filenames.length === 0) return [];
 
-  const sourceDir = path.join(sessionDir(source.agentGroupId, source.sessionId), 'outbox', source.messageId);
+  // Both roots must be anchored at their session root: the session dirs are
+  // bind-mounted RW into their containers, so a compromised agent can replace the
+  // `outbox`/`inbox` component with a symlink. Without this, a symlinked source
+  // outbox copied arbitrary HOST files into another agent's inbox (cross-agent
+  // exfiltration), and a symlinked target inbox redirected the host's writes.
+  // See resolveSessionIoRoot in src/session-manager.ts.
+  const realSourceOutbox = resolveSessionIoRoot(source.agentGroupId, source.sessionId, 'outbox');
+  if (!realSourceOutbox) {
+    log.warn('agent-route: refusing to forward files, unsafe source outbox root', {
+      sourceMsgId: source.messageId,
+    });
+    return [];
+  }
+  if (!isSafeAttachmentName(source.messageId) || !isSafeAttachmentName(target.messageId)) {
+    log.warn('agent-route: refusing to forward files, unsafe message id', {
+      sourceMsgId: source.messageId,
+      targetMsgId: target.messageId,
+    });
+    return [];
+  }
+
+  const sourceDir = path.join(realSourceOutbox, source.messageId);
   if (!fs.existsSync(sourceDir)) {
     log.warn('agent-route: source outbox dir missing, no files forwarded', {
       sourceMsgId: source.messageId,
@@ -92,7 +113,14 @@ export function forwardAttachedFiles(
     return [];
   }
 
-  const targetInboxDir = path.join(sessionDir(target.agentGroupId, target.sessionId), 'inbox', target.messageId);
+  const realTargetInbox = resolveSessionIoRoot(target.agentGroupId, target.sessionId, 'inbox', { ensure: true });
+  if (!realTargetInbox) {
+    log.warn('agent-route: refusing to forward files, unsafe target inbox root', {
+      targetMsgId: target.messageId,
+    });
+    return [];
+  }
+  const targetInboxDir = path.join(realTargetInbox, target.messageId);
   fs.mkdirSync(targetInboxDir, { recursive: true });
 
   const attachments: ForwardedAttachment[] = [];
@@ -112,8 +140,31 @@ export function forwardAttachedFiles(
       });
       continue;
     }
+    // The file itself must be a real file inside the resolved outbox — a symlink
+    // here would make copyFileSync read whatever it points at on the host.
+    try {
+      const stat = fs.lstatSync(src);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        log.warn('agent-route: rejecting non-regular source file', { sourceMsgId: source.messageId, filename });
+        continue;
+      }
+      const rel = path.relative(realSourceOutbox, fs.realpathSync(src));
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        log.warn('agent-route: rejecting source file outside outbox', { sourceMsgId: source.messageId, filename });
+        continue;
+      }
+    } catch (err) {
+      log.warn('agent-route: failed to inspect source file, skipped', {
+        sourceMsgId: source.messageId,
+        filename,
+        err,
+      });
+      continue;
+    }
     const dst = path.join(targetInboxDir, filename);
-    fs.copyFileSync(src, dst);
+    // `wx`-equivalent: refuse to follow a pre-placed symlink at the destination
+    // or clobber an existing file (mirrors extractAttachmentFiles).
+    fs.copyFileSync(src, dst, fs.constants.COPYFILE_EXCL);
     attachments.push({
       name: filename,
       filename,
