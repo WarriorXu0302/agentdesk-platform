@@ -43,6 +43,13 @@ jobs:
       - name: Format check
         run: pnpm run format:check
 
+      # Errors only. The tree carries ~171 pre-existing `no-catch-all` warnings,
+      # which eslint does not fail on without --max-warnings, so this gate is
+      # green today and catches real errors from here on. It was previously
+      # absent, which is how a `preserve-caught-error` violation reached main.
+      - name: Lint
+        run: pnpm run lint
+
       - name: Host typecheck
         run: pnpm exec tsc --noEmit
 
