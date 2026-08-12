@@ -44,8 +44,7 @@ export function createPendingSenderApproval(row: PendingSenderApproval): void {
 
 export function getPendingSenderApproval(id: string): PendingSenderApproval | undefined {
   return getDb().prepare('SELECT * FROM pending_sender_approvals WHERE id = ?').get(id) as
-    | PendingSenderApproval
-    | undefined;
+    PendingSenderApproval | undefined;
 }
 
 export function hasInFlightSenderApproval(messagingGroupId: string, senderIdentity: string): boolean {

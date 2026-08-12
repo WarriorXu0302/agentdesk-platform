@@ -75,8 +75,7 @@ function readDelivered(sessionId: string, msgId: string): { status: string } | u
   const db = new Database(inboundDbPath('ag-1', sessionId));
   try {
     return db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get(msgId) as
-      | { status: string }
-      | undefined;
+      { status: string } | undefined;
   } finally {
     db.close();
   }

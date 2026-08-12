@@ -59,9 +59,7 @@ export type UserRoleKind = 'owner' | 'admin' | 'org-admin' | 'operator' | 'viewe
  *   global → (null, null);  group → (set, null);  org → (null, set).
  */
 export type RoleScope =
-  | { kind: 'global' }
-  | { kind: 'group'; agentGroupId: string }
-  | { kind: 'org'; organizationId: string };
+  { kind: 'global' } | { kind: 'group'; agentGroupId: string } | { kind: 'org'; organizationId: string };
 
 /**
  * Role grant. Owner is always global. Admin is global (agent_group_id = null,

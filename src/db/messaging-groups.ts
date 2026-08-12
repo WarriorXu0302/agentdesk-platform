@@ -205,8 +205,7 @@ export function getMessagingGroupAgentByPair(
 
 export function getMessagingGroupAgent(id: string): MessagingGroupAgent | undefined {
   return getDb().prepare('SELECT * FROM messaging_group_agents WHERE id = ?').get(id) as
-    | MessagingGroupAgent
-    | undefined;
+    MessagingGroupAgent | undefined;
 }
 
 export function updateMessagingGroupAgent(

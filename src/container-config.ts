@@ -283,7 +283,7 @@ export function readContainerConfig(folder: string): ContainerConfig {
       preserved,
       err,
     });
-    throw new Error(`container-config: failed to parse ${p}: ${String(err)}`);
+    throw new Error(`container-config: failed to parse ${p}`, { cause: err });
   }
 
   // Spread `raw` FIRST so operator-set keys this interface doesn't model

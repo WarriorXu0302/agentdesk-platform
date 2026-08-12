@@ -139,8 +139,7 @@ export function orgsForUser(userId: string): string[] {
 /** The org that owns an agent group, derived from the immutable agent_group_id FK. */
 export function orgOfAgentGroup(agentGroupId: string): string | null {
   const row = getDb().prepare('SELECT organization_id FROM agent_groups WHERE id = ?').get(agentGroupId) as
-    | { organization_id: string | null }
-    | undefined;
+    { organization_id: string | null } | undefined;
   return row?.organization_id ?? null;
 }
 

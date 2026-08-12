@@ -159,8 +159,7 @@ export function insertDmGrant(args: InsertDmGrantArgs): string | null {
 
 export function getBySlot(scopeId: string, slotLabel: string): DmGrantRow | undefined {
   return getDb().prepare('SELECT * FROM dm_grants WHERE scope_id = ? AND slot_label = ?').get(scopeId, slotLabel) as
-    | DmGrantRow
-    | undefined;
+    DmGrantRow | undefined;
 }
 
 export function getByParticipant(scopeId: string, participantOpenId: string): DmGrantRow | undefined {
