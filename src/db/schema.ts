@@ -26,6 +26,7 @@ CREATE TABLE organization_members (
   added_at        TEXT NOT NULL,
   PRIMARY KEY (organization_id, user_id)
 );
+CREATE INDEX idx_org_members_user ON organization_members(user_id);
 
 -- Agent workspaces: folder, skills, CLAUDE.md.
 -- Privilege lives on users, not groups. Workspaces are NO LONGER all equal
@@ -42,6 +43,7 @@ CREATE TABLE agent_groups (
   created_at       TEXT NOT NULL,
   organization_id  TEXT REFERENCES organizations(id)
 );
+CREATE INDEX idx_agent_groups_org ON agent_groups(organization_id);
 
 -- Platform groups/channels. unknown_sender_policy governs what happens
 -- when a sender we've never seen before posts in this chat.
@@ -58,6 +60,9 @@ CREATE TABLE messaging_groups (
   unknown_sender_policy TEXT NOT NULL DEFAULT 'strict',
                         -- 'strict' | 'request_approval' | 'public'
   created_at            TEXT NOT NULL,
+  -- Set when an owner explicitly DENIED registering this channel. The router
+  -- drops such channels silently, and autowire refuses to re-wire them.
+  denied_at             TEXT,
   UNIQUE(channel_type, platform_id)
 );
 
@@ -69,12 +74,15 @@ CREATE TABLE messaging_group_agents (
   id                     TEXT PRIMARY KEY,
   messaging_group_id     TEXT NOT NULL REFERENCES messaging_groups(id),
   agent_group_id         TEXT NOT NULL REFERENCES agent_groups(id),
-  engage_mode            TEXT NOT NULL DEFAULT 'mention',
-                         -- 'pattern' | 'mention' | 'mention-sticky'
+  -- NOTE: these three are NULLABLE with no column default in the real DB —
+  -- migration 008 added them via ALTER TABLE ADD COLUMN and backfilled instead.
+  -- Callers must not rely on a DB-level default; the router treats NULL as the
+  -- documented fallback ('mention' / 'all' / 'drop').
+  engage_mode            TEXT,   -- 'pattern' | 'mention' | 'mention-sticky'
   engage_pattern         TEXT,   -- regex; required when engage_mode='pattern';
                                  -- '.' means "match every message" (the "always" flavor)
-  sender_scope           TEXT NOT NULL DEFAULT 'all',    -- 'all' | 'known'
-  ignored_message_policy TEXT NOT NULL DEFAULT 'drop',   -- 'drop' | 'accumulate'
+  sender_scope           TEXT,   -- 'all' | 'known'
+  ignored_message_policy TEXT,   -- 'drop' | 'accumulate'
   session_mode           TEXT DEFAULT 'shared',
                          -- 'shared' | 'per-thread' | 'agent-shared' |
                          -- 'per-user' | 'per-user-per-thread'
@@ -112,6 +120,8 @@ CREATE TABLE user_roles (
   PRIMARY KEY (user_id, role, agent_group_id)
 );
 CREATE INDEX idx_user_roles_scope ON user_roles(agent_group_id, role);
+-- Global-scope lookups filter on role alone (command-gate + operability queries).
+CREATE INDEX idx_user_roles_role ON user_roles(role);
 CREATE INDEX idx_user_roles_org ON user_roles(organization_id);
 -- One org-scoped grant of a role per (user, org); disjoint from group rows.
 CREATE UNIQUE INDEX idx_user_roles_org_grant
@@ -156,7 +166,11 @@ CREATE TABLE sessions (
   -- already-idle-for-a-year session still gets its configured
   -- archive retention window before the tarball is wiped.
   archived_at        TEXT,
-  created_at         TEXT NOT NULL
+  created_at         TEXT NOT NULL,
+  -- a2a spawn-chain depth, capped by AGENTDESK_MAX_SPAWN_DEPTH (loop guard).
+  spawn_depth        INTEGER NOT NULL DEFAULT 0,
+  -- Provider-side conversation id. CORRELATION ONLY — never an authz input.
+  conversation_thread_id TEXT
 );
 CREATE INDEX idx_sessions_agent_group ON sessions(agent_group_id);
 CREATE INDEX idx_sessions_lookup ON sessions(messaging_group_id, thread_id);
@@ -189,8 +203,324 @@ CREATE TABLE pending_sender_approvals (
   original_message   TEXT NOT NULL,    -- JSON of the original InboundEvent
   approver_user_id   TEXT NOT NULL,
   created_at         TEXT NOT NULL,
+  -- Card render metadata (migration 011), so the host can rebuild the exact card
+  -- it sent and validate the clicked option against it.
+  title              TEXT NOT NULL DEFAULT '',
+  options_json       TEXT NOT NULL DEFAULT '[]',
   UNIQUE(messaging_group_id, sender_identity)
 );
+CREATE INDEX idx_pending_sender_approvals_mg ON pending_sender_approvals(messaging_group_id);
+
+
+-- ==========================================================================
+-- Tables added by later migrations. Kept in sync with the migration chain by
+-- src/db/schema-drift.test.ts — that test fails if this reference and
+-- runMigrations() ever disagree on tables, columns or indexes.
+-- ==========================================================================
+
+-- a2a permission table: the source agent group must have a row for the target
+-- before it may address it. The ONLY grant surface for agent-to-agent sends.
+CREATE TABLE agent_destinations (
+  agent_group_id  TEXT NOT NULL,
+  local_name      TEXT NOT NULL,
+  target_type     TEXT NOT NULL,
+  target_id       TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (agent_group_id, local_name)
+);
+
+CREATE INDEX idx_agent_dest_target ON agent_destinations(target_type, target_id);
+
+-- Chat SDK state backing store (kv / lists / locks / subscriptions). Written by
+-- SqliteStateAdapter on behalf of chat-sdk adapters (Discord, Slack, Telegram …).
+CREATE TABLE chat_sdk_kv (
+  key         TEXT PRIMARY KEY,
+  value       TEXT NOT NULL,
+  expires_at  INTEGER
+);
+
+CREATE TABLE chat_sdk_lists (
+  key         TEXT NOT NULL,
+  idx         INTEGER NOT NULL,
+  value       TEXT NOT NULL,
+  expires_at  INTEGER,
+  PRIMARY KEY (key, idx)
+);
+
+CREATE TABLE chat_sdk_locks (
+  thread_id   TEXT PRIMARY KEY,
+  token       TEXT NOT NULL,
+  expires_at  INTEGER NOT NULL
+);
+
+CREATE TABLE chat_sdk_subscriptions (
+  thread_id      TEXT PRIMARY KEY,
+  subscribed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Frontdesk intent-classification decisions plus the closing-the-loop outcome.
+-- Read-only analytics; never an authorization input.
+CREATE TABLE classification_log (
+  id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at             TEXT NOT NULL,
+  session_id              TEXT,
+  agent_group_id          TEXT,
+  user_id                 TEXT,
+  user_message            TEXT,
+  recommended_worker      TEXT,
+  confidence              REAL,
+  candidates              TEXT,
+  reasoning               TEXT,
+  action                  TEXT NOT NULL,
+  outcome_ref             TEXT,
+  classification_id       TEXT,
+  channel_type            TEXT,
+  platform_id             TEXT,
+  thread_id               TEXT,
+  escalation_reason       TEXT,
+  urgency_level           TEXT,
+  conversation_thread_id  TEXT,
+  feedback_kind           TEXT
+);
+
+CREATE INDEX idx_classification_log_at ON classification_log(occurred_at);
+
+CREATE INDEX idx_classification_log_user ON classification_log(user_id, occurred_at);
+
+CREATE INDEX idx_classification_log_worker ON classification_log(recommended_worker, occurred_at);
+
+CREATE UNIQUE INDEX idx_classification_log_cls_id ON classification_log(classification_id);
+
+CREATE INDEX idx_classification_log_conversation ON classification_log(conversation_thread_id);
+
+-- Append-only audit of every roster-DM delivery decision (delivered/rejected +
+-- reason).
+CREATE TABLE dm_audit (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at          TEXT NOT NULL,
+  scope_id             TEXT NOT NULL,
+  agent_group_id       TEXT,
+  session_id           TEXT,
+  slot_label           TEXT,
+  grant_id             TEXT,
+  participant_open_id  TEXT,
+  dm_platform_id       TEXT,
+  message_out_id       TEXT,
+  decision             TEXT NOT NULL,
+  reason               TEXT
+);
+
+CREATE INDEX idx_dm_audit_at ON dm_audit(occurred_at);
+
+CREATE INDEX idx_dm_audit_scope ON dm_audit(scope_id, occurred_at);
+
+-- Roster-DM consent grants (ADR-0023). One row per (scope, participant); the
+-- agent only ever sees the opaque slot_label, never the identity columns.
+CREATE TABLE dm_grants (
+  id                      TEXT PRIMARY KEY,
+  scope_id                TEXT NOT NULL,
+  agent_group_id          TEXT NOT NULL,
+  slot_label              TEXT NOT NULL,
+  participant_open_id     TEXT NOT NULL,
+  dm_platform_id          TEXT NOT NULL,
+  channel_type            TEXT NOT NULL DEFAULT 'feishu',
+  consent_source          TEXT NOT NULL,
+  consent_inbound_msg_id  TEXT NOT NULL,
+  consent_origin_user_id  TEXT,
+  created_at              TEXT NOT NULL,
+  expires_at              TEXT,
+  revoked_at              TEXT,
+  max_sends               INTEGER NOT NULL DEFAULT 0,
+  sends_used              INTEGER NOT NULL DEFAULT 0,
+  origin_platform_id      TEXT
+);
+
+CREATE INDEX idx_dm_grants_scope ON dm_grants(scope_id);
+
+CREATE INDEX idx_dm_grants_live ON dm_grants(scope_id, revoked_at, expires_at);
+
+CREATE INDEX idx_dm_grants_origin ON dm_grants(origin_platform_id, participant_open_id);
+
+-- Tumbling-window counters backing the roster-DM rate limits and the 24h
+-- deploy-wide blast-radius cap, plus the per-message reservation marker.
+CREATE TABLE dm_rate_ledger (
+  key           TEXT NOT NULL,
+  window_start  TEXT NOT NULL,
+  count         INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);
+
+CREATE INDEX idx_dm_rate_ledger_key ON dm_rate_ledger(key, window_start);
+
+-- Append-only governance audit: role grants/revokes, command-gate denials, a2a
+-- delegations, approval decisions/expiries, roster-grant lifecycle, autowire.
+CREATE TABLE enterprise_audit (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at         TEXT NOT NULL,
+  event_type          TEXT NOT NULL,
+  messaging_group_id  TEXT,
+  agent_group_id      TEXT,
+  actor               TEXT,
+  details             TEXT
+);
+
+CREATE INDEX idx_enterprise_audit_at ON enterprise_audit(occurred_at);
+
+CREATE INDEX idx_enterprise_audit_type ON enterprise_audit(event_type);
+
+-- Append-only audit: one row per backend-gateway call. The pre-forward intent
+-- write is FAIL-CLOSED — no signed call exists without a row here.
+CREATE TABLE gateway_audit (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at               TEXT NOT NULL,
+  session_id                TEXT,
+  agent_group_id            TEXT,
+  user_id                   TEXT,
+  path                      TEXT NOT NULL,
+  operation                 TEXT,
+  requester_source          TEXT NOT NULL,
+  status                    TEXT NOT NULL,
+  http_status               INTEGER,
+  duration_ms               INTEGER,
+  idempotency_key           TEXT,
+  input_hash                TEXT,
+  error_msg                 TEXT,
+  signed_as_group           TEXT,
+  token_jti                 TEXT,
+  proxy_request_id          TEXT,
+  identity_mismatch         INTEGER,
+  requester_source_coerced  INTEGER,
+  audit_phase               TEXT
+);
+
+CREATE INDEX idx_gateway_audit_at ON gateway_audit(occurred_at);
+
+CREATE INDEX idx_gateway_audit_user ON gateway_audit(user_id, occurred_at);
+
+CREATE INDEX idx_gateway_audit_operation ON gateway_audit(operation, occurred_at);
+
+CREATE INDEX idx_gateway_audit_proxy_req ON gateway_audit(proxy_request_id);
+
+-- Per-session unforgeable tokens for the host-side gateway signing proxy
+-- (ADR-0034), so "signingKey" never enters the container. Purged on a TTL.
+CREATE TABLE gateway_proxy_token (
+  jti             TEXT PRIMARY KEY,
+  token_sha256    TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  agent_group_id  TEXT NOT NULL,
+  allowed_paths   TEXT NOT NULL,
+  source_ip       TEXT,
+  created_at      TEXT NOT NULL,
+  expires_at      TEXT NOT NULL,
+  revoked_at      TEXT
+);
+
+CREATE INDEX idx_gateway_proxy_token_session ON gateway_proxy_token(session_id);
+
+CREATE INDEX idx_gateway_proxy_token_expires ON gateway_proxy_token(expires_at);
+
+-- Platform-message-id dedup for at-least-once channel delivery. Pruned by the
+-- host sweep on a TTL.
+CREATE TABLE inbound_dedup (
+  channel   TEXT NOT NULL,
+  event_id  TEXT NOT NULL,
+  seen_at   TEXT NOT NULL,
+  PRIMARY KEY (channel, event_id)
+);
+
+CREATE INDEX idx_inbound_dedup_seen_at ON inbound_dedup(seen_at);
+
+-- Persist-before-route (ADR-0022): the raw envelope lands here BEFORE routing,
+-- so a routing failure is retained and operator-replayable, never dropped.
+CREATE TABLE inbound_ingress (
+  id            TEXT PRIMARY KEY,
+  channel_type  TEXT NOT NULL,
+  platform_id   TEXT NOT NULL,
+  thread_id     TEXT,
+  message_json  TEXT NOT NULL,
+  received_at   TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'received',
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT
+);
+
+CREATE INDEX idx_inbound_ingress_status ON inbound_ingress(status, received_at);
+
+-- Agent-initiated privileged actions awaiting an admin click (install_packages,
+-- add_mcp_server, onecli_credential …). "status" is flipped to 'expired' by the
+-- host sweep; the response handler refuses any non-'pending' row.
+CREATE TABLE pending_approvals (
+  approval_id          TEXT PRIMARY KEY,
+  session_id           TEXT,
+  request_id           TEXT NOT NULL,
+  action               TEXT NOT NULL,
+  payload              TEXT NOT NULL,
+  created_at           TEXT NOT NULL,
+  agent_group_id       TEXT,
+  channel_type         TEXT,
+  platform_id          TEXT,
+  platform_message_id  TEXT,
+  expires_at           TEXT,
+  status               TEXT NOT NULL DEFAULT 'pending',
+  title                TEXT NOT NULL DEFAULT '',
+  options_json         TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX idx_pending_approvals_action_status ON pending_approvals(action, status);
+
+-- One in-flight channel-registration card per messaging group (the PK IS the
+-- dedup key). A transient delivery failure clears the row so the next mention
+-- can re-escalate.
+CREATE TABLE pending_channel_approvals (
+  messaging_group_id  TEXT PRIMARY KEY,
+  agent_group_id      TEXT NOT NULL,
+  original_message    TEXT NOT NULL,
+  approver_user_id    TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  title               TEXT NOT NULL DEFAULT '',
+  options_json        TEXT NOT NULL DEFAULT '[]'
+);
+
+-- The ambient "working" reaction placed on a user's message, so it can be
+-- cleared when the turn finishes.
+CREATE TABLE progress_reactions (
+  session_id         TEXT PRIMARY KEY,
+  channel_type       TEXT NOT NULL,
+  platform_id        TEXT NOT NULL,
+  thread_id          TEXT,
+  source_message_id  TEXT NOT NULL,
+  reaction_id        TEXT NOT NULL,
+  emoji              TEXT NOT NULL,
+  created_at         TEXT NOT NULL
+);
+
+-- Applied-migration ledger. runMigrations() is the ONLY builder of this DB;
+-- everything below documents the shape that chain produces.
+CREATE TABLE schema_version (
+  version  INTEGER PRIMARY KEY AUTOINCREMENT,
+  name     TEXT NOT NULL,
+  applied  TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_schema_version_name ON schema_version(name);
+
+-- Senders seen in a channel the platform has not registered yet. Observability
+-- for the channel-registration flow, never an authorization input.
+CREATE TABLE unregistered_senders (
+  channel_type        TEXT NOT NULL,
+  platform_id         TEXT NOT NULL,
+  user_id             TEXT,
+  sender_name         TEXT,
+  reason              TEXT NOT NULL,
+  messaging_group_id  TEXT,
+  agent_group_id      TEXT,
+  message_count       INTEGER NOT NULL DEFAULT 1,
+  first_seen          TEXT NOT NULL,
+  last_seen           TEXT NOT NULL,
+  PRIMARY KEY (channel_type, platform_id)
+);
+
+CREATE INDEX idx_unregistered_senders_last_seen ON unregistered_senders(last_seen);
 `;
 
 /**
