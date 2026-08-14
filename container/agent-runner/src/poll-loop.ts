@@ -795,9 +795,21 @@ async function runQuery(
         // 表面完全相同。让它保持 pending，交给外层循环处理；不要注入当前
         // query，也不要中断正在运行的 Execution。这是 Session 的串行执行
         // 通道：当前回合自然结束后，下一回合再带着自己的决策和 Gate 被路由。
+        // A new channel-entry chat trigger must get its own turn: leave it pending
+        // for the outer loop rather than injecting it into the active query.
         if (pending.some((m) => (m.kind === 'chat' || m.kind === 'chat-sdk') && m.trigger === 1)) {
-          log('Pending user trigger — leaving it queued for a fresh routed turn after this execution completes');
+          log('Pending user trigger — leaving it queued for a fresh turn after this execution completes');
           hasPendingUserTurn = true;
+          // Under an ACTIVE routing gate (an enforced answer_self / clarify / reject
+          // Execution turn) we MUST also end the stream. A routed Execution runs on a
+          // streaming-input provider that never self-closes, so latching without
+          // query.end() left the outer `for await` open forever: the session
+          // deadlocked and the gate's finally-clear never ran, so one turn's decision
+          // governed every later outbound. Ending lets the current turn finish, then
+          // the outer loop re-claims + re-routes the pending trigger with its own gate.
+          // The non-routing path keeps the pre-existing latch (its provider/mock
+          // self-completes, and the batching semantics are relied on elsewhere).
+          if (getRoutingGate()) query.end();
           return;
         }
 
@@ -1119,15 +1131,17 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * Exported for unit testing.
  */
 export function normalizeMessageBlocks(text: string): string {
-  return text
-    // Some OpenAI-compatible models leak their internal DSML parameter
-    // delimiter into otherwise valid final text. It is transport metadata,
-    // not user content, and must not cross the outbound message boundary.
-    .replace(/<\/?｜｜DSML｜｜parameter>/g, '')
-    .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
-    .replace(/<\s+message(?=\s+to=)/g, '<message')
-    .replace(/<\/\s*message\s*>/g, '</message>')
-    .replace(/<\s*\/\s*message\s*>/g, '</message>');
+  return (
+    text
+      // Some OpenAI-compatible models leak their internal DSML parameter
+      // delimiter into otherwise valid final text. It is transport metadata,
+      // not user content, and must not cross the outbound message boundary.
+      .replace(/<\/?｜｜DSML｜｜parameter>/g, '')
+      .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
+      .replace(/<\s+message(?=\s+to=)/g, '<message')
+      .replace(/<\/\s*message\s*>/g, '</message>')
+      .replace(/<\s*\/\s*message\s*>/g, '</message>')
+  );
 }
 
 function dispatchResultText(text: string, routing: RoutingContext): void {

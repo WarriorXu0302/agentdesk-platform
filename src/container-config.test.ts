@@ -249,4 +249,28 @@ describe('dual LLM configuration', () => {
 
     expect(() => readContainerConfig('invalid-transport')).toThrow(/routing\.transport/i);
   });
+
+  it('preserves a DISABLED routing block across the read-modify-write round trip', () => {
+    // Regression: normalizeDualLlmConfig returns undefined for enabled!==true, and
+    // that undefined used to clobber the config, so the next write-back deleted a
+    // dormant-but-configured routing block. It must survive instead.
+    const dir = path.join(tmpState.root, 'groups', 'dormant');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'container.json'),
+      JSON.stringify({
+        llm: { routing: { enabled: false, provider: 'opencode-go', model: 'mimo-v2.5' } },
+      }),
+    );
+
+    const cfg = readContainerConfig('dormant');
+    expect(cfg.llm?.routing).toEqual({ enabled: false, provider: 'opencode-go', model: 'mimo-v2.5' });
+
+    writeContainerConfig('dormant', cfg);
+    expect(readContainerConfig('dormant').llm?.routing).toEqual({
+      enabled: false,
+      provider: 'opencode-go',
+      model: 'mimo-v2.5',
+    });
+  });
 });

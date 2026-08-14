@@ -254,6 +254,10 @@ function routingPromptFile(value: unknown): string {
   return normalized;
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
 function normalizeDualLlmConfig(value: unknown): DualLlmConfig | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -417,7 +421,7 @@ function normalizeSkills(raw: unknown): 'all' | string[] {
 /**
  * Read the container config for a group, returning sensible defaults for
  * any missing fields (or an entirely empty config if the file is absent).
-*
+ *
  * A MISSING file legitimately means "defaults". A CORRUPT file does not: it is a
  * config the operator did write, and it carries the group's isolation settings
  * (`network: "none"`, `resources`, the `skills` whitelist, `memoryMode`,
@@ -470,7 +474,14 @@ export function readContainerConfig(folder: string): ContainerConfig {
     additionalMounts: raw.additionalMounts ?? [],
     skills: normalizeSkills(raw.skills),
     provider: raw.provider,
-    llm: normalizeDualLlmConfig(raw.llm),
+    // normalizeDualLlmConfig returns undefined for a block it can't fully model
+    // (routing with enabled!==true, or execution without a provider) — but an
+    // ENABLED-invalid block still throws, so fail-closed is preserved. When it
+    // returns undefined, keep the operator's raw llm block verbatim instead of
+    // letting `llm: undefined` clobber the `...raw` spread: otherwise the next
+    // read-modify-write (ensureRuntimeFields, a rename, an approved
+    // install_packages) silently DELETES a dormant-but-configured routing block.
+    llm: normalizeDualLlmConfig(raw.llm) ?? (isPlainObject(raw.llm) ? (raw.llm as DualLlmConfig) : undefined),
     groupName: raw.groupName,
     assistantName: raw.assistantName,
     memoryMode: normalizeMemoryMode(raw.memoryMode),

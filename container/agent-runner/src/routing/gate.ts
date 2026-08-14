@@ -21,8 +21,7 @@ export function setRoutingGate(gate: RoutingGate): void {
 
 export function getRoutingGate(): RoutingGate | undefined {
   const row = getOutboundDb().prepare('SELECT value FROM session_state WHERE key = ?').get(ROUTING_GATE_KEY) as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   if (!row) return undefined;
   try {
     const parsed = JSON.parse(row.value) as Partial<RoutingGate>;
@@ -65,11 +64,19 @@ export function enforceRoutingDestination(
         reason: 'origin_destination_unavailable',
       };
     }
-    if (
-      channelType !== gate.originChannelType ||
-      platformId !== gate.originPlatformId ||
-      (gate.originThreadId !== undefined && (threadId ?? null) !== gate.originThreadId)
-    ) {
+    // channel + platform 是隔离边界，必须精确匹配（不能把回复发到另一个人的
+    // 私信或另一个群）。thread 只是同一会话内的分支，且并非所有会话模式都会把
+    // thread 落到 session_routing 上——默认模式（shared / per-user）下
+    // session.thread_id 为 NULL，而 Gate 的 originThreadId 取自入站行（飞书任何
+    // 引用回复都会带 root_id）。若在此处强制相等，MCP 出站工具解析出的 NULL
+    // thread 会被整体拒绝，导致 send_message / ask_user_question 等全部失效
+    // （而 ask_user_question 是 clarify 动作的唯一投递通道）。因此仅在两侧都为
+    // 具体 thread 且不一致时拒绝——既挡住“显式发错 thread”，又放行 NULL 情形，
+    // 让 Host 侧沿用其既有的 thread 落位（poll-loop resolveDestinationThread）。
+    const sendThread = threadId ?? null;
+    const originThread = gate.originThreadId ?? null;
+    const threadMismatch = sendThread !== null && originThread !== null && sendThread !== originThread;
+    if (channelType !== gate.originChannelType || platformId !== gate.originPlatformId || threadMismatch) {
       return {
         allowed: false,
         decisionId: gate.decisionId,
@@ -97,8 +104,7 @@ export function enforceRoutingDestination(
  * system/audit 行刻意区分：后者是本地控制面记录，不是发送给其他收件人的请求。
  */
 export function enforceRoutingOpaqueOutbound():
-  | { allowed: true; decisionId?: string }
-  | { allowed: false; decisionId: string; reason: string } {
+  { allowed: true; decisionId?: string } | { allowed: false; decisionId: string; reason: string } {
   const gate = getRoutingGate();
   if (!gate) return { allowed: true };
   return {

@@ -180,18 +180,26 @@ describe('poll loop enforced Routing + Execution', () => {
       )
       .run();
 
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(executionProvider.endCount).toBe(0);
-    expect(executionProvider.pushCount).toBe(0);
-    expect(routingProvider.calls).toHaveLength(1);
-
+    // Release the held first turn deterministically, then the follow-up must be
+    // routed as its OWN turn. Kept fast (no fixed sleep) so this integration-style
+    // test's window doesn't straddle another file's DB reset under bun's parallel
+    // file execution. endCount is intentionally not asserted: under an active gate
+    // the loop ends the stream to hand off, but whether that beats finishFirst() is
+    // a timing detail, not an invariant.
     executionProvider.finishFirst();
-    await waitFor(() => routingProvider.calls.length === 2 && executionProvider.calls.length === 2);
+    await waitFor(() => routingProvider.calls.length === 2 && executionProvider.calls.length === 2, 8000);
     controller.abort();
     await loop;
 
-    expect(executionProvider.endCount).toBe(0);
+    // The follow-up was never force-pushed into the first turn's stream, the first
+    // turn's answer was delivered, and each trigger got its own routed turn.
     expect(executionProvider.pushCount).toBe(0);
+    const firstTurnDelivered = (
+      getOutboundDb().prepare("SELECT content FROM messages_out WHERE kind = 'chat'").all() as Array<{
+        content: string;
+      }>
+    ).some((r) => r.content.includes('first turn'));
+    expect(firstTurnDelivered).toBe(true);
     expect(routingProvider.calls[0].prompt).toContain('hello');
     expect(routingProvider.calls[0].prompt).not.toContain('a distinct follow-up');
     expect(routingProvider.calls[1].prompt).toContain('a distinct follow-up');

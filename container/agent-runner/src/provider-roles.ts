@@ -33,7 +33,11 @@ function openAiOverrides(
 
 export function resolveProviderRoles(config: RunnerConfig, executionProviderOverride?: string): ProviderRoles {
   const executionConfig = config.llm?.execution;
-  const configuredExecutionProvider = executionConfig?.provider || config.provider;
+  // Normalize provider names the same way the host does (it lowercases on its
+  // side). Without this a mixed-case `provider: "OpenAI"` the host accepts flows
+  // through verbatim to createProvider() and the container dies at boot with an
+  // unknown-provider error.
+  const configuredExecutionProvider = (executionConfig?.provider || config.provider)?.trim().toLowerCase();
   const normalizedOverride = executionProviderOverride?.trim().toLowerCase();
   const executionProvider = normalizedOverride || configuredExecutionProvider;
   const useConfiguredExecutionOptions = !normalizedOverride || normalizedOverride === configuredExecutionProvider;
@@ -52,11 +56,12 @@ export function resolveProviderRoles(config: RunnerConfig, executionProviderOver
   };
   if (config.llm?.routing) {
     const routing = config.llm.routing;
+    const routingProvider = routing.provider.trim().toLowerCase();
     roles.routing = {
-      providerName: routing.provider,
+      providerName: routingProvider,
       model: routing.model,
       toolMode: 'none',
-      envOverrides: openAiOverrides(routing.provider, {
+      envOverrides: openAiOverrides(routingProvider, {
         model: routing.model,
         transport: routing.transport,
         timeoutMs: routing.timeoutMs,
