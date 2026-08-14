@@ -156,6 +156,8 @@ describe('container.json read-modify-write safety', () => {
 
     writeRaw('skl3', JSON.stringify({ skills: 'all' }));
     expect(readContainerConfig('skl3').skills).toBe('all');
+  });
+});
 
 describe('dual LLM configuration', () => {
   it('round-trips centralized routing and execution configuration', () => {
