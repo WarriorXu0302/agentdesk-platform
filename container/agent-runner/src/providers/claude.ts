@@ -1,12 +1,24 @@
 import fs from 'fs';
 import path from 'path';
 
-import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query as sdkQuery,
+  type HookCallback,
+  type Options as ClaudeSdkOptions,
+  type PreCompactHookInput,
+} from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { claudeUsageEvent, type ClaudeResultLike } from './claude-usage.js';
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type {
+  AgentProvider,
+  AgentQuery,
+  McpServerConfig,
+  ProviderEvent,
+  ProviderOptions,
+  QueryInput,
+} from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
@@ -68,6 +80,35 @@ function mcpAllowPattern(serverName: string): string {
   return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
 }
 
+export function buildClaudeRoleOptions(input: {
+  toolMode: 'full' | 'none';
+  model?: string;
+  instructions?: string;
+  mcpServers: Record<string, McpServerConfig>;
+}): Partial<ClaudeSdkOptions> {
+  if (input.toolMode === 'none') {
+    return {
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.instructions ? { systemPrompt: input.instructions } : {}),
+      tools: [],
+      allowedTools: [],
+      mcpServers: {},
+      settingSources: [],
+      maxTurns: 1,
+    };
+  }
+
+  return {
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.instructions
+      ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: input.instructions } }
+      : {}),
+    allowedTools: [...TOOL_ALLOWLIST, ...Object.keys(input.mcpServers).map(mcpAllowPattern)],
+    mcpServers: input.mcpServers,
+    settingSources: ['project', 'user'],
+  };
+}
+
 interface SDKUserMessage {
   type: 'user';
   message: { role: 'user'; content: string };
@@ -126,10 +167,15 @@ function parseTranscript(content: string): ParsedMessage[] {
     try {
       const entry = JSON.parse(line);
       if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+        const text =
+          typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
+        const textParts = entry.message.content
+          .filter((c: { type: string }) => c.type === 'text')
+          .map((c: { text: string }) => c.text);
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
@@ -142,7 +188,13 @@ function parseTranscript(content: string): ParsedMessage[] {
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
   const now = new Date();
-  const dateStr = now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  const dateStr = now.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
   const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
@@ -210,20 +262,29 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       if (fs.existsSync(indexPath)) {
         try {
           const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-          summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)?.summary;
+          summary = index.entries?.find(
+            (e: { sessionId: string; summary?: string }) => e.sessionId === sessionId,
+          )?.summary;
         } catch {
           /* ignore */
         }
       }
 
       const name = summary
-        ? summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
+        ? summary
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 50)
         : `conversation-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
 
       const conversationsDir = '/workspace/agent/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
       const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
-      fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
+      fs.writeFileSync(
+        path.join(conversationsDir, filename),
+        formatTranscriptMarkdown(messages, summary, assistantName),
+      );
       log(`Archived conversation to ${filename}`);
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
@@ -258,11 +319,15 @@ export class ClaudeProvider implements AgentProvider {
   private mcpServers: Record<string, McpServerConfig>;
   private env: Record<string, string | undefined>;
   private additionalDirectories?: string[];
+  private model?: string;
+  private toolMode: 'full' | 'none';
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
     this.mcpServers = options.mcpServers ?? {};
     this.additionalDirectories = options.additionalDirectories;
+    this.model = options.model;
+    this.toolMode = options.toolMode ?? 'full';
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -280,30 +345,37 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    const roleOptions = buildClaudeRoleOptions({
+      toolMode: this.toolMode,
+      model: this.model,
+      instructions,
+      mcpServers: this.mcpServers,
+    });
+    const executionOptions: Partial<ClaudeSdkOptions> =
+      this.toolMode === 'full'
+        ? {
+            additionalDirectories: this.additionalDirectories,
+            resume: input.continuation,
+            disallowedTools: SDK_DISALLOWED_TOOLS,
+            hooks: {
+              PreToolUse: [{ hooks: [preToolUseHook] }],
+              PostToolUse: [{ hooks: [postToolUseHook] }],
+              PostToolUseFailure: [{ hooks: [postToolUseHook] }],
+              PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
+            },
+          }
+        : {};
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
         cwd: input.cwd,
-        additionalDirectories: this.additionalDirectories,
-        resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
-        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
-        allowedTools: [
-          ...TOOL_ALLOWLIST,
-          ...Object.keys(this.mcpServers).map(mcpAllowPattern),
-        ],
-        disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        settingSources: ['project', 'user'],
-        mcpServers: this.mcpServers,
-        hooks: {
-          PreToolUse: [{ hooks: [preToolUseHook] }],
-          PostToolUse: [{ hooks: [postToolUseHook] }],
-          PostToolUseFailure: [{ hooks: [postToolUseHook] }],
-          PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
-        },
+        ...roleOptions,
+        ...executionOptions,
       },
     });
 
@@ -326,7 +398,7 @@ export class ClaudeProvider implements AgentProvider {
           // SDK puts usage/modelUsage/duration on the terminal result message.
           const usageEvent = claudeUsageEvent(message as ClaudeResultLike);
           if (usageEvent) yield usageEvent;
-          const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
+          const text = 'result' in message ? ((message as { result?: string }).result ?? null) : null;
           yield { type: 'result', text };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };

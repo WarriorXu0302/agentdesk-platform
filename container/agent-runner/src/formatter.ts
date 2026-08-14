@@ -141,7 +141,16 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
  *
  * Strips routing fields — the agent never sees platform_id, channel_type, thread_id.
  */
-export function formatMessages(messages: MessageInRow[]): string {
+export interface FormatMessagesOptions {
+  /**
+   * 直接 A2A 委派会将附件字节暂存至出站 outbox。若在文本中渲染源
+   * Session 的附件路径，Worker 会看到自己无法读取的路径；因此此场景
+   * 交由 Host 写入目标 Session 的本地附件信息。
+   */
+  includeAttachments?: boolean;
+}
+
+export function formatMessages(messages: MessageInRow[], options: FormatMessagesOptions = {}): string {
   const header = `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
   if (messages.length === 0) return header;
 
@@ -154,7 +163,7 @@ export function formatMessages(messages: MessageInRow[]): string {
   const parts: string[] = [];
 
   if (chatMessages.length > 0) {
-    parts.push(formatChatMessages(chatMessages));
+    parts.push(formatChatMessages(chatMessages, options));
   }
   if (taskMessages.length > 0) {
     parts.push(...taskMessages.map(formatTaskMessage));
@@ -169,20 +178,20 @@ export function formatMessages(messages: MessageInRow[]): string {
   return header + parts.join('\n\n');
 }
 
-function formatChatMessages(messages: MessageInRow[]): string {
+function formatChatMessages(messages: MessageInRow[], options: FormatMessagesOptions): string {
   if (messages.length === 1) {
-    return formatSingleChat(messages[0]);
+    return formatSingleChat(messages[0], options);
   }
 
   const lines = ['<messages>'];
   for (const msg of messages) {
-    lines.push(formatSingleChat(msg));
+    lines.push(formatSingleChat(msg, options));
   }
   lines.push('</messages>');
   return lines.join('\n');
 }
 
-function formatSingleChat(msg: MessageInRow): string {
+function formatSingleChat(msg: MessageInRow, options: FormatMessagesOptions): string {
   const content = parseContent(msg.content);
   const sender = content.sender || content.author?.fullName || content.author?.userName || 'Unknown';
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
@@ -190,7 +199,7 @@ function formatSingleChat(msg: MessageInRow): string {
   const idAttr = msg.seq != null ? ` id="${msg.seq}"` : '';
   const replyAttr = content.replyTo?.id ? ` reply_to="${escapeXml(String(content.replyTo.id))}"` : '';
   const replyPrefix = formatReplyContext(content.replyTo);
-  const attachmentsSuffix = formatAttachments(content.attachments);
+  const attachmentsSuffix = options.includeAttachments === false ? '' : formatAttachments(content.attachments);
 
   const fromAttr = originAttr(msg);
 

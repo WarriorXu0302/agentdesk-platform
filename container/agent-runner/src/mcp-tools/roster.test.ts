@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getOutboundDb } from '../db/connection.js';
+import { clearRoutingGate, setRoutingGate } from '../routing/gate.js';
 import { sendRosterDm, inviteToRoster } from './roster.js';
 
 beforeEach(() => {
@@ -8,6 +9,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearRoutingGate();
   closeSessionDb();
 });
 
@@ -52,6 +54,17 @@ describe('send_roster_dm tool (ADR-0044)', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toMatch(/text is required/);
   });
+
+  it('cannot bypass an active routing decision through an opaque roster slot', async () => {
+    setRoutingGate({ decisionId: 'route-answer', anchorId: 'm1', action: 'answer_self' });
+
+    const result = await sendRosterDm.handler({ slot: 'approver', text: 'side channel attempt' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/opaque_destination_forbidden/);
+    const count = getOutboundDb().prepare('SELECT COUNT(*) AS count FROM messages_out').get() as { count: number };
+    expect(count.count).toBe(0);
+  });
 });
 
 describe('invite_to_roster tool (ADR-0044 Stage 3)', () => {
@@ -81,5 +94,16 @@ describe('invite_to_roster tool (ADR-0044 Stage 3)', () => {
     expect((await inviteToRoster.handler({ slot_label: 'approver' })).isError).toBe(true);
     expect((await inviteToRoster.handler({ member: 'ou_alice' })).isError).toBe(true);
     expect((await inviteToRoster.handler({ member: '  ', slot_label: 'approver' })).isError).toBe(true);
+  });
+
+  it('cannot bypass an active routing decision through a roster invite', async () => {
+    setRoutingGate({ decisionId: 'route-delegate', anchorId: 'm1', action: 'delegate', targetAgentGroupId: 'ag-peer' });
+
+    const result = await inviteToRoster.handler({ member: 'ou_alice', slot_label: 'approver' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/opaque_destination_forbidden/);
+    const count = getOutboundDb().prepare('SELECT COUNT(*) AS count FROM messages_out').get() as { count: number };
+    expect(count.count).toBe(0);
   });
 });

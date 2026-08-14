@@ -7,6 +7,7 @@
 import { findQuestionResponse, markCompleted } from '../db/messages-in.js';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { enforceRoutingDestination } from '../routing/gate.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -99,12 +100,12 @@ export const askUserQuestion: McpToolDefinition = {
     });
 
     const classificationId =
-      typeof args.classificationId === 'string' && args.classificationId.length > 0
-        ? args.classificationId
-        : undefined;
+      typeof args.classificationId === 'string' && args.classificationId.length > 0 ? args.classificationId : undefined;
 
     const questionId = generateId();
     const r = routing();
+    const gate = enforceRoutingDestination(r.channel_type, r.platform_id, r.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     const contentObj: Record<string, unknown> = {
       type: 'ask_question',
@@ -113,7 +114,8 @@ export const askUserQuestion: McpToolDefinition = {
       question,
       options,
     };
-    if (classificationId) contentObj._classificationId = classificationId;
+    const effectiveClassificationId = gate.decisionId ?? classificationId;
+    if (effectiveClassificationId) contentObj._classificationId = effectiveClassificationId;
 
     // Write question card to outbound.db
     writeMessageOut({
@@ -182,6 +184,15 @@ export const sendCard: McpToolDefinition = {
 
     const id = generateId();
     const r = routing();
+    const gate = enforceRoutingDestination(r.channel_type, r.platform_id, r.thread_id);
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
+
+    const content: Record<string, unknown> = {
+      type: 'card',
+      card,
+      fallbackText: (args.fallbackText as string) || '',
+    };
+    if (gate.decisionId) content._classificationId = gate.decisionId;
 
     writeMessageOut({
       id,
@@ -189,7 +200,7 @@ export const sendCard: McpToolDefinition = {
       platform_id: r.platform_id,
       channel_type: r.channel_type,
       thread_id: r.thread_id,
-      content: JSON.stringify({ type: 'card', card, fallbackText: (args.fallbackText as string) || '' }),
+      content: JSON.stringify(content),
     });
 
     log(`send_card: ${id}`);

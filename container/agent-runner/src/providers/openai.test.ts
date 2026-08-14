@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { initTestSessionDb } from '../db/connection.js';
-import { getContinuation } from '../db/session-state.js';
+import { getContinuation, setContinuation } from '../db/session-state.js';
 import type { ProviderEvent } from './types.js';
 import { OpenAIProvider } from './openai.js';
 
@@ -39,6 +39,122 @@ async function runQuery(provider: OpenAIProvider, prompt: string, continuation?:
 }
 
 describe('OpenAIProvider', () => {
+  it('keeps Execution continuation unchanged when a Routing-role request succeeds', async () => {
+    setContinuation('openai', 'execution-before-routing');
+
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        id: 'chatcmpl_route',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: '{"action":"answer_self","confidence":0.95,"reason":"greeting"}',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+      })) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      role: 'routing',
+      env: {
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: 'https://example.com',
+        OPENAI_FORCE_TRANSPORT: 'chat-completions',
+      },
+    });
+
+    const events = await runQuery(provider, 'route this turn');
+
+    expect(events.find((event) => event.type === 'result')).toEqual({
+      type: 'result',
+      text: '{"action":"answer_self","confidence":0.95,"reason":"greeting"}',
+    });
+    expect(getContinuation('openai')).toBe('execution-before-routing');
+    expect(getContinuation('codex')).toBeUndefined();
+  });
+
+  it('uses exactly one upstream transport request for a Routing-role Responses attempt', async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return jsonResponse({ error: { message: 'Responses API is unavailable' } }, 404);
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      role: 'routing',
+      env: {
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: 'https://example.com',
+        OPENAI_FORCE_TRANSPORT: 'responses',
+        OPENAI_MAX_REQUEST_ATTEMPTS: '1',
+      },
+    });
+
+    let failure: unknown;
+    try {
+      await runQuery(provider, 'route this turn');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe('Responses API is unavailable');
+    expect(requests).toEqual(['https://example.com/v1/responses']);
+  });
+
+  it('rejects a Routing-role tool call without issuing a follow-up request', async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      if (requests.length === 1) {
+        return jsonResponse({
+          id: 'resp_route_tool',
+          output: [
+            {
+              type: 'function_call',
+              call_id: 'call_route_tool',
+              name: 'invented_tool',
+              arguments: '{}',
+            },
+          ],
+        });
+      }
+      return jsonResponse({
+        id: 'resp_route_after_tool',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '{"action":"answer_self","confidence":1,"reason":"x"}' }],
+          },
+        ],
+      });
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      role: 'routing',
+      env: {
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: 'https://example.com',
+        OPENAI_FORCE_TRANSPORT: 'responses',
+        OPENAI_MAX_REQUEST_ATTEMPTS: '1',
+      },
+    });
+
+    let failure: unknown;
+    try {
+      await runQuery(provider, 'route this turn');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/routing.*tool call/i);
+    expect(requests).toEqual(['https://example.com/v1/responses']);
+  });
+
   it('falls back to stateless replay when previous_response_id is unsupported', async () => {
     const requests: Array<Record<string, unknown>> = [];
 
@@ -396,6 +512,46 @@ describe('OpenAIProvider', () => {
     ]);
   });
 
+  it('accepts a full chat-completions endpoint and uses it exactly when forced', async () => {
+    const requests: string[] = [];
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(String(input));
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.model).toBe('deepseek-v4-flash');
+      expect(body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+      expect(body.tools).toBeUndefined();
+      expect(body.tool_choice).toBeUndefined();
+      expect(body.parallel_tool_calls).toBeUndefined();
+
+      return jsonResponse({
+        id: 'chatcmpl_opencode_go',
+        choices: [
+          {
+            message: { role: 'assistant', content: 'hi from deepseek-v4-flash' },
+            finish_reason: 'stop',
+          },
+        ],
+      });
+    }) as typeof fetch;
+
+    const provider = new OpenAIProvider({
+      env: {
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_BASE_URL: 'https://opencode.ai/zen/go/v1/chat/completions',
+        OPENAI_MODEL: 'deepseek-v4-flash',
+        OPENAI_FORCE_TRANSPORT: 'chat-completions',
+      },
+    });
+
+    const events = await runQuery(provider, 'hello');
+    expect(events.find((event) => event.type === 'result')).toEqual({
+      type: 'result',
+      text: 'hi from deepseek-v4-flash',
+    });
+    expect(requests).toEqual(['https://opencode.ai/zen/go/v1/chat/completions']);
+  });
+
   // ── Summary-based context compaction (ADR-0024) ──
 
   // The compaction soft threshold is 150_000 chars of serialized transcript.
@@ -456,7 +612,9 @@ describe('OpenAIProvider', () => {
         expect(replay.length).toBeLessThan(30);
         return jsonResponse({
           id: 'resp_compacted',
-          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after compaction' }] }],
+          output: [
+            { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after compaction' }] },
+          ],
         });
       }
 
@@ -750,7 +908,9 @@ describe('OpenAIProvider', () => {
       if (url.endsWith('/responses')) {
         return jsonResponse({
           id: `resp_${calls.length}`,
-          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after compaction' }] }],
+          output: [
+            { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'after compaction' }] },
+          ],
         });
       }
       throw new Error(`Unexpected URL: ${url}`);
@@ -763,7 +923,11 @@ describe('OpenAIProvider', () => {
     // Drive the stream the way the poll-loop does: when a `compacted` event
     // arrives mid-stream, synchronously call pushSystemReminder on the live
     // query handle. The reminder must NOT add another LLM call.
-    const query = provider.query({ prompt: 'newest message', continuation: statelessContinuation(stored), cwd: '/tmp' });
+    const query = provider.query({
+      prompt: 'newest message',
+      continuation: statelessContinuation(stored),
+      cwd: '/tmp',
+    });
     const events: ProviderEvent[] = [];
     let sawCompacted = false;
     for await (const event of query.events) {

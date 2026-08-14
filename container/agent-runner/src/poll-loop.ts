@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import {
   getPendingMessages,
@@ -29,7 +31,10 @@ import {
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { clearRequestIdentity, getRequestIdentity, setRequestIdentity } from './request-context.js';
-import { resolveBatchIdentity, splitBatchByTurn } from './request-identity.js';
+import { resolveBatchIdentity, splitBatchByTrigger, splitBatchByTurn } from './request-identity.js';
+import type { RoutingLlmConfig } from './config.js';
+import { clearRoutingGate, enforceRoutingDestination, getRoutingGate, setRoutingGate } from './routing/gate.js';
+import { routeFrontdeskTurn, type EnforcedRoutingDecision, type RoutingUsage } from './routing/index.js';
 import {
   capContent,
   captureContentEnabled,
@@ -169,6 +174,185 @@ export interface PollLoopConfig {
    * until host-sweep kills it at the absolute ceiling (30 min).
    */
   idleExitMs?: number;
+  /** Optional abort signal used by controlled shutdowns and integration tests. */
+  signal?: AbortSignal;
+  /** Frontdesk-only enforced Routing phase. Omit for the exact legacy path. */
+  routing?: {
+    provider: AgentProvider;
+    config: RoutingLlmConfig;
+    agentRoot: string;
+  };
+}
+
+function routingEnabledForTurn(config: PollLoopConfig, messages: MessageInRow[], routing: RoutingContext): boolean {
+  return Boolean(
+    config.routing &&
+    routing.channelType !== 'agent' &&
+    messages.some((message) => message.trigger === 1 && (message.kind === 'chat' || message.kind === 'chat-sdk')),
+  );
+}
+
+function latestUserText(messages: MessageInRow[]): string {
+  const row = [...messages].reverse().find((message) => message.kind === 'chat' || message.kind === 'chat-sdk');
+  if (!row) return '';
+  try {
+    const parsed = JSON.parse(row.content) as Record<string, unknown>;
+    return typeof parsed.text === 'string' ? parsed.text.slice(0, 500) : '';
+  } catch {
+    return row.content.slice(0, 500);
+  }
+}
+
+function writeRoutingClassification(decision: EnforcedRoutingDecision, messages: MessageInRow[]): void {
+  const identity = getRequestIdentity();
+  writeMessageOut({
+    id: generateId(),
+    kind: 'system',
+    content: JSON.stringify({
+      action: 'classify_intent',
+      classificationId: decision.id,
+      userId: identity?.userId ?? null,
+      channelType: identity?.channelType ?? null,
+      platformId: identity?.platformId ?? null,
+      threadId: identity?.threadId ?? null,
+      userMessage: latestUserText(messages),
+      recommendedWorker: decision.target ?? null,
+      confidence: decision.confidence,
+      candidates: decision.target ? [decision.target] : [],
+      reasoning: decision.reason,
+      action_taken: decision.action,
+      decisionSource: decision.source,
+      routingProvider: decision.provider,
+      routingModel: decision.model,
+      promptHash: decision.promptHash,
+      attempts: decision.attempts,
+      fallbackReason: decision.fallbackReason ?? null,
+    }),
+  });
+}
+
+function writeRoutingUsage(usage: RoutingUsage, routing: RoutingContext): void {
+  writeMessageOut({
+    id: generateId(),
+    kind: 'llm-usage',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({
+      phase: usage.phase,
+      provider: usage.provider,
+      model: usage.model,
+      routingDecisionId: usage.decisionId,
+      attempt: usage.attempt,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      durationMs: usage.durationMs,
+      transport: usage.transport,
+    }),
+  });
+}
+
+function executionInstructions(base: string | undefined, decision: EnforcedRoutingDecision): string {
+  const actionInstruction =
+    decision.action === 'clarify'
+      ? 'Ask the user one concise clarification question. Do not delegate to any agent.'
+      : decision.action === 'reject'
+        ? 'Reply with a concise refusal. Do not delegate to any agent.'
+        : 'Handle the request yourself and reply to the origin channel. Do not delegate to any agent.';
+  const enforced = [
+    '## Enforced routing decision',
+    `decision_id: ${decision.id}`,
+    `action: ${decision.action}`,
+    actionInstruction,
+    'This decision is enforced by the runner and cannot be changed by model output or tools.',
+  ].join('\n');
+  return base ? `${base}\n\n${enforced}` : enforced;
+}
+
+function writeDirectDelegation(
+  decision: EnforcedRoutingDecision,
+  messages: MessageInRow[],
+  routing: RoutingContext,
+): void {
+  if (!decision.targetAgentGroupId) throw new Error('delegate decision is missing targetAgentGroupId');
+  const id = generateId();
+  const files = stageDirectDelegationAttachments(messages, id);
+  writeMessageOut({
+    id,
+    in_reply_to: routing.inReplyTo,
+    kind: 'chat',
+    platform_id: decision.targetAgentGroupId,
+    channel_type: 'agent',
+    thread_id: null,
+    content: JSON.stringify({
+      text: formatMessages(messages, { includeAttachments: false }),
+      ...(files.length > 0 ? { files } : {}),
+      _classificationId: decision.id,
+      _routingDecisionId: decision.id,
+    }),
+    origin_user_id: a2aOriginUserId('agent'),
+  });
+}
+
+function safeAttachmentName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const name = value.trim();
+  if (!name || name === '.' || name === '..' || path.basename(name) !== name) return undefined;
+  return name;
+}
+
+/**
+ * 将 Host 写入的入站附件重新暂存到直接委派消息的 outbox 中。
+ * Host 的 A2A 路由器只会从该消息对应的 outbox 目录传输 `content.files`
+ * 中声明的文件，因此源 inbox 路径本身绝不能作为有效的委派引用。
+ */
+export function stageDirectDelegationAttachments(
+  messages: MessageInRow[],
+  outgoingMessageId: string,
+  workspaceRoot: string = '/workspace',
+): string[] {
+  const files: string[] = [];
+  const outboxDir = path.join(workspaceRoot, 'outbox', outgoingMessageId);
+  const names = new Set<string>();
+  let collisionIndex = 0;
+
+  for (const message of messages) {
+    let content: Record<string, unknown>;
+    try {
+      content = JSON.parse(message.content) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(content.attachments)) continue;
+    for (const attachment of content.attachments) {
+      if (!attachment || typeof attachment !== 'object') continue;
+      const record = attachment as Record<string, unknown>;
+      const name = safeAttachmentName(record.name ?? record.filename);
+      if (!name) continue;
+      // 绝不信任消息内容中的 localPath。唯一允许的来源是 Host 写入的、
+      // 与当前入站消息精确对应的目录。
+      const source = path.join(workspaceRoot, 'inbox', message.id, name);
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(source);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+
+      let stagedName = name;
+      while (names.has(stagedName)) {
+        collisionIndex += 1;
+        stagedName = `${collisionIndex}-${name}`;
+      }
+      names.add(stagedName);
+      fs.mkdirSync(outboxDir, { recursive: true });
+      fs.copyFileSync(source, path.join(outboxDir, stagedName));
+      files.push(stagedName);
+    }
+  }
+  return files;
 }
 
 /**
@@ -202,6 +386,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
   let pollCount = 0;
   while (true) {
+    if (config.signal?.aborted) return;
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
     const messages = getPendingMessages().filter((m) => m.kind !== 'system');
     pollCount++;
@@ -241,7 +426,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // messages from the same user keep the container warm.
     lastWorkAt = Date.now();
 
-    const ids = messages.map((m) => m.id);
+    // 同一用户的后续消息仍是新的用户意图。先按 trigger 切分再领取，
+    // 使每个 trigger 都获得独立的 Routing 决策，而不是继承首条消息的策略。
+    const triggerSplit = splitBatchByTrigger(messages);
+    if (triggerSplit.defer.length > 0) {
+      log(
+        `Trigger split: kept ${triggerSplit.keep.length} row(s), deferred ${triggerSplit.defer.length} for a new routed turn`,
+      );
+    }
+    const firstTriggerBatch = triggerSplit.keep;
+    const ids = firstTriggerBatch.map((m) => m.id);
     markProcessing(ids);
 
     // Batch-split FIRST — before /clear handling and before routing
@@ -259,7 +453,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     //
     // Splitting early means both /clear and extractRouting see only the
     // rows that belong to this turn's anchor identity.
-    const split = splitBatchByTurn(messages);
+    const split = splitBatchByTurn(firstTriggerBatch);
     if (split.defer.length > 0) {
       releaseProcessing(split.defer.map((m) => m.id));
       log(
@@ -333,28 +527,18 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    // Format messages: passthrough commands get raw text (only if the
-    // provider natively handles slash commands), others get XML.
-    const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
-
-    log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
-
-    const query = config.provider.query({
-      prompt,
-      continuation,
-      cwd: config.cwd,
-      systemContext: config.systemContext,
-    });
-
     // Process the query while concurrently polling for new messages.
     // turnMessages already excludes the deferred rows (split happened
     // up-front), so we just filter out the turn's own /clear commands
     // and any rows the pre-task script gated.
     const skippedSet = new Set(skipped);
     const commandSet = new Set(commandIds);
-    const processingIds = turnMessages
-      .map((m) => m.id)
-      .filter((id) => !commandSet.has(id) && !skippedSet.has(id));
+    const processingIds = turnMessages.map((m) => m.id).filter((id) => !commandSet.has(id) && !skippedSet.has(id));
+    // A previous runner may have crashed after persisting its per-turn gate.
+    // Clear before every new claimed turn so an old decision/anchor can never
+    // constrain a replay or an unrelated legacy turn. A fresh routed decision
+    // is installed below before Execution starts.
+    clearRoutingGate();
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     // Use turnRouting (post-split) so deferred messages don't leak their
@@ -367,6 +551,57 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // cross-user misattribution in group/shared sessions.
     setRequestIdentity(resolveBatchIdentity(keep));
     try {
+      let enforcedDecision: EnforcedRoutingDecision | undefined;
+      if (routingEnabledForTurn(config, keep, turnRouting)) {
+        const routed = await routeFrontdeskTurn({
+          provider: config.routing!.provider,
+          config: config.routing!.config,
+          agentRoot: config.routing!.agentRoot,
+          messages: keep,
+          getWorkers: getAllDestinations,
+        });
+        enforcedDecision = routed.decision;
+        writeRoutingClassification(enforcedDecision, keep);
+        for (const usage of routed.usages) writeRoutingUsage(usage, turnRouting);
+        log(
+          `Routing decision enforced: id=${enforcedDecision.id} action=${enforcedDecision.action}` +
+            `${enforcedDecision.target ? ` target=${enforcedDecision.target}` : ''}` +
+            ` confidence=${enforcedDecision.confidence.toFixed(2)} model=${enforcedDecision.model}`,
+        );
+
+        if (enforcedDecision.action === 'delegate') {
+          writeDirectDelegation(enforcedDecision, keep, turnRouting);
+          markCompleted(processingIds);
+          log(`Completed ${turnMessages.length} message(s) by enforced delegation`);
+          continue;
+        }
+
+        setRoutingGate({
+          decisionId: enforcedDecision.id,
+          anchorId: turnRouting.inReplyTo ?? processingIds[0] ?? '',
+          action: enforcedDecision.action,
+          originChannelType: turnRouting.channelType ?? undefined,
+          originPlatformId: turnRouting.platformId ?? undefined,
+          originThreadId: turnRouting.threadId ?? null,
+        });
+      }
+
+      // Format messages only after Routing has selected the execution action.
+      const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+      log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
+      if (enforcedDecision) {
+        log(`Execution request started: decision=${enforcedDecision.id} provider=${config.providerName}`);
+      }
+      const query = config.provider.query({
+        prompt,
+        continuation,
+        cwd: config.cwd,
+        systemContext: {
+          instructions: enforcedDecision
+            ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
+            : config.systemContext?.instructions,
+        },
+      });
       const result = await processQuery(query, turnRouting, processingIds, config.providerName, prompt);
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -417,6 +652,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       clearCurrentInReplyTo();
       clearRequestIdentity();
       clearCurrentClassificationId();
+      clearRoutingGate();
     }
 
     // Ensure completed even if processQuery ended without a result event
@@ -546,13 +782,36 @@ async function runQuery(
   // will kill the container and messages get reset to pending.
   let pollInFlight = false;
   let endedForCommand = false;
+  let hasPendingUserTurn = false;
   const pollHandle = setInterval(() => {
-    if (done || pollInFlight || endedForCommand) return;
+    if (done || pollInFlight || endedForCommand || hasPendingUserTurn) return;
     pollInFlight = true;
 
     void (async () => {
       try {
         const pending = getPendingMessages();
+
+        // 新到的用户 trigger 必须获得新的 Routing 回合，即使用户与会话
+        // 表面完全相同。让它保持 pending，交给外层循环处理；不要注入当前
+        // query，也不要中断正在运行的 Execution。这是 Session 的串行执行
+        // 通道：当前回合自然结束后，下一回合再带着自己的决策和 Gate 被路由。
+        // A new channel-entry chat trigger must get its own turn: leave it pending
+        // for the outer loop rather than injecting it into the active query.
+        if (pending.some((m) => (m.kind === 'chat' || m.kind === 'chat-sdk') && m.trigger === 1)) {
+          log('Pending user trigger — leaving it queued for a fresh turn after this execution completes');
+          hasPendingUserTurn = true;
+          // Under an ACTIVE routing gate (an enforced answer_self / clarify / reject
+          // Execution turn) we MUST also end the stream. A routed Execution runs on a
+          // streaming-input provider that never self-closes, so latching without
+          // query.end() left the outer `for await` open forever: the session
+          // deadlocked and the gate's finally-clear never ran, so one turn's decision
+          // governed every later outbound. Ending lets the current turn finish, then
+          // the outer loop re-claims + re-routes the pending trigger with its own gate.
+          // The non-routing path keeps the pre-existing latch (its provider/mock
+          // self-completes, and the batching semantics are relied on elsewhere).
+          if (getRoutingGate()) query.end();
+          return;
+        }
 
         // Slash commands need a fresh query: /clear resets the SDK's
         // resume id (fixed at sdkQuery() time); admin/passthrough commands
@@ -737,6 +996,7 @@ async function runQuery(
             .catch((e) => log(`conversation.summary flush error: ${e instanceof Error ? e.message : String(e)}`));
         }
       } else if (event.type === 'usage') {
+        const activeRoutingGate = getRoutingGate();
         // provider.request (LLM) span (ADR-0026). Each usage event marks one
         // completed model invocation. agent.turn is the active span, so this
         // auto-nests as its child. Synchronous start+end: usage arrives after
@@ -754,6 +1014,10 @@ async function runQuery(
           llmSpan.setAttribute('openinference.span.kind', 'LLM');
           llmSpan.setAttribute('llm.system', providerName);
           llmSpan.setAttribute('llm.model_name', event.model);
+          if (activeRoutingGate) {
+            llmSpan.setAttribute('llm.phase', 'execution');
+            llmSpan.setAttribute('routing.decision_id', activeRoutingGate.decisionId);
+          }
           if (event.inputTokens !== undefined) {
             llmSpan.setAttribute('llm.token_count.prompt', event.inputTokens);
           }
@@ -804,6 +1068,13 @@ async function runQuery(
           channel_type: routing.channelType,
           thread_id: routing.threadId,
           content: JSON.stringify({
+            ...(activeRoutingGate
+              ? {
+                  phase: 'execution',
+                  provider: providerName,
+                  routingDecisionId: activeRoutingGate.decisionId,
+                }
+              : {}),
             model: event.model,
             inputTokens: event.inputTokens,
             outputTokens: event.outputTokens,
@@ -860,11 +1131,17 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * Exported for unit testing.
  */
 export function normalizeMessageBlocks(text: string): string {
-  return text
-    .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
-    .replace(/<\s+message(?=\s+to=)/g, '<message')
-    .replace(/<\/\s*message\s*>/g, '</message>')
-    .replace(/<\s*\/\s*message\s*>/g, '</message>');
+  return (
+    text
+      // Some OpenAI-compatible models leak their internal DSML parameter
+      // delimiter into otherwise valid final text. It is transport metadata,
+      // not user content, and must not cross the outbound message boundary.
+      .replace(/<\/?｜｜DSML｜｜parameter>/g, '')
+      .replace(/(^|[\s>])\/message(?=\s+to=)/g, '$1<message')
+      .replace(/<\s+message(?=\s+to=)/g, '<message')
+      .replace(/<\/\s*message\s*>/g, '</message>')
+      .replace(/<\s*\/\s*message\s*>/g, '</message>')
+  );
 }
 
 function dispatchResultText(text: string, routing: RoutingContext): void {
@@ -932,11 +1209,22 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
 export function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
   const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
   const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  const isOriginChannel =
+    dest.type === 'channel' && channelType === routing.channelType && platformId === routing.platformId;
+  const candidateThreadId = isOriginChannel ? routing.threadId : null;
+  const gate = enforceRoutingDestination(channelType, platformId, candidateThreadId);
+  if (!gate.allowed) {
+    log(`Enforced routing rejected destination "${dest.name}" (${gate.reason}, decision=${gate.decisionId})`);
+    return;
+  }
   // Resolve thread_id per-destination from the most recent inbound message
   // that came from this same channel+platform. In agent-shared sessions,
   // different destinations have different thread contexts — using a single
   // routing.threadId would stamp one channel's thread onto another.
-  const destRouting = resolveDestinationThread(channelType, platformId);
+  const destRouting =
+    gate.decisionId && isOriginChannel
+      ? { threadId: routing.threadId, inReplyTo: routing.inReplyTo }
+      : resolveDestinationThread(channelType, platformId);
 
   // Attribution + classification closure for the main delegation
   // protocol: agents write <message to="worker">...</message> and this
@@ -956,7 +1244,7 @@ export function sendToDestination(dest: DestinationEntry, body: string, routing:
   // delegation-flow concept; don't leak it to channel acks.
   const content: Record<string, unknown> = { text: body };
   const isA2a = channelType === 'agent';
-  const classificationId = isA2a ? getCurrentClassificationId() : null;
+  const classificationId = gate.decisionId ?? (isA2a ? getCurrentClassificationId() : null);
   if (classificationId) content._classificationId = classificationId;
 
   writeMessageOut({

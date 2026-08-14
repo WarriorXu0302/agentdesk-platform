@@ -66,7 +66,8 @@ Platform event
   → Container spins up (or is already running)
   → Agent-runner polls inbound.db, finds new messages, publishes a
     batch RequestIdentity for trust-sensitive tools (see below)
-  → Agent-runner processes with the configured provider
+  → Agent-runner optionally runs enforced frontdesk Routing, then processes
+    with the configured Execution provider (workers keep the single-provider path)
   → Agent-runner writes response to outbound.db
   → Host delivery loop polls outbound.db for undelivered rows
   → Host reads the response, delivers through the originating channel
@@ -938,11 +939,19 @@ All IO goes through the session DB. No stdin, no stdout markers, no IPC files.
 
 1. Query `messages_in WHERE status = 'pending' AND (process_after IS NULL OR process_after <= now())`
 2. If rows found: set `status = 'processing'`, `status_changed = now()` on each
-3. Batch messages into a single prompt (strip routing fields, format by kind)
-4. Push into Claude SDK's MessageStream
-5. Process agent output → write `messages_out` rows
-6. Set processed messages to `status = 'completed'`
-7. Back to step 1. If no messages found, sleep briefly and re-poll (container stays warm for idle timeout)
+3. Split the batch by trusted turn identity. If this is a routing-enabled
+   frontdesk channel-entry chat turn, build the bounded Routing view and call
+   the stateless/tool-free Routing provider.
+4. Validate the closed Routing decision. `delegate` writes one direct A2A
+   outbound; `answer_self` / `clarify` / `reject` install the shared outbound DB
+   gate and continue to frontdesk Execution. The gate permits only the exact
+   origin channel/platform/thread and is cleared before the next claimed turn.
+5. Format the unchanged execution batch into a prompt (strip routing fields,
+   format by kind) and query the configured Execution provider.
+6. Process provider output → write `messages_out` rows. Parent XML dispatch and
+   MCP child sends consult the same routing gate.
+7. Set processed messages to `status = 'completed'`, clear per-turn identity and
+   routing state, then return to step 1.
 
 ### Message Formatting by Kind
 
@@ -1025,8 +1034,18 @@ Pre-scripts: if a task message has a `script` field, run it first. If `wakeAgent
 
 ### Agent-Runner Properties
 
-- AgentProvider interface wraps SDK-specific query logic (trunk ships the `claude` provider; additional providers like OpenCode install via `/add-<provider>` skills)
-- Session resume via provider-specific mechanisms
+- AgentProvider wraps SDK-specific query logic. Built-in aliases include
+  `claude`, `openai`, `codex`, `opencode-go`, and `mock`.
+- A frontdesk may configure independent Routing and Execution provider/model
+  roles in `container.json.llm`; either role can use Claude or an
+  OpenAI-compatible provider. Routing has no tools/MCP/continuation; Execution
+  preserves provider-specific tool and resume behavior.
+- The host resolves session/group Execution provider overrides before spawn
+  and passes that effective provider into the runner. If it differs from
+  `llm.execution.provider`, configured model/transport values are discarded so
+  an OpenAI model name cannot leak into a Claude override (or vice versa).
+- Execution session resume uses role-aware provider keys; legacy continuation
+  keys migrate into the Execution role. Routing never persists continuation.
 - System prompt loading from CLAUDE.md files
 - PreCompact hook for transcript archiving (Claude provider)
 - Script execution for task-kind messages
@@ -1035,7 +1054,6 @@ Pre-scripts: if a task message has a `script` field, run it first. If `wakeAgent
 
 - **Approval routing** — how does the host find the admin's DM conversation? What if no DM channel exists? Is the approval list configurable per agent group or global?
 - **MCP server lifecycle** — does the MCP server process persist across multiple queries in the same container, or restart each time?
-- **Container startup config** — what config (if any) is passed to the container at launch beyond env vars? The session DB is at a fixed mount path. System prompt comes from CLAUDE.md. Provider name comes from env. What else?
 - **Idle detection with pending questions** — when `ask_user_question` is waiting for a response, the container should not be considered idle. Also need to detect when the agent is still working (active tool calls, subagents) and avoid killing the container even if no messages_out have been written recently.
 
 ## Related Documents

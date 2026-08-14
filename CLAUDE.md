@@ -57,6 +57,7 @@ logic into the platform.
 - `docs/enterprise-erp-gateway.md` — backend gateway contract
 - `docs/feishu-channel.md`
 - `docs/architecture.md`
+- `docs/configuration-reference.md` — authoritative per-group `container.json` fields
 - `docs/isolation-model.md`
 
 ## Session Continuation Guide
@@ -112,6 +113,13 @@ context in **≤3 hops**.
   optimization.
 - **Observability is read-only** — the Phoenix/Grafana + OpenTelemetry stack
   must never mutate the identity trust chain or message flow.
+- **Enforced frontdesk Routing is controller-owned** (ADR-0054) — when
+  `llm.routing.enabled` is on, the tool-free/stateless Routing provider may
+  only propose a closed action. The runner validates and enforces it through
+  the shared outbound DB gate; non-delegating Execution can send only to the
+  exact origin channel/platform/thread, cannot reclassify, and cannot change
+  the selected agent destination. Clear any persisted gate before a new turn
+  so crash residue cannot constrain a replay. Worker A2A turns do not reroute.
 
 ### Decision logging is non-optional
 

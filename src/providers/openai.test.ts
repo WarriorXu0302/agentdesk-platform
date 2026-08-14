@@ -5,15 +5,21 @@ import { buildOpenAIContribution, openaiViaOneCliEnabled } from './openai.js';
 const FLAG = 'AGENTDESK_OPENAI_VIA_ONECLI';
 const KEY = 'OPENAI_API_KEY';
 const BASE = 'OPENAI_BASE_URL';
+const TRANSPORT = 'OPENAI_FORCE_TRANSPORT';
 
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
-  saved = { [FLAG]: process.env[FLAG], [KEY]: process.env[KEY], [BASE]: process.env[BASE] };
+  saved = {
+    [FLAG]: process.env[FLAG],
+    [KEY]: process.env[KEY],
+    [BASE]: process.env[BASE],
+    [TRANSPORT]: process.env[TRANSPORT],
+  };
 });
 
 afterEach(() => {
-  for (const k of [FLAG, KEY, BASE]) {
+  for (const k of [FLAG, KEY, BASE, TRANSPORT]) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
@@ -42,6 +48,15 @@ describe('buildOpenAIContribution (ADR-0035 vault mode)', () => {
     expect(env?.OPENAI_API_KEY).toBeDefined();
     expect(env?.OPENAI_CREDENTIAL_VIA_PROXY).toBeUndefined();
     expect(env?.OPENAI_BASE_URL).toBe('https://api.openai.example');
+  });
+
+  it('forwards the explicit chat-completions transport override', () => {
+    process.env[KEY] = 'sk-secret';
+    process.env[TRANSPORT] = 'chat-completions';
+
+    const { env } = buildOpenAIContribution();
+
+    expect(env?.OPENAI_FORCE_TRANSPORT).toBe('chat-completions');
   });
 
   it('vault mode: withholds the API key from the container and flags it', () => {

@@ -28,7 +28,7 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_MODEL = 'gpt-5.4';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const HEARTBEAT_INTERVAL_MS = 10_000;
-const MAX_REQUEST_ATTEMPTS = 3;
+const DEFAULT_MAX_REQUEST_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = 1_500;
 const MAX_REPLAY_TRANSCRIPT_ITEMS = 128;
 const MAX_REPLAY_TRANSCRIPT_CHARS = 120_000;
@@ -182,7 +182,14 @@ function readString(value: unknown): string | undefined {
 }
 
 function normalizeBaseUrl(raw: string | undefined): string {
-  const trimmed = (raw || DEFAULT_BASE_URL).trim().replace(/\/+$/, '');
+  const trimmed = (raw || DEFAULT_BASE_URL)
+    .trim()
+    .replace(/\/+$/, '')
+    // Accept either the API root used by OpenAI-compatible SDKs or a full
+    // endpoint copied from provider dashboards. Request methods append their
+    // own transport path below, so retaining it here would produce
+    // `/chat/completions/v1/chat/completions`.
+    .replace(/\/(?:chat\/completions|responses)$/i, '');
   if (!trimmed) return DEFAULT_BASE_URL;
   if (/\/v\d+$/i.test(trimmed)) return trimmed;
   return `${trimmed}/v1`;
@@ -369,11 +376,7 @@ function totalTranscriptChars(items: JsonObject[]): number {
  * Returns the index of the first recent item. 0 means "nothing to compact"
  * (the whole transcript fits the recent window, or it's a single item).
  */
-function computeCompactionBoundary(
-  transcript: JsonObject[],
-  keepRecentItems: number,
-  keepRecentChars: number,
-): number {
+function computeCompactionBoundary(transcript: JsonObject[], keepRecentItems: number, keepRecentChars: number): number {
   // Need at least one old item and one recent item to compact.
   if (transcript.length <= 1) return 0;
   // Walk from the tail, accumulating the recent window until either cap is
@@ -917,9 +920,11 @@ export class OpenAIProvider implements AgentProvider {
    * of our own (the vault adds it on the wire).
    */
   private readonly credentialViaProxy: boolean;
+  private readonly role: 'routing' | 'execution';
   private readonly model: string;
   private readonly reasoningEffort?: string;
   private readonly timeoutMs: number;
+  private readonly maxRequestAttempts: number;
   private readonly forceTransport?: OpenAITransport;
   private readonly compactModel: string;
   private readonly compactArchive: boolean;
@@ -927,12 +932,18 @@ export class OpenAIProvider implements AgentProvider {
 
   constructor(options: ProviderOptions = {}) {
     const env = options.env ?? {};
+    this.role = options.role ?? 'execution';
     this.baseUrl = normalizeBaseUrl(readString(env.OPENAI_BASE_URL));
     this.apiKey = readString(env.OPENAI_API_KEY) || '';
     this.credentialViaProxy = /^(1|true|yes|on)$/i.test(readString(env.OPENAI_CREDENTIAL_VIA_PROXY) || '');
     this.model = readString(env.OPENAI_MODEL) || DEFAULT_MODEL;
     this.reasoningEffort = readString(env.OPENAI_REASONING_EFFORT);
     this.timeoutMs = Number.parseInt(readString(env.OPENAI_TIMEOUT_MS) || '', 10) || DEFAULT_TIMEOUT_MS;
+    const configuredAttempts = Number.parseInt(readString(env.OPENAI_MAX_REQUEST_ATTEMPTS) || '', 10);
+    this.maxRequestAttempts =
+      Number.isFinite(configuredAttempts) && configuredAttempts >= 1 && configuredAttempts <= 5
+        ? configuredAttempts
+        : DEFAULT_MAX_REQUEST_ATTEMPTS;
     const force = readString(env.OPENAI_FORCE_TRANSPORT)?.toLowerCase();
     this.forceTransport = force === 'chat-completions' || force === 'responses' ? force : undefined;
     // Summary-compaction uses a (possibly cheaper) model and falls back to the
@@ -940,6 +951,10 @@ export class OpenAIProvider implements AgentProvider {
     this.compactModel = readString(env.OPENAI_COMPACT_MODEL) || this.model;
     this.compactArchive = /^(1|true|yes|on)$/i.test(readString(env.OPENAI_COMPACT_ARCHIVE) || '');
     this.bridge = new OpenAIMcpBridge(options.mcpServers ?? {}, env);
+  }
+
+  private persistExecutionContinuation(value: string): void {
+    if (this.role === 'execution') persistAliasedContinuation(value);
   }
 
   isSessionInvalid(err: unknown): boolean {
@@ -963,11 +978,10 @@ export class OpenAIProvider implements AgentProvider {
     let stopRequested = false;
     let activeAbort: AbortController | null = null;
     let continuation = input.continuation;
+    const persistExecutionContinuation = (value: string) => this.persistExecutionContinuation(value);
 
     const events: AsyncIterable<ProviderEvent> = {
-      [Symbol.asyncIterator]: async function* (
-        this: OpenAIProvider,
-      ): AsyncGenerator<ProviderEvent, void, unknown> {
+      [Symbol.asyncIterator]: async function* (this: OpenAIProvider): AsyncGenerator<ProviderEvent, void, unknown> {
         let currentPrompt = input.prompt;
 
         while (true) {
@@ -1059,7 +1073,7 @@ export class OpenAIProvider implements AgentProvider {
         // poll-loop iteration's fresh query() restore replays it).
         const next = appendSystemReminderToContinuation(continuation, text);
         continuation = next;
-        persistAliasedContinuation(next);
+        persistExecutionContinuation(next);
       },
       end() {
         // OpenAI responses are discrete turns; nothing to flush here.
@@ -1096,7 +1110,11 @@ export class OpenAIProvider implements AgentProvider {
     let mode: ContinuationMode = this.forceTransport === 'chat-completions' ? 'stateless' : restored.mode;
     let transport: OpenAITransport = this.forceTransport ?? restored.transport;
     let previousResponseId =
-      this.forceTransport === 'chat-completions' ? undefined : restored.mode === 'responses' ? restored.responseId : undefined;
+      this.forceTransport === 'chat-completions'
+        ? undefined
+        : restored.mode === 'responses'
+          ? restored.responseId
+          : undefined;
     // Restored transcript is already bounded to the storage ceiling by
     // parseContinuationState. Do NOT hard-trim it here — let the full history
     // reach the compaction size check below so the old window can be
@@ -1168,7 +1186,7 @@ export class OpenAIProvider implements AgentProvider {
           nextInput = transcript;
           continue;
         }
-        if (transport === 'responses' && shouldFallbackToChatCompletions(err)) {
+        if (this.role === 'execution' && transport === 'responses' && shouldFallbackToChatCompletions(err)) {
           log('OpenAI Responses API appears unstable on this backend; switching to chat completions fallback');
           transport = 'chat-completions';
           mode = 'stateless';
@@ -1210,6 +1228,9 @@ export class OpenAIProvider implements AgentProvider {
       }
 
       const functionCalls = collectFunctionCalls(response.output);
+      if (this.role === 'routing' && functionCalls.length > 0) {
+        throw new Error('Routing provider returned a tool call');
+      }
       if (functionCalls.length === 0) {
         transcript = appendTranscript(transcript, responseItems);
         const continuation = serializeContinuationState({
@@ -1219,7 +1240,7 @@ export class OpenAIProvider implements AgentProvider {
           responseId: mode === 'responses' ? responseId : undefined,
           transcript,
         });
-        persistAliasedContinuation(continuation);
+        this.persistExecutionContinuation(continuation);
         if (response.error?.message) {
           throw new Error(response.error.message);
         }
@@ -1264,7 +1285,7 @@ export class OpenAIProvider implements AgentProvider {
         responseId: mode === 'responses' ? responseId : undefined,
         transcript,
       });
-      persistAliasedContinuation(continuation);
+      this.persistExecutionContinuation(continuation);
       previousResponseId = responseId;
       nextInput = transport === 'responses' && mode === 'responses' ? toolOutputs : transcript;
     }
@@ -1439,7 +1460,7 @@ export class OpenAIProvider implements AgentProvider {
     }
 
     try {
-      for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+      for (let attempt = 1; attempt <= this.maxRequestAttempts; attempt += 1) {
         let response: Response;
         try {
           response = await withHeartbeat(() =>
@@ -1455,9 +1476,9 @@ export class OpenAIProvider implements AgentProvider {
           if (controller.signal.aborted) {
             throw new Error(`OpenAI request timed out after ${this.timeoutMs}ms`);
           }
-          if (attempt < MAX_REQUEST_ATTEMPTS) {
+          if (attempt < this.maxRequestAttempts) {
             log(
-              `OpenAI request transport failed (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying: ${err instanceof Error ? err.message : String(err)}`,
+              `OpenAI request transport failed (attempt ${attempt}/${this.maxRequestAttempts}), retrying: ${err instanceof Error ? err.message : String(err)}`,
             );
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
@@ -1485,9 +1506,9 @@ export class OpenAIProvider implements AgentProvider {
             }
           }
         } catch (err) {
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             log(
-              `OpenAI response parse failed (status ${response.status}, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying: ${
+              `OpenAI response parse failed (status ${response.status}, attempt ${attempt}/${this.maxRequestAttempts}), retrying: ${
                 err instanceof Error ? err.message : String(err)
               }`,
             );
@@ -1502,9 +1523,9 @@ export class OpenAIProvider implements AgentProvider {
             isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string'
               ? parsed.error.message
               : `OpenAI request failed with status ${response.status}`;
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             log(
-              `OpenAI request failed with status ${response.status} (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying`,
+              `OpenAI request failed with status ${response.status} (attempt ${attempt}/${this.maxRequestAttempts}), retrying`,
             );
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
@@ -1540,14 +1561,16 @@ export class OpenAIProvider implements AgentProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: transcriptToChatMessages(params.transcript, params.instructions),
-      tools: responseToolsToChatTools(params.tools),
-      tool_choice: 'auto',
-      parallel_tool_calls: false,
       stream: false,
     };
+    if (params.tools.length > 0) {
+      body.tools = responseToolsToChatTools(params.tools);
+      body.tool_choice = 'auto';
+      body.parallel_tool_calls = false;
+    }
 
     try {
-      for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+      for (let attempt = 1; attempt <= this.maxRequestAttempts; attempt += 1) {
         let response: Response;
         try {
           response = await withHeartbeat(() =>
@@ -1563,9 +1586,9 @@ export class OpenAIProvider implements AgentProvider {
           if (controller.signal.aborted) {
             throw new Error(`OpenAI chat completion request timed out after ${this.timeoutMs}ms`);
           }
-          if (attempt < MAX_REQUEST_ATTEMPTS) {
+          if (attempt < this.maxRequestAttempts) {
             log(
-              `OpenAI chat completion transport failed (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying: ${
+              `OpenAI chat completion transport failed (attempt ${attempt}/${this.maxRequestAttempts}), retrying: ${
                 err instanceof Error ? err.message : String(err)
               }`,
             );
@@ -1580,9 +1603,9 @@ export class OpenAIProvider implements AgentProvider {
         try {
           parsed = raw ? JSON.parse(raw) : {};
         } catch {
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             log(
-              `OpenAI chat completion parse failed (status ${response.status}, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying`,
+              `OpenAI chat completion parse failed (status ${response.status}, attempt ${attempt}/${this.maxRequestAttempts}), retrying`,
             );
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
@@ -1595,9 +1618,9 @@ export class OpenAIProvider implements AgentProvider {
             isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string'
               ? parsed.error.message
               : `OpenAI chat completion request failed with status ${response.status}`;
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             log(
-              `OpenAI chat completion failed with status ${response.status} (attempt ${attempt}/${MAX_REQUEST_ATTEMPTS}), retrying`,
+              `OpenAI chat completion failed with status ${response.status} (attempt ${attempt}/${this.maxRequestAttempts}), retrying`,
             );
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
@@ -1639,7 +1662,7 @@ export class OpenAIProvider implements AgentProvider {
     };
 
     try {
-      for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+      for (let attempt = 1; attempt <= this.maxRequestAttempts; attempt += 1) {
         let response: Response;
         try {
           response = await withHeartbeat(() =>
@@ -1655,7 +1678,7 @@ export class OpenAIProvider implements AgentProvider {
           if (controller.signal.aborted) {
             throw new Error(`OpenAI compaction summary timed out after ${this.timeoutMs}ms`);
           }
-          if (attempt < MAX_REQUEST_ATTEMPTS) {
+          if (attempt < this.maxRequestAttempts) {
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
           }
@@ -1667,7 +1690,7 @@ export class OpenAIProvider implements AgentProvider {
         try {
           parsed = raw ? JSON.parse(raw) : {};
         } catch {
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
           }
@@ -1679,7 +1702,7 @@ export class OpenAIProvider implements AgentProvider {
             isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string'
               ? parsed.error.message
               : `OpenAI compaction summary failed with status ${response.status}`;
-          if (attempt < MAX_REQUEST_ATTEMPTS && isRetryableStatus(response.status)) {
+          if (attempt < this.maxRequestAttempts && isRetryableStatus(response.status)) {
             await sleep(RETRY_BACKOFF_MS * attempt);
             continue;
           }
@@ -1703,3 +1726,4 @@ export class OpenAIProvider implements AgentProvider {
 
 registerProvider('openai', (opts) => new OpenAIProvider(opts));
 registerProvider('codex', (opts) => new OpenAIProvider(opts));
+registerProvider('opencode-go', (opts) => new OpenAIProvider(opts));

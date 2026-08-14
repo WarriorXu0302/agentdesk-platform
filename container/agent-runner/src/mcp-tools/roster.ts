@@ -23,6 +23,7 @@
  * builds the card or chooses scope/expectedUserId.
  */
 import { writeMessageOut } from '../db/messages-out.js';
+import { enforceRoutingOpaqueOutbound } from '../routing/gate.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
@@ -71,6 +72,8 @@ export const sendRosterDm: McpToolDefinition = {
     if (!slot)
       return err('slot is required — the roster slot label of a consented recipient (see your roster-slots list)');
     if (!text.trim()) return err('text is required');
+    const gate = enforceRoutingOpaqueOutbound();
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     // Emit a slot-addressed roster row. NO platform_id/channel_type: the host
     // looks up the grant by (host-derived scope, slot) and overrides routing
@@ -123,6 +126,8 @@ export const inviteToRoster: McpToolDefinition = {
     const slotLabel = typeof args.slot_label === 'string' ? args.slot_label.trim() : '';
     if (!member) return err('member is required — the open_id (ou_…) of the person to invite');
     if (!slotLabel) return err('slot_label is required — the roster slot to register them under');
+    const gate = enforceRoutingOpaqueOutbound();
+    if (!gate.allowed) return err(`Enforced routing decision rejected this destination (${gate.reason}).`);
 
     // Thin intent row. NO routing fields: the host derives scope/agent-group from
     // the session, validates membership, and BUILDS + addresses the directed

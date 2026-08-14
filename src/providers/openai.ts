@@ -18,6 +18,10 @@ const OPENAI_ENV_KEYS = [
   'OPENAI_MODEL',
   'OPENAI_REASONING_EFFORT',
   'OPENAI_TIMEOUT_MS',
+  'OPENAI_MAX_REQUEST_ATTEMPTS',
+  // Some OpenAI-compatible gateways expose Chat Completions only. Forward
+  // the transport override so operators can skip the Responses probe/fallback.
+  'OPENAI_FORCE_TRANSPORT',
   // Summary-based context compaction (ADR-0024). Optional; the container
   // falls back to OPENAI_MODEL / archiving-off when unset.
   'OPENAI_COMPACT_MODEL',
@@ -45,7 +49,7 @@ export function buildOpenAIContribution(): ProviderContainerContribution {
     // injects the Authorization header on the wire (ADR-0035). Everything else
     // (base url, model, timeouts) still rides along.
     if (viaVault && key === 'OPENAI_API_KEY') continue;
-    const value = dotenv[key] || process.env[key];
+    const value = process.env[key] || dotenv[key];
     if (value) env[key] = value;
   }
   // Tell the container-side provider it is in vault mode: require no key and
@@ -56,4 +60,5 @@ export function buildOpenAIContribution(): ProviderContainerContribution {
 
 registerProviderContainerConfig('openai', buildOpenAIContribution);
 registerProviderContainerConfig('codex', buildOpenAIContribution);
+registerProviderContainerConfig('opencode-go', buildOpenAIContribution);
 // 'sdk-openai' removed with its container provider — see ADR-0024.
