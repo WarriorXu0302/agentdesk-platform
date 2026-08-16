@@ -28,7 +28,7 @@ import {
   readOutboxFiles,
   clearOutbox,
 } from './session-manager.js';
-import { getSession, findSession } from './db/sessions.js';
+import { getSession, findSession, findSessionForAgentOwner } from './db/sessions.js';
 import type { InboundEvent } from './channels/adapter.js';
 
 // Mock container runner to prevent actual Docker spawning
@@ -575,11 +575,23 @@ describe('router', () => {
       created_at: now(),
     });
 
-    const { routeInbound } = await import('./router.js');
+    const { routeInbound, setSenderResolver } = await import('./router.js');
     const { wakeContainer } = await import('./container-runner.js');
     const { getMessagingGroupByPlatform, getMessagingGroupAgents } = await import('./db/messaging-groups.js');
 
     (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    // DMs wire per-user (ADR-0055), which needs a host-established sender id.
+    // In production the permissions module registers this resolver at boot;
+    // mirror that here, and hand back a null-resolver afterwards so later
+    // tests keep their userId=null expectations.
+    setSenderResolver((e) => {
+      try {
+        return (JSON.parse(e.message.content) as { senderId?: string }).senderId ?? null;
+      } catch {
+        return null;
+      }
+    });
 
     await routeInbound({
       channelType: 'feishu',
@@ -595,6 +607,8 @@ describe('router', () => {
       },
     });
 
+    setSenderResolver(() => null);
+
     const mg = getMessagingGroupByPlatform('feishu', 'feishu:p2p:ou-user-1');
     expect(mg).toBeDefined();
     expect(mg?.unknown_sender_policy).toBe('public');
@@ -606,11 +620,16 @@ describe('router', () => {
       engage_mode: 'pattern',
       engage_pattern: '.',
       sender_scope: 'all',
-      session_mode: 'shared',
+      // DMs wire per-user (ADR-0055): 'shared' left owner_user_id NULL, so
+      // every DM user's session mounted the GROUP state scope.
+      session_mode: 'per-user',
     });
 
-    const session = findSession(mg!.id, null);
+    // per-user DM wiring (ADR-0055): the session lane is owned by the sender,
+    // so the ownerless findSession helper can't see it.
+    const session = findSessionForAgentOwner('ag-frontdesk', mg!.id, 'ou-user-1', null);
     expect(session).toBeDefined();
+    expect(session!.owner_user_id).toBe('ou-user-1');
 
     const db = new Database(inboundDbPath('ag-frontdesk', session!.id));
     const rows = db.prepare('SELECT content FROM messages_in ORDER BY timestamp').all() as Array<{ content: string }>;

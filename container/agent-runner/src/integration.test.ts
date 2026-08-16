@@ -21,7 +21,11 @@ afterEach(() => {
   closeSessionDb();
 });
 
-function insertMessage(id: string, content: object, opts?: { platformId?: string; channelType?: string; threadId?: string }) {
+function insertMessage(
+  id: string,
+  content: object,
+  opts?: { platformId?: string; channelType?: string; threadId?: string },
+) {
   getInboundDb()
     .prepare(
       `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, thread_id, content)
@@ -32,7 +36,11 @@ function insertMessage(id: string, content: object, opts?: { platformId?: string
 
 describe('poll loop integration', () => {
   it('should pick up a message, process it, and write a response', async () => {
-    insertMessage('m1', { sender: 'Alice', text: 'What is the meaning of life?' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' });
+    insertMessage(
+      'm1',
+      { sender: 'Alice', text: 'What is the meaning of life?' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
 
     const provider = new MockProvider({}, () => '<message to="discord-test">42</message>');
 
@@ -104,12 +112,21 @@ describe('poll loop integration', () => {
       .run();
 
     // Insert messages from each destination with distinct thread IDs
-    insertMessage('m-discord', { sender: 'Alice', text: 'from discord' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'discord-thread-1' });
-    insertMessage('m-slack', { sender: 'Bob', text: 'from slack' }, { platformId: 'chan-2', channelType: 'slack', threadId: 'slack-thread-99' });
+    insertMessage(
+      'm-discord',
+      { sender: 'Alice', text: 'from discord' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'discord-thread-1' },
+    );
+    insertMessage(
+      'm-slack',
+      { sender: 'Bob', text: 'from slack' },
+      { platformId: 'chan-2', channelType: 'slack', threadId: 'slack-thread-99' },
+    );
 
     // Agent replies to both destinations
-    const provider = new MockProvider({}, () =>
-      '<message to="discord-test">reply-d</message><message to="slack-test">reply-s</message>',
+    const provider = new MockProvider(
+      {},
+      () => '<message to="discord-test">reply-d</message><message to="slack-test">reply-s</message>',
     );
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
@@ -222,7 +239,11 @@ describe('poll loop integration', () => {
       .run();
 
     // Only insert a message from discord — slack-new has never sent anything
-    insertMessage('m1', { sender: 'Alice', text: 'tell slack' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'discord-thread' });
+    insertMessage(
+      'm1',
+      { sender: 'Alice', text: 'tell slack' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'discord-thread' },
+    );
 
     const provider = new MockProvider({}, () => '<message to="slack-new">hello slack</message>');
     const controller = new AbortController();
@@ -241,8 +262,16 @@ describe('poll loop integration', () => {
 
   it('resolves most recent thread_id when destination has multiple inbound messages', async () => {
     // Two messages from same destination, different threads
-    insertMessage('m-old', { sender: 'Alice', text: 'old' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-old' });
-    insertMessage('m-new', { sender: 'Alice', text: 'new' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-new' });
+    insertMessage(
+      'm-old',
+      { sender: 'Alice', text: 'old' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-old' },
+    );
+    insertMessage(
+      'm-new',
+      { sender: 'Alice', text: 'new' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-new' },
+    );
 
     const provider = new MockProvider({}, () => '<message to="discord-test">reply</message>');
     const controller = new AbortController();
@@ -282,7 +311,8 @@ describe('poll loop integration', () => {
 
     const provider = new MockProvider(
       {},
-      () => '<internal>thinking about this...</internal><message to="discord-test">answer</message><internal>done thinking</internal>',
+      () =>
+        '<internal>thinking about this...</internal><message to="discord-test">answer</message><internal>done thinking</internal>',
     );
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
@@ -453,6 +483,59 @@ class CompactingProvider {
 }
 
 // Helper: run poll loop until aborted or timeout
+describe('stale continuation recovery', () => {
+  /**
+   * Provider whose stream throws a stale-session error whenever a
+   * continuation is passed, and succeeds fresh. Mirrors the Claude SDK's
+   * behavior when the resume id points at a transcript that no longer exists
+   * (e.g. a host upgrade rescoped ~/.claude — ADR-0055).
+   */
+  class StaleContinuationProvider {
+    readonly supportsNativeSlashCommands = false;
+    readonly continuations: (string | undefined)[] = [];
+
+    isSessionInvalid(err: unknown): boolean {
+      return /no conversation found/i.test(err instanceof Error ? err.message : String(err));
+    }
+
+    query(input: { prompt: string; continuation?: string }) {
+      this.continuations.push(input.continuation);
+      const stale = Boolean(input.continuation);
+      const events = {
+        async *[Symbol.asyncIterator]() {
+          if (stale) throw new Error('No conversation found with session ID stale-1');
+          yield { type: 'init' as const, continuation: 'fresh-1' };
+          yield { type: 'result' as const, text: '<message to="discord-test">recovered</message>' };
+        },
+      };
+      return { push() {}, pushSystemReminder() {}, end() {}, abort() {}, events };
+    }
+  }
+
+  it('retries the SAME turn fresh instead of burning it on a user-facing error', async () => {
+    const { setContinuation, getContinuation } = await import('./db/session-state.js');
+    setContinuation('mock', 'stale-1');
+    insertMessage('m1', { sender: 'Alice', text: '接着上面继续' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new StaleContinuationProvider();
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 3000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 3000);
+    controller.abort();
+
+    // first attempt resumed, second ran fresh — same turn, no error reply
+    expect(provider.continuations).toEqual(['stale-1', undefined]);
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('recovered');
+    // the stale id was cleared and the fresh session persisted
+    expect(getContinuation('mock')).toBe('fresh-1');
+
+    await loopPromise.catch(() => {});
+  });
+});
+
 async function runPollLoopWithTimeout(provider: MockProvider, signal: AbortSignal, timeoutMs: number): Promise<void> {
   return Promise.race([
     runPollLoop({

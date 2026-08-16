@@ -135,7 +135,14 @@ function buildAutoWiring(
     engage_pattern: isGroup ? null : '.',
     sender_scope: 'all',
     ignored_message_policy: 'drop',
-    session_mode: isGroup ? config.groupSessionMode : 'shared',
+    // DMs wire per-user (not 'shared'): a DM is already one messaging group
+    // per person, but 'shared' left owner_user_id NULL, so every DM user's
+    // session mounted the GROUP state scope — all DM users of one frontdesk
+    // shared workspace/memory (ADR-0055 red-team finding). per-user sets the
+    // owner, giving each person their own scope — shared with their
+    // group-chat lanes on the same agent (memory follows the person).
+    // Existing wirings keep their stored mode; this affects new wiring only.
+    session_mode: isGroup ? config.groupSessionMode : 'per-user',
     priority: 100,
     created_at: new Date().toISOString(),
   };

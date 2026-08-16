@@ -38,6 +38,7 @@ import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
 import { agentBaseImagePresent, containerExitsTotal, wakeRejectedTotal } from './metrics.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
+import { ensureStateScope, resolveStateScope } from './state-scope.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
 import { chainAttrs } from './observability/openinference.js';
@@ -483,7 +484,7 @@ function resolveProviderContribution(
   return { provider, contribution };
 }
 
-function buildMounts(
+export function buildMounts(
   agentGroup: AgentGroup,
   session: Session,
   containerConfig: import('./container-config.js').ContainerConfig,
@@ -497,9 +498,15 @@ function buildMounts(
   // is a no-op for groups that have spawned before.
   initGroupFilesystem(agentGroup);
 
+  // Which host dirs back the WRITABLE state mounts (ADR-0055): sessions with
+  // an owner get a per-user scope; ownerless sessions keep the legacy
+  // group-level layout byte-for-byte. Materialized before docker run — a
+  // missing bind source would be created root-owned by the daemon.
+  const scope = resolveStateScope(agentGroup, session);
+  ensureStateScope(scope, { disableAutoMemory: containerConfig.memoryMode === 'gateway' });
+
   // Sync skill symlinks based on container.json selection before mounting.
-  const claudeDir = path.join(DATA_DIR, 'v2-sessions', agentGroup.id, '.claude-shared');
-  syncSkillSymlinks(claudeDir, containerConfig);
+  syncSkillSymlinks(scope.claudeDir, containerConfig);
 
   // Compose CLAUDE.md fresh every spawn from the shared base, enabled skill
   // fragments, and MCP server instructions. See `claude-md-compose.ts`.
@@ -512,8 +519,12 @@ function buildMounts(
   // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
   mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
 
-  // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
-  mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
+  // Writable agent state at /workspace/agent (working files, CLAUDE.local.md,
+  // conversations/) — the resolved scope's workspace (ADR-0055): per-user for
+  // owned sessions, the group dir for ownerless ones. Config and composer
+  // artifacts stay group-level via the RO nested mounts below, which shadow
+  // the scope at the same container paths.
+  mounts.push({ hostPath: scope.workspaceDir, containerPath: '/workspace/agent', readonly: false });
 
   // container.json — nested RO mount on top of RW group dir so the agent can
   // read its config but cannot modify it. In signing-proxy mode (ADR-0034) we
@@ -540,6 +551,14 @@ function buildMounts(
   if (fs.existsSync(composedClaudeMd)) {
     mounts.push({ hostPath: composedClaudeMd, containerPath: '/workspace/agent/CLAUDE.md', readonly: true });
   }
+  // Operator-seeded role prompt — template layer (ADR-0055). RO for every
+  // session (an agent must not edit its own persona), and for per-user scopes
+  // this shadow is what delivers the instructions at all: the scope workspace
+  // starts empty and the composed CLAUDE.md imports @./instructions.md.
+  const instructionsFile = path.join(groupDir, 'instructions.md');
+  if (fs.existsSync(instructionsFile)) {
+    mounts.push({ hostPath: instructionsFile, containerPath: '/workspace/agent/instructions.md', readonly: true });
+  }
   const fragmentsDir = path.join(groupDir, '.claude-fragments');
   if (fs.existsSync(fragmentsDir)) {
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
@@ -558,9 +577,9 @@ function buildMounts(
     mounts.push({ hostPath: sharedClaudeMd, containerPath: '/app/CLAUDE.md', readonly: true });
   }
 
-  // Per-group .claude-shared at /home/node/.claude (Claude state, settings,
-  // skill symlinks)
-  mounts.push({ hostPath: claudeDir, containerPath: '/home/node/.claude', readonly: false });
+  // Claude state (settings, skills symlinks, transcripts, auto-memory) at
+  // /home/node/.claude — same scope as the workspace (ADR-0055).
+  mounts.push({ hostPath: scope.claudeDir, containerPath: '/home/node/.claude', readonly: false });
 
   // Shared agent-runner source — read-only, same code for all groups.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
