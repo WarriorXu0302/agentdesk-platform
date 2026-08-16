@@ -32,6 +32,7 @@ import { migration032 } from './032-session-conversation-thread.js';
 import { migration033 } from './033-routing-feedback-fields.js';
 import { migration034 } from './034-rbac-operability-roles.js';
 import { migration035 } from './035-multi-tenant-organizations.js';
+import { migration036 } from './036-agent-group-role.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -75,6 +76,7 @@ const migrations: Migration[] = [
   migration033,
   migration034,
   migration035,
+  migration036,
 ];
 
 export function runMigrations(db: Database.Database): void {

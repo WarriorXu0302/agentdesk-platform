@@ -41,7 +41,8 @@ CREATE TABLE agent_groups (
   folder           TEXT NOT NULL UNIQUE,
   agent_provider   TEXT,
   created_at       TEXT NOT NULL,
-  organization_id  TEXT REFERENCES organizations(id)
+  organization_id  TEXT REFERENCES organizations(id),
+  role             TEXT
 );
 CREATE INDEX idx_agent_groups_org ON agent_groups(organization_id);
 

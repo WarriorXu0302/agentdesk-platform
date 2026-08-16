@@ -1,4 +1,4 @@
-import type { AgentGroup } from '../types.js';
+import type { AgentGroup, AgentGroupRole } from '../types.js';
 import { getDb } from './connection.js';
 
 /**
@@ -12,10 +12,19 @@ export function createAgentGroup(
 ): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at, organization_id)
-       VALUES (@id, @name, @folder, @agent_provider, @created_at, @organization_id)`,
+      `INSERT INTO agent_groups (id, name, folder, agent_provider, created_at, organization_id, role)
+       VALUES (@id, @name, @folder, @agent_provider, @created_at, @organization_id, @role)`,
     )
-    .run({ ...group, organization_id: group.organization_id ?? null });
+    .run({ ...group, organization_id: group.organization_id ?? null, role: group.role ?? null });
+}
+
+/**
+ * Stamp the topology role (ADR-0056). Idempotent ensure-style setter for the
+ * bootstrap scripts — the operator's topology tool is the authority on roles,
+ * so re-running it may overwrite a stale value.
+ */
+export function setAgentGroupRole(id: string, role: AgentGroupRole | null): void {
+  getDb().prepare('UPDATE agent_groups SET role = ? WHERE id = ?').run(role, id);
 }
 
 export function getAgentGroup(id: string): AgentGroup | undefined {

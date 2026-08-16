@@ -493,6 +493,19 @@ export function buildMounts(
 ): VolumeMount[] {
   const projectRoot = process.cwd();
 
+  // Role × config contradiction gate (ADR-0056). Enforced dual-LLM routing is
+  // frontdesk machinery (ADR-0054) — a WORKER with routing enabled would burn
+  // Routing calls on task turns and gate its own a2a replies opaque. Refuse
+  // loudly instead of booting a misconfigured agent. NULL role (legacy /
+  // unclassified) stays permitted.
+  if (containerConfig.llm?.routing?.enabled && agentGroup.role === 'worker') {
+    throw new Error(
+      `agent group ${agentGroup.folder} has role=worker but llm.routing.enabled=true — ` +
+        `enforced routing is frontdesk machinery (ADR-0056); disable llm.routing in its ` +
+        `container.json or correct the role`,
+    );
+  }
+
   // Per-group filesystem state lives forever after first creation. Init is
   // idempotent: it only writes paths that don't already exist, so this call
   // is a no-op for groups that have spawned before.
@@ -534,6 +547,16 @@ export function buildMounts(
   const containerJsonPath = signingProxy?.redactedConfigPath ?? path.join(groupDir, 'container.json');
   if (fs.existsSync(containerJsonPath)) {
     mounts.push({ hostPath: containerJsonPath, containerPath: '/workspace/agent/container.json', readonly: true });
+  }
+
+  // Template prompt assets — whole-dir RO shadow (ADR-0056 hardening). The
+  // ownerless layout used to expose prompts/ read-WRITE through the group-dir
+  // mount (only the active routing prompt was pinned RO); agents must not be
+  // able to edit template prompts, and owned scopes gain read access to the
+  // full set. The per-file routing mount below stacks on top unchanged.
+  const promptsDir = path.join(groupDir, 'prompts');
+  if (fs.existsSync(promptsDir)) {
+    mounts.push({ hostPath: promptsDir, containerPath: '/workspace/agent/prompts', readonly: true });
   }
 
   if (containerConfig.llm?.routing?.enabled) {
