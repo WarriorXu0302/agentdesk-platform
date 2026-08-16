@@ -20,10 +20,12 @@ export interface AgentGroup {
   // carrier of org on the workload side — sessions/messaging_groups/audit derive org
   // by JOIN through their (immutable) agent_group_id.
   organization_id: string | null;
-  // Topology role (ADR-0056). NULL/undefined = unclassified — pre-migration
-  // rows and standalone agents that are neither desk nor worker. Enforcement
-  // treats NULL as legacy-permitted; only explicit contradictions refuse.
-  role?: AgentGroupRole | null;
+  // Topology role (ADR-0056). NULL = unclassified — pre-migration rows and
+  // standalone agents that are neither desk nor worker. Read points treat
+  // NULL as legacy-permitted. REQUIRED (not optional) so every construction
+  // site declares its intent explicitly — same treatment as organization_id;
+  // createAgentGroup keeps it optional-defaulting-NULL at the call site.
+  role: AgentGroupRole | null;
 }
 
 export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';

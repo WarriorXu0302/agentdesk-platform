@@ -253,6 +253,43 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
     expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'oc_sales'))!.role).toBe('frontdesk');
   });
+
+  it('a pre-role (NULL) clone is healed to the frontdesk role on re-resolve (ADR-0056)', () => {
+    // Clones created before the role column exist with NULL; the topology
+    // script never reaches auto-provisioned folders, so re-resolve fills it.
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    setAgentGroupRole('ag-fd', 'frontdesk');
+    const folder = perGroupAgentFolder('fd', 'oc_sales');
+    createAgentGroup({
+      id: `ag-${folder}`,
+      name: 'Pre-role clone',
+      folder,
+      agent_provider: null,
+      created_at: now(),
+      // no role — simulates a row created before migration 036
+    });
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getAgentGroupByFolder(folder)!.role).toBe('frontdesk');
+  });
+
+  it('warns (but proceeds) when the configured frontdesk has role=worker (ADR-0056)', async () => {
+    const { log } = await import('./log.js');
+    const warns: string[] = [];
+    const spy = vi.spyOn(log, 'warn').mockImplementation((msg: unknown) => {
+      warns.push(String(msg));
+    });
+    try {
+      seedFrontdesk();
+      setAgentGroupRole('ag-fd', 'worker');
+      const { mg, event } = seedChannel('oc_sales', true);
+      expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true); // proceeds
+      expect(warns.some((w) => w.includes('role=worker'))).toBe(true); // but complains
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('enterprise autowire — owner-denied channels (control-bypass fix)', () => {

@@ -549,6 +549,16 @@ function ensureAgentGroup(
     if (!config.resources) {
       config.resources = { ...DEFAULT_RESOURCES[role] };
     }
+    // Stamp-time coherence check (ADR-0056 red-team): this is the one moment
+    // an operator is watching a terminal — surface a worker whose config
+    // still has frontdesk routing enabled (e.g. a routing-enabled ex-frontdesk
+    // folder moved under --workers). Runtime only warns once per host run.
+    if (role === 'worker' && config.llm?.routing?.enabled) {
+      console.warn(
+        `WARNING: ${folder} is stamped role=worker but its container.json has llm.routing.enabled — ` +
+          `routing is inert on a2a turns; disable llm.routing or keep it only if this is a deliberate mixed-role desk.`,
+      );
+    }
   });
   return group;
 }

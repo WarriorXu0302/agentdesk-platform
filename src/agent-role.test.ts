@@ -17,6 +17,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-agent-role';
 const { buildMounts } = await import('./container-runner.js');
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
 const { createAgentGroup, getAgentGroup, setAgentGroupRole } = await import('./db/agent-groups.js');
+const { log } = await import('./log.js');
 import type { AgentGroup, Session } from './types.js';
 
 function now(): string {
@@ -100,25 +101,66 @@ describe('agent_groups.role column (ADR-0056)', () => {
   });
 });
 
-describe('role × routing contradiction gate (ADR-0056)', () => {
-  it('refuses to build mounts for a WORKER with enforced routing', () => {
+describe('role × routing coherence warn (ADR-0056, red-team corrected)', () => {
+  // Red-team round: the original HARD throw was wrong twice over — routing is
+  // inert on a2a turns (a worker's routing config burns nothing), mixed-role
+  // mid-tier desks are legitimate, and a throw would land in wakeContainer's
+  // transient-retry catch and become a silent 60s-forever wake loop. The gate
+  // is therefore a warn-once, never a refusal.
+  function collectWarns(): { warns: string[]; restore: () => void } {
+    const warns: string[] = [];
+    const spy = vi.spyOn(log, 'warn').mockImplementation((msg: unknown) => {
+      warns.push(String(msg));
+    });
+    return { warns, restore: () => spy.mockRestore() };
+  }
+
+  it('worker + routing BOOTS (never throws) and warns exactly once per group', () => {
     seedRoutingPrompt();
-    expect(() => buildMounts(makeGroup('worker'), makeSession('s1'), ROUTING_CFG, {})).toThrow(/role=worker/);
+    const { warns, restore } = collectWarns();
+    try {
+      const group = makeGroup('worker');
+      const mounts = buildMounts(group, makeSession('s1'), ROUTING_CFG, {});
+      buildMounts(group, makeSession('s2'), ROUTING_CFG, {});
+      // boots: the routing prompt mount is present, nothing threw
+      expect(mounts.find((m) => m.containerPath === '/workspace/agent/prompts/frontdesk-routing.md')).toBeDefined();
+      // warned once across two spawns of the same group
+      expect(warns.filter((w) => w.includes('role=worker with llm.routing.enabled'))).toHaveLength(1);
+    } finally {
+      restore();
+    }
   });
 
-  it('NULL role (legacy/unclassified) + routing stays permitted', () => {
+  it('NULL role (legacy/unclassified) + routing neither throws nor warns', () => {
     seedRoutingPrompt();
-    const mounts = buildMounts(makeGroup(null), makeSession('s1'), ROUTING_CFG, {});
-    expect(mounts.find((m) => m.containerPath === '/workspace/agent/prompts/frontdesk-routing.md')).toBeDefined();
+    const { warns, restore } = collectWarns();
+    try {
+      buildMounts(makeGroup(null), makeSession('s1'), ROUTING_CFG, {});
+      expect(warns.filter((w) => w.includes('role=worker'))).toHaveLength(0);
+    } finally {
+      restore();
+    }
   });
 
-  it('frontdesk + routing is the intended configuration', () => {
+  it('frontdesk + routing is the intended configuration — silent', () => {
     seedRoutingPrompt();
-    expect(() => buildMounts(makeGroup('frontdesk'), makeSession('s1'), ROUTING_CFG, {})).not.toThrow();
+    const { warns, restore } = collectWarns();
+    try {
+      expect(() => buildMounts(makeGroup('frontdesk'), makeSession('s1'), ROUTING_CFG, {})).not.toThrow();
+      expect(warns.filter((w) => w.includes('role=worker'))).toHaveLength(0);
+    } finally {
+      restore();
+    }
   });
 
-  it('worker WITHOUT routing is unaffected by the gate', () => {
-    expect(() => buildMounts(makeGroup('worker'), makeSession('s1'), CFG, {})).not.toThrow();
+  it('worker WITHOUT routing is unaffected', () => {
+    const { warns, restore } = collectWarns();
+    try {
+      expect(() => buildMounts(makeGroup('worker'), makeSession('s1'), CFG, {})).not.toThrow();
+      expect(warns.filter((w) => w.includes('role=worker'))).toHaveLength(0);
+    } finally {
+      restore();
+    }
   });
 });
 

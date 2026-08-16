@@ -35,11 +35,10 @@ ADR-0054 把一整套强制机器建在一个**数据模型里不存在的概念
 - ADR-0053 per-group 克隆:**逐字继承**前台的 role(NULL 保持 NULL);
 - init-cli-agent:不打戳(独立 agent 两者皆非,NULL 诚实)。
 
-**读点(强制/校验,NULL 一律按 legacy 放行)**:
+**读点(校验/观测,NULL 一律按 legacy 放行)**:
 
-- **spawn 闸(buildMounts)**:`role='worker'` 且 `llm.routing.enabled` → **拒绝启动**,错误信息给出两条修法。
-  worker 开路由是纯矛盾:路由是前台机器(ADR-0054),worker 开了会把自己的 a2a 回复挡成 opaque、
-  在 task 回合上白烧路由调用。
+- **spawn 检查(buildMounts)**:`role='worker'` 且 `llm.routing.enabled` → **warn-once(每组每宿主运行一次),照常启动**。
+  (初稿是硬拒绝,被合并前红队推翻——见文末修正段:该"矛盾"在 runner 里并不存在。)
 - **autowire 角色 sanity**:解析出的"前台"若 `role='worker'` → 响亮 warn(不拒绝)。
 - **委派隐私降级观测**:owned 源会话落入 `agent-shared` 目标 lane 时,**每边一次** warn
   (该 hop 之后用户隔离终止——所有用户共享一个会话/容器/(ADR-0055)状态作用域),
@@ -60,12 +59,36 @@ ADR-0054 把一整套强制机器建在一个**数据模型里不存在的概念
 - "frontdesk"第一次成为**可查询、可校验**的概念:`SELECT * FROM agent_groups WHERE role='frontdesk'`。
 - 四载体收敛为一列 + 三个读点;后续(第 3 步蒸馏、监督 agent)有了可靠的拓扑地基。
 - 新增列 nullable、全读点 legacy 放行 → 升级零行为变化,直到操作员重跑拓扑脚本打戳。
-- spawn 闸是本 ADR 唯一的硬拒绝,且只拒绝"显式 worker + 显式路由"的确定矛盾。
+- **本 ADR 没有任何硬拒绝**(红队修正后):role 的全部读点都是 warn/观测——它是校验地基,不是执法者。
+
+## 修正(2026-08-17,合并前红队,5 视角×对抗验证,10 条确认)
+
+初稿的 **spawn 硬拒绝闸被推翻**,双重错误:
+
+1. **前提错**:runner 的 `routingEnabledForTurn` 明确跳过 agent 通道回合——纯 a2a worker 的
+   routing 配置是**惰性**的(不烧路由调用、不设 gate、回复不受阻);唯一会让 routing 生效的
+   "worker",是**同时面向渠道的混合角色中层 agent**(接上级委派 + 用路由分发自己的子 worker)
+   ——那是合法拓扑,改动前能正常跑,硬拒绝会把它砖掉。"纯矛盾"只存在于 ADR 的模型里,不在代码里。
+2. **通道错**:throw 会被 `wakeContainer` 的兜底 catch 吞成"transient,host-sweep 重试"——
+   60 秒一次静默无限重试、无死信(死信只覆盖 processing 行)、无指标、a2a 调用方毫无感知——
+   **正是本 ADR 引为动机的 ADR-0053×0054 静默不可启动模式**。
+
+修正后的完整形态:
+
+- spawn 检查降级为 **warn-once**(每组每宿主运行);
+- **拓扑脚本打戳时**同步检查(操作员正看着终端的唯一时刻):worker 戳上但 config 还开着 routing → console.warn;
+- autowire 对**已存在的 NULL-role 克隆**在 re-resolve 时**补继承**前台 role(只填 NULL,绝不覆盖显式值;
+  已接线且不再过 resolve 的存量克隆仍是 NULL——NULL 全读点放行,诚实残留);
+- 委派隐私降级 warn 排除**自发消息**(X→X 不是降级);
+- `AgentGroup.role` 类型改**必填**(construction site 必须显式声明,与 organization_id 同款;
+  `createAgentGroup` 调用侧仍可省缺省 NULL);
+- 索引行裸管道符转义(表格曾被撑破);两条 warn 路径补测试。
 
 ## 验证
 
-- `agent-role.test.ts`:role round-trip 与 NULL 缺省、幂等打戳、worker×routing 拒绝、
-  NULL/frontdesk×routing 放行、无路由 worker 不受影响、prompts/ RO 遮蔽(有/无目录两态)。
-- `enterprise-autowire.test.ts`:克隆逐字继承 role。
+- `agent-role.test.ts`:role round-trip 与 NULL 缺省、幂等打戳、worker×routing **warn-once 且照常启动**、
+  NULL/frontdesk×routing 静默、无路由 worker 不受影响、prompts/ RO 遮蔽(有/无目录两态)。
+- `enterprise-autowire.test.ts`:克隆逐字继承 role、NULL-role 克隆 re-resolve 补继承、
+  worker 被配成前台时的 sanity warn。
 - schema-drift 守卫覆盖迁移 036 与 schema.ts 的一致性。
 - 全套本地 CI(tsc×2 / eslint / prettier / vitest / bun / audit)+ 真实 CI 双 job。

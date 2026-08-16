@@ -8,7 +8,10 @@ import { getDb } from './connection.js';
  * is always written — never a silent NULL-org laundering path.
  */
 export function createAgentGroup(
-  group: Omit<AgentGroup, 'organization_id'> & { organization_id?: string | null },
+  group: Omit<AgentGroup, 'organization_id' | 'role'> & {
+    organization_id?: string | null;
+    role?: AgentGroupRole | null;
+  },
 ): void {
   getDb()
     .prepare(

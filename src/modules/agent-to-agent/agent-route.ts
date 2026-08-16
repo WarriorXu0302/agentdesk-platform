@@ -271,7 +271,7 @@ function resolveTargetSession(msg: RoutableAgentMessage, sourceSession: Session,
   // conversation and (ADR-0055) one state scope. Not refused (existing
   // topologies depend on shared workers), but surfaced once per edge so the
   // operator can set a2aSessionMode='root-session' on the target.
-  if (sourceSession.owner_user_id) {
+  if (sourceSession.owner_user_id && targetAgentGroupId !== sourceSession.agent_group_id) {
     const edge = `${sourceSession.agent_group_id}->${targetAgentGroupId}`;
     if (!warnedSharedLaneEdges.has(edge)) {
       warnedSharedLaneEdges.add(edge);
