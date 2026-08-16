@@ -21,6 +21,12 @@ import {
 import { getAgentGroupByFolder } from './db/agent-groups.js';
 import { getMessagingGroupAgentByPair } from './db/messaging-groups.js';
 import {
+  createDestination,
+  getDestinationByName,
+  getDestinations,
+  hasDestination,
+} from './modules/agent-to-agent/db/agent-destinations.js';
+import {
   maybeAutowireEnterpriseFrontdesk,
   perGroupAgentFolder,
   registerGroupAgentStrategy,
@@ -166,6 +172,66 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
     expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')).toBeDefined(); // shared frontdesk, not isolated
     expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'p2p_alice'))).toBeUndefined();
+  });
+
+  it('clones prompts/ so an ADR-0054 routing-enabled clone can actually boot', () => {
+    // Regression (ADR-0053 × ADR-0054): the clone copied container.json but not
+    // the prompts/ dir its llm.routing.promptFile points at — provisioning and
+    // wiring succeeded, then every spawn threw in resolveRoutingPromptMount.
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    fs.mkdirSync(`${TEST_DIR}/groups/fd/prompts`, { recursive: true });
+    fs.writeFileSync(`${TEST_DIR}/groups/fd/prompts/frontdesk-routing.md`, 'routing prompt');
+    fs.writeFileSync(
+      `${TEST_DIR}/groups/fd/container.json`,
+      JSON.stringify({
+        skills: ['lookup'],
+        llm: {
+          routing: { enabled: true, provider: 'openai', model: 'm', promptFile: 'prompts/frontdesk-routing.md' },
+        },
+      }),
+    );
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+
+    const folder = perGroupAgentFolder('fd', 'oc_sales');
+    expect(fs.existsSync(`${TEST_DIR}/groups/${folder}/container.json`)).toBe(true);
+    expect(fs.readFileSync(`${TEST_DIR}/groups/${folder}/prompts/frontdesk-routing.md`, 'utf8')).toBe('routing prompt');
+  });
+
+  it('mirrors delegation edges onto the clone and grants workers a reply edge', () => {
+    // Regression (ADR-0053): config travels on the filesystem but delegability
+    // travels in agent_destinations (keyed by agent_group_id). The clone has a
+    // new id, so it inherited routing yet had zero authorized workers — and the
+    // a2a ACL has no reply exemption, so workers also need an edge BACK.
+    process.env.ENTERPRISE_AUTO_WIRE_GROUP_ISOLATED = 'true';
+    seedFrontdesk();
+    createAgentGroup({
+      id: 'ag-worker',
+      name: 'Finance',
+      folder: 'worker-finance',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createDestination({
+      agent_group_id: 'ag-fd',
+      local_name: 'finance',
+      target_type: 'agent',
+      target_id: 'ag-worker',
+      created_at: now(),
+    });
+    const { mg, event } = seedChannel('oc_sales', true);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+
+    const clone = getAgentGroupByFolder(perGroupAgentFolder('fd', 'oc_sales'))!;
+    // clone can delegate under the same local name the frontdesk used
+    expect(getDestinationByName(clone.id, 'finance')?.target_id).toBe('ag-worker');
+    // worker can answer: reply edge back to the clone
+    expect(hasDestination('ag-worker', 'agent', clone.id)).toBe(true);
+    // exactly one reply edge per worker — no duplicate spray
+    expect(getDestinations('ag-worker').filter((d) => d.target_id === clone.id)).toHaveLength(1);
+    // the frontdesk's own edges are untouched
+    expect(getDestinationByName('ag-fd', 'finance')?.target_id).toBe('ag-worker');
   });
 });
 

@@ -21,7 +21,8 @@ vi.mock('./config.js', async () => {
 
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
 const { createAgentGroup } = await import('./db/agent-groups.js');
-const { createSession, getSession, getSessionsByAgentGroup, updateSession } = await import('./db/sessions.js');
+const { createPendingQuestion, createSession, getPendingQuestion, getSession, getSessionsByAgentGroup, updateSession } =
+  await import('./db/sessions.js');
 const { getDb } = await import('./db/connection.js');
 const { sessionDir } = await import('./session-manager.js');
 const { archiveSession, hardDeleteArchivedSession, runSessionLifecycleSweep } = await import('./session-archive.js');
@@ -144,6 +145,30 @@ describe('hardDeleteArchivedSession', () => {
 
     expect(fs.existsSync(archivePath)).toBe(false);
     expect(getSession('s1')).toBeUndefined();
+  });
+
+  it('survives a pending_questions FK row (poison-row regression)', async () => {
+    // Regression: pending_questions.session_id REFERENCES sessions(id) with no
+    // ON DELETE, and the sweep removes the tarball BEFORE the row DELETE — so a
+    // session with an unanswered question card became a poison row: data gone,
+    // DELETE throwing on the FK, retried by every sweep forever.
+    seedSession({ id: 's1', agentGroupId: 'ag-1' });
+    await archiveSession(getSession('s1')!);
+    createPendingQuestion({
+      question_id: 'q1',
+      session_id: 's1',
+      message_out_id: 'm1',
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      title: 'Approve?',
+      options: [],
+      created_at: now(),
+    });
+
+    expect(hardDeleteArchivedSession(getSession('s1')!)).toBe(true);
+    expect(getSession('s1')).toBeUndefined();
+    expect(getPendingQuestion('q1')).toBeUndefined(); // bookkeeping purged with the session
   });
 });
 

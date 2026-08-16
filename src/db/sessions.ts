@@ -213,8 +213,21 @@ export function updateSession(
     .run(values);
 }
 
+/**
+ * Hard-delete a session row. `pending_questions.session_id` REFERENCES
+ * sessions(id) with no ON DELETE clause and `foreign_keys = ON`, so any
+ * still-pending question card would make a bare DELETE throw — and the archive
+ * sweep deletes the tarball BEFORE this call, so a throwing row became a
+ * poison row: data destroyed, row undeletable, retried every sweep forever.
+ * Purge the delivery bookkeeping in the same transaction instead; a session
+ * being hard-deleted is past retention, its question cards are long moot.
+ */
 export function deleteSession(id: string): void {
-  getDb().prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('DELETE FROM pending_questions WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+  })();
 }
 
 // ── Pending Questions ──
