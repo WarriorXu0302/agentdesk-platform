@@ -6,6 +6,7 @@ import { resolveFrontdeskFolderFromGroups } from './branding.js';
 import type { InboundEvent } from './channels/adapter.js';
 import { GROUPS_DIR } from './config.js';
 import { createAgentGroup, getAgentGroupByFolder } from './db/agent-groups.js';
+import { getDb, hasTable } from './db/connection.js';
 import { recordEnterpriseAudit } from './db/enterprise-audit.js';
 import {
   createMessagingGroupAgent,
@@ -15,6 +16,13 @@ import {
 import { readEnvFile } from './env.js';
 import { initGroupFilesystem } from './group-init.js';
 import { log } from './log.js';
+import {
+  createDestination,
+  getDestinationByName,
+  getDestinationByTarget,
+  getDestinations,
+  normalizeName,
+} from './modules/agent-to-agent/db/agent-destinations.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
 
 const ENTERPRISE_ENV_KEYS = [
@@ -163,11 +171,16 @@ export function perGroupAgentFolder(frontdeskFolder: string, platformId: string)
  * ISOLATED mode (ADR-0053): resolve — or, on first contact, create — the
  * per-group agent for this messaging group. It's a clone of the frontdesk that
  * gets its OWN workspace + memory (CLAUDE.local.md / conversations/) so groups
- * don't share recall. Only `container.json` is cloned: CLAUDE.md is composed
- * fresh per spawn and skills symlink at spawn from container.json, so nothing
- * else needs copying. Idempotent — keyed on a deterministic folder derived from
- * the messaging group's platform_id; a concurrent first-message that loses the
- * create re-fetches the winner. Inherits the frontdesk's organization (ADR-0052).
+ * don't share recall. Cloned: `container.json` PLUS the sibling assets it can
+ * reference (`prompts/` — ADR-0054's `llm.routing.promptFile` must live there
+ * and buildMounts refuses to spawn without it) PLUS the frontdesk's delegation
+ * edges in `agent_destinations` (mirrored below — config travels on the
+ * filesystem but delegability travels in the DB, and a routing-enabled clone
+ * without edges can classify `delegate` yet never deliver). CLAUDE.md is
+ * composed fresh per spawn and skills symlink at spawn from container.json.
+ * Idempotent — keyed on a deterministic folder derived from the messaging
+ * group's platform_id; a concurrent first-message that loses the create
+ * re-fetches the winner. Inherits the frontdesk's organization (ADR-0052).
  */
 function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup): AgentGroup {
   const folder = perGroupAgentFolder(frontdesk.folder, mg.platform_id);
@@ -193,14 +206,25 @@ function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup)
   initGroupFilesystem(group);
   // Clone the frontdesk's container.json (skills / MCP / gateway / resources) so
   // the isolated agent behaves like the frontdesk; memory stays fresh + per-group.
+  // Order matters: prompts/ FIRST. container.json may declare
+  // llm.routing.promptFile (ADR-0054), which resolveRoutingPromptMount requires
+  // under the clone's own prompts/ at spawn — copying container.json without its
+  // prompts would provision an agent whose container can never boot. If the
+  // prompts copy throws we skip container.json too, so the clone falls back to
+  // bootable defaults instead of inheriting a config it can't satisfy.
   try {
+    const promptsSrc = path.join(GROUPS_DIR, frontdesk.folder, 'prompts');
+    if (fs.existsSync(promptsSrc)) {
+      fs.cpSync(promptsSrc, path.join(GROUPS_DIR, folder, 'prompts'), { recursive: true });
+    }
     const src = path.join(GROUPS_DIR, frontdesk.folder, 'container.json');
     if (fs.existsSync(src)) {
       fs.copyFileSync(src, path.join(GROUPS_DIR, folder, 'container.json'));
     }
   } catch (err) {
-    log.warn('Per-group agent: container.json clone failed — using defaults', { folder, err });
+    log.warn('Per-group agent: config clone failed — using defaults', { folder, err });
   }
+  cloneFrontdeskDelegationEdges(frontdesk, group);
   recordEnterpriseAudit({
     eventType: 'autowire_group_agent_provisioned',
     messagingGroupId: mg.id,
@@ -214,6 +238,66 @@ function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup)
     messagingGroupId: mg.id,
   });
   return group;
+}
+
+/**
+ * Mirror the frontdesk's delegation surface onto a per-group clone (ADR-0053).
+ * Two directions, both required:
+ *
+ * - clone → worker, same local names: `routeAgentMessage` authorizes EVERY
+ *   cross-agent send via `hasDestination`, so without these the clone's
+ *   `delegate` decisions (ADR-0054) burn routing calls and die unauthorized.
+ * - worker → clone reply edge: the ACL has no reply exemption — a worker
+ *   answering the clone is just another cross-agent send. Bidirectional grants
+ *   are the established convention (init-enterprise-topology wires
+ *   frontdesk↔worker both ways; create_agent inserts creator↔child both ways).
+ *   Reply edges are named after the clone's folder — unique per clone by
+ *   construction, so N clones never fight over one local name on a worker.
+ *
+ * Channel edges are deliberately NOT mirrored: the clone gets its own channel
+ * edge when its messaging group is wired (ensureChannelDestination). Guarded on
+ * hasTable — deployments without the agent-to-agent tables just skip. Per-edge
+ * best-effort: a failed edge logs and skips rather than failing provisioning.
+ */
+function cloneFrontdeskDelegationEdges(frontdesk: AgentGroup, clone: AgentGroup): void {
+  if (!hasTable(getDb(), 'agent_destinations')) return;
+  const now = new Date().toISOString();
+  for (const edge of getDestinations(frontdesk.id)) {
+    if (edge.target_type !== 'agent' || edge.target_id === frontdesk.id) continue;
+    try {
+      if (!getDestinationByName(clone.id, edge.local_name)) {
+        createDestination({
+          agent_group_id: clone.id,
+          local_name: edge.local_name,
+          target_type: 'agent',
+          target_id: edge.target_id,
+          created_at: now,
+        });
+      }
+      if (!getDestinationByTarget(edge.target_id, 'agent', clone.id)) {
+        const base = normalizeName(clone.folder);
+        let localName = base;
+        let suffix = 2;
+        while (getDestinationByName(edge.target_id, localName)) {
+          localName = `${base}-${suffix}`;
+          suffix++;
+        }
+        createDestination({
+          agent_group_id: edge.target_id,
+          local_name: localName,
+          target_type: 'agent',
+          target_id: clone.id,
+          created_at: now,
+        });
+      }
+    } catch (err) {
+      log.warn('Per-group agent: delegation edge clone failed', {
+        clone: clone.id,
+        edge: edge.local_name,
+        err,
+      });
+    }
+  }
 }
 
 /**
