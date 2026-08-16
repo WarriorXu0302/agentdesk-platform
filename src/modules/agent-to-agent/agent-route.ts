@@ -265,8 +265,29 @@ function resolveTargetSession(msg: RoutableAgentMessage, sourceSession: Session,
     ).session;
   }
 
+  // Privacy-downgrade observability (ADR-0056): an OWNED source funnelling
+  // into an agent-shared lane collapses that user's isolation one hop
+  // downstream — every user of this target shares one session, one
+  // conversation and (ADR-0055) one state scope. Not refused (existing
+  // topologies depend on shared workers), but surfaced once per edge so the
+  // operator can set a2aSessionMode='root-session' on the target.
+  if (sourceSession.owner_user_id && targetAgentGroupId !== sourceSession.agent_group_id) {
+    const edge = `${sourceSession.agent_group_id}->${targetAgentGroupId}`;
+    if (!warnedSharedLaneEdges.has(edge)) {
+      warnedSharedLaneEdges.add(edge);
+      log.warn('a2a: per-user source delegating into an agent-shared lane — user isolation ends at this hop', {
+        sourceAgentGroupId: sourceSession.agent_group_id,
+        targetAgentGroupId,
+        fix: "set a2aSessionMode='root-session' in the target's container.json",
+      });
+    }
+  }
   return resolveSession(targetAgentGroupId, null, null, 'agent-shared', null, null, sourceDepth).session;
 }
+
+// Warn-once registry for the owned→agent-shared downgrade above; per-edge so
+// a busy deployment logs each misconfigured edge exactly once per host run.
+const warnedSharedLaneEdges = new Set<string>();
 
 function getTargetA2aSessionMode(targetAgentGroupId: string): A2aSessionMode {
   const target = getAgentGroup(targetAgentGroupId);

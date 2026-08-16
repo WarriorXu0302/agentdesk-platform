@@ -5,7 +5,7 @@ import path from 'path';
 import { resolveFrontdeskFolderFromGroups } from './branding.js';
 import type { InboundEvent } from './channels/adapter.js';
 import { GROUPS_DIR } from './config.js';
-import { createAgentGroup, getAgentGroupByFolder } from './db/agent-groups.js';
+import { createAgentGroup, getAgentGroupByFolder, setAgentGroupRole } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
 import { recordEnterpriseAudit } from './db/enterprise-audit.js';
 import {
@@ -192,7 +192,17 @@ export function perGroupAgentFolder(frontdeskFolder: string, platformId: string)
 function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup): AgentGroup {
   const folder = perGroupAgentFolder(frontdesk.folder, mg.platform_id);
   const existing = getAgentGroupByFolder(folder);
-  if (existing) return existing;
+  if (existing) {
+    // Heal pre-role clones on re-resolve (ADR-0056): clones created before
+    // the role column exist with NULL forever otherwise — the topology
+    // script's stamping never reaches auto-provisioned folders. Only fills
+    // NULL; never overwrites an explicit role.
+    if (existing.role == null && frontdesk.role != null) {
+      setAgentGroupRole(existing.id, frontdesk.role);
+      return getAgentGroupByFolder(folder)!;
+    }
+    return existing;
+  }
 
   const group: AgentGroup = {
     id: `ag-${folder}`,
@@ -201,6 +211,9 @@ function resolveOrCreatePerGroupAgent(frontdesk: AgentGroup, mg: MessagingGroup)
     agent_provider: frontdesk.agent_provider,
     created_at: new Date().toISOString(),
     organization_id: frontdesk.organization_id ?? null,
+    // The clone stands in for the frontdesk on this group — inherit its
+    // topology role verbatim (ADR-0056; NULL frontdesk stays NULL).
+    role: frontdesk.role ?? null,
   };
   try {
     createAgentGroup(group);
@@ -364,6 +377,16 @@ export function maybeAutowireEnterpriseFrontdesk(mg: MessagingGroup, event: Inbo
       platformId: event.platformId,
     });
     return false;
+  }
+  // Role sanity (ADR-0056): the configured frontdesk folder pointing at a
+  // WORKER is a topology misconfiguration ("frontdesk-ness" used to live in
+  // four uncorrelated conventions — this is the check that could not exist
+  // before the role column). Warn, don't refuse: NULL = legacy/unclassified.
+  if (frontdesk.role === 'worker') {
+    log.warn('Enterprise autowire: configured frontdesk has role=worker — check ENTERPRISE_FRONTDESK_FOLDER', {
+      folder: config.frontdeskFolder,
+      agentGroupId: frontdesk.id,
+    });
   }
 
   const isGroup = event.message.isGroup === true;

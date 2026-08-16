@@ -70,6 +70,10 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string; agentGroupId: string }>();
 
+// Warn-once registry for the role×routing coherence warn in buildMounts
+// (ADR-0056) — per group per host run, so a respawning group doesn't spam.
+const warnedWorkerRoutingGroups = new Set<string>();
+
 /**
  * Session ids whose container we just asked to stop via killContainer.
  * Cleared by the close handler — used only to label exit metrics as
@@ -493,6 +497,25 @@ export function buildMounts(
 ): VolumeMount[] {
   const projectRoot = process.cwd();
 
+  // Role × config coherence WARN (ADR-0056, demoted from a throw by its
+  // red-team round). A worker with llm.routing.enabled is suspicious but NOT
+  // a contradiction: routing never engages on agent-channel turns
+  // (routingEnabledForTurn skips them), so a pure a2a worker's routing config
+  // is inert — and a mixed-role mid-tier agent (takes delegations AND fronts
+  // a channel with routing over its own sub-workers) is a legitimate
+  // topology. A throw here would also land in wakeContainer's transient-retry
+  // catch and become a silent 60s-forever wake loop — the exact ADR-0053×0054
+  // failure mode this repo just fixed. So: warn once per group, boot normally.
+  if (containerConfig.llm?.routing?.enabled && agentGroup.role === 'worker') {
+    if (!warnedWorkerRoutingGroups.has(agentGroup.id)) {
+      warnedWorkerRoutingGroups.add(agentGroup.id);
+      log.warn(
+        'agent group has role=worker with llm.routing.enabled — routing is inert on a2a turns; if this is not a deliberate mixed-role desk, disable llm.routing or correct the role (ADR-0056)',
+        { folder: agentGroup.folder, agentGroupId: agentGroup.id },
+      );
+    }
+  }
+
   // Per-group filesystem state lives forever after first creation. Init is
   // idempotent: it only writes paths that don't already exist, so this call
   // is a no-op for groups that have spawned before.
@@ -534,6 +557,16 @@ export function buildMounts(
   const containerJsonPath = signingProxy?.redactedConfigPath ?? path.join(groupDir, 'container.json');
   if (fs.existsSync(containerJsonPath)) {
     mounts.push({ hostPath: containerJsonPath, containerPath: '/workspace/agent/container.json', readonly: true });
+  }
+
+  // Template prompt assets — whole-dir RO shadow (ADR-0056 hardening). The
+  // ownerless layout used to expose prompts/ read-WRITE through the group-dir
+  // mount (only the active routing prompt was pinned RO); agents must not be
+  // able to edit template prompts, and owned scopes gain read access to the
+  // full set. The per-file routing mount below stacks on top unchanged.
+  const promptsDir = path.join(groupDir, 'prompts');
+  if (fs.existsSync(promptsDir)) {
+    mounts.push({ hostPath: promptsDir, containerPath: '/workspace/agent/prompts', readonly: true });
   }
 
   if (containerConfig.llm?.routing?.enabled) {

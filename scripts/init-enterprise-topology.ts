@@ -55,7 +55,7 @@ import {
 } from '../src/branding.js';
 import { DATA_DIR } from '../src/config.js';
 import { updateContainerConfig } from '../src/container-config.js';
-import { createAgentGroup, getAgentGroupByFolder } from '../src/db/agent-groups.js';
+import { createAgentGroup, getAgentGroupByFolder, setAgentGroupRole } from '../src/db/agent-groups.js';
 import { closeDb, initDb } from '../src/db/connection.js';
 import {
   createMessagingGroup,
@@ -524,11 +524,20 @@ function ensureAgentGroup(
       folder,
       agent_provider: null,
       created_at: now,
+      role,
     });
     group = getAgentGroupByFolder(folder)!;
     console.log(`Created agent group: ${group.id} (${folder})`);
   } else {
     console.log(`Reusing agent group: ${group.id} (${folder})`);
+    // Stamp the topology role on reuse too (ADR-0056): pre-role deployments
+    // upgrade by re-running this script, and the script is the operator's
+    // topology authority, so a stale/NULL value gets corrected here.
+    if (group.role !== role) {
+      setAgentGroupRole(group.id, role);
+      group = getAgentGroupByFolder(folder)!;
+      console.log(`Stamped role=${role} on ${folder}`);
+    }
   }
 
   initGroupFilesystem(group, { instructions });
@@ -539,6 +548,16 @@ function ensureAgentGroup(
     // new enterprise deployment otherwise runs unbounded.
     if (!config.resources) {
       config.resources = { ...DEFAULT_RESOURCES[role] };
+    }
+    // Stamp-time coherence check (ADR-0056 red-team): this is the one moment
+    // an operator is watching a terminal — surface a worker whose config
+    // still has frontdesk routing enabled (e.g. a routing-enabled ex-frontdesk
+    // folder moved under --workers). Runtime only warns once per host run.
+    if (role === 'worker' && config.llm?.routing?.enabled) {
+      console.warn(
+        `WARNING: ${folder} is stamped role=worker but its container.json has llm.routing.enabled — ` +
+          `routing is inert on a2a turns; disable llm.routing or keep it only if this is a deliberate mixed-role desk.`,
+      );
     }
   });
   return group;

@@ -37,6 +37,7 @@ const AG: AgentGroup = {
   agent_provider: null,
   created_at: now(),
   organization_id: null,
+  role: null,
 };
 
 function makeSession(args: { id: string; ownerUserId?: string | null; messagingGroupId?: string | null }): Session {

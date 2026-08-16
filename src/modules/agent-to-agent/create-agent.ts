@@ -85,6 +85,8 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     // (cross-org-reachable) island. The bidirectional destination rows below are
     // therefore same-org by construction; createDestination still asserts it.
     organization_id: sourceGroup.organization_id,
+    // An a2a-spawned agent is by definition a delegated specialist (ADR-0056).
+    role: 'worker',
   };
   createAgentGroup(newGroup);
   initGroupFilesystem(newGroup, { instructions: instructions ?? undefined });
