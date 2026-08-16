@@ -115,8 +115,10 @@ Use these when:
 scope_ — its own `/workspace/agent` (working files, `CLAUDE.local.md` memory,
 `conversations/` transcripts) and its own `/home/node/.claude` (Claude state,
 auto-memory) under `data/v2-scopes/<agent_group>/<user>/`. Config and composed
-artifacts (`container.json`, `CLAUDE.md`, skills, `prompts/`) stay group-level
-as read-only mounts. So per-user modes isolate **workspace and memory per
+artifacts (`container.json`, `CLAUDE.md`, operator-seeded `instructions.md`,
+`prompts/`) stay group-level as read-only mounts; skill **content** is a shared
+read-only mount (`/app/skills`) while the group's skill **selection** is synced
+as symlinks into each scope's own Claude state dir at spawn. So per-user modes isolate **workspace and memory per
 person**, not just conversation state; ownerless modes (`shared`, `per-thread`,
 `agent-shared`) keep the historical group-level layout, where memory sharing is
 the documented feature. The same-user scope is shared across that user's
@@ -126,7 +128,11 @@ through delegation.
 
 Recommended defaults:
 
-- 1:1 DM with the bot: `shared`
+- 1:1 DM with the bot: `per-user` (each DM is its own messaging group, but
+  `shared` leaves the owner unset, so every DM user's session would mount the
+  GROUP state scope — all DM users of one bot sharing workspace and memory.
+  `per-user` gives the person their own scope, shared with their group-chat
+  lanes on the same agent; enterprise autowire wires DMs this way by default)
 - shared group/channel: `per-user` or `per-user-per-thread`
 - webhook + ops-room pair: `agent-shared`
 

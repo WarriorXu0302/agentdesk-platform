@@ -72,4 +72,13 @@ if (fs.existsSync(sessionsDir)) {
   fs.rmSync(sessionsDir, { recursive: true });
 }
 
+// Remove per-user state scopes (ADR-0055). This tree holds the most sensitive
+// data (per-user memory, verbatim transcripts, Claude auto-memory) — and
+// ADR-0053 clone ids are deterministic (`ag-<folder>`), so a leftover tree
+// would silently RESURRECT deleted users' state if the same group re-wires.
+const scopesDir = path.join(DATA_DIR, 'v2-scopes', ag.id);
+if (fs.existsSync(scopesDir)) {
+  fs.rmSync(scopesDir, { recursive: true });
+}
+
 console.log(`Deleted agent group ${ag.id} (${args.folder}).`);

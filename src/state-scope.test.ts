@@ -17,6 +17,11 @@ const TEST_DIR = '/tmp/nanoclaw-test-state-scope';
 
 const { ensureStateScope, resolveStateScope, userScopeKey } = await import('./state-scope.js');
 const { buildMounts } = await import('./container-runner.js');
+const { initGroupFilesystem } = await import('./group-init.js');
+const { log } = await import('./log.js');
+const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
+const { createAgentGroup } = await import('./db/agent-groups.js');
+const { resolveSession } = await import('./session-manager.js');
 import type { AgentGroup, Session } from './types.js';
 
 function now(): string {
@@ -179,5 +184,103 @@ describe('buildMounts × state scope (ADR-0055)', () => {
     const b = buildMounts(AG, makeSession({ id: 's2', ownerUserId: 'ou_bob' }), CFG, {});
     expect(mountFor(a, '/workspace/agent')!.hostPath).not.toBe(mountFor(b, '/workspace/agent')!.hostPath);
     expect(mountFor(a, '/home/node/.claude')!.hostPath).not.toBe(mountFor(b, '/home/node/.claude')!.hostPath);
+  });
+
+  it('owned session with enforced routing still gets the prompts/ RO shadow from the group dir', () => {
+    // Red-team gap: the enterprise-default combination (owned session +
+    // ADR-0054 routing) was never built in a test. The routing prompt must
+    // come from the TEMPLATE layer even though /workspace/agent is a scope.
+    fs.mkdirSync(`${TEST_DIR}/groups/fd/prompts`, { recursive: true });
+    fs.writeFileSync(`${TEST_DIR}/groups/fd/prompts/frontdesk-routing.md`, 'route');
+    const cfg = {
+      ...CFG,
+      llm: {
+        routing: {
+          enabled: true,
+          provider: 'openai',
+          model: 'm',
+          promptFile: 'prompts/frontdesk-routing.md',
+        },
+      },
+    } as Parameters<typeof buildMounts>[2];
+    const mounts = buildMounts(AG, makeSession({ id: 's1', ownerUserId: 'ou_alice' }), cfg, {});
+    const prompt = mountFor(mounts, '/workspace/agent/prompts/frontdesk-routing.md');
+    expect(prompt).toBeDefined();
+    expect(prompt!.readonly).toBe(true);
+    expect(fs.realpathSync(`${TEST_DIR}/groups/fd/prompts/frontdesk-routing.md`)).toBe(prompt!.hostPath);
+  });
+});
+
+describe('operator instructions — template layer (ADR-0055 red-team fix)', () => {
+  it('initGroupFilesystem seeds instructions.md, not CLAUDE.local.md', () => {
+    initGroupFilesystem(AG, { instructions: 'you are the frontdesk' });
+    expect(fs.readFileSync(`${TEST_DIR}/groups/fd/instructions.md`, 'utf8')).toBe('you are the frontdesk\n');
+    expect(fs.readFileSync(`${TEST_DIR}/groups/fd/CLAUDE.local.md`, 'utf8')).toBe('');
+  });
+
+  it('owned sessions receive the seeded instructions: composed import + RO shadow', () => {
+    // The regression this pins: per-user scopes start with an empty
+    // CLAUDE.local.md, so without the instructions.md channel every owned
+    // session booted without its operator-seeded persona.
+    initGroupFilesystem(AG, { instructions: 'you are the frontdesk' });
+    const mounts = buildMounts(AG, makeSession({ id: 's1', ownerUserId: 'ou_alice' }), CFG, {});
+
+    const shadow = mounts.find((m) => m.containerPath === '/workspace/agent/instructions.md');
+    expect(shadow).toMatchObject({ hostPath: `${TEST_DIR}/groups/fd/instructions.md`, readonly: true });
+    expect(fs.readFileSync(`${TEST_DIR}/groups/fd/CLAUDE.md`, 'utf8')).toContain('@./instructions.md');
+  });
+
+  it('groups without seeded instructions get neither the import nor the mount', () => {
+    const mounts = buildMounts(AG, makeSession({ id: 's1', ownerUserId: 'ou_alice' }), CFG, {});
+    expect(mounts.find((m) => m.containerPath === '/workspace/agent/instructions.md')).toBeUndefined();
+    expect(fs.readFileSync(`${TEST_DIR}/groups/fd/CLAUDE.md`, 'utf8')).not.toContain('@./instructions.md');
+  });
+});
+
+describe('a2a root-session lanes (ADR-0055)', () => {
+  beforeEach(() => {
+    runMigrations(initTestDb());
+    createAgentGroup(AG);
+  });
+  afterEach(() => {
+    closeDb();
+  });
+
+  it('a root-session lane inherits the owner, so the worker runs in the USER scope', () => {
+    // This is the real resolveSession path agent-route.ts uses for
+    // root-session delegation — per-user isolation propagates through the hop.
+    const { session } = resolveSession(AG.id, null, null, 'agent-shared', 'ou_alice', 'root-sess-1', 1);
+    expect(session.owner_user_id).toBe('ou_alice');
+    const scope = resolveStateScope(AG, session);
+    expect(scope.kind).toBe('user');
+    expect(scope.workspaceDir).toContain(userScopeKey('ou_alice'));
+  });
+
+  it('an agent-shared lane without a root stays in the GROUP scope', () => {
+    const { session } = resolveSession(AG.id, null, null, 'agent-shared', null, null, 1);
+    expect(session.owner_user_id).toBeNull();
+    expect(resolveStateScope(AG, session).kind).toBe('group');
+  });
+});
+
+describe('scope symlink idempotency (ADR-0055 red-team fix)', () => {
+  it('re-running ensureStateScope never warns about the dangling shared-base link', () => {
+    // The link target /app/CLAUDE.md is a container path — dangling on the
+    // host. existsSync FOLLOWS the link (always "absent"), which retried
+    // symlinkSync into an EEXIST warn on every spawn.
+    const warns: unknown[] = [];
+    const spy = vi.spyOn(log, 'warn').mockImplementation((...args: unknown[]) => {
+      warns.push(args);
+    });
+    try {
+      const scope = resolveStateScope(AG, makeSession({ id: 's1', ownerUserId: 'ou_alice' }));
+      ensureStateScope(scope, { disableAutoMemory: false });
+      ensureStateScope(scope, { disableAutoMemory: false });
+      ensureStateScope(scope, { disableAutoMemory: false });
+      expect(fs.readlinkSync(path.join(scope.workspaceDir, '.claude-shared.md'))).toBe('/app/CLAUDE.md');
+      expect(warns.filter((w) => String(w).includes('symlink failed'))).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

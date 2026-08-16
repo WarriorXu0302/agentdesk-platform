@@ -592,17 +592,36 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       if (enforcedDecision) {
         log(`Execution request started: decision=${enforcedDecision.id} provider=${config.providerName}`);
       }
-      const query = config.provider.query({
-        prompt,
-        continuation,
-        cwd: config.cwd,
-        systemContext: {
-          instructions: enforcedDecision
-            ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
-            : config.systemContext?.instructions,
-        },
-      });
-      const result = await processQuery(query, turnRouting, processingIds, config.providerName, prompt);
+      const systemContext = {
+        instructions: enforcedDecision
+          ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
+          : config.systemContext?.instructions,
+      };
+      const runTurn = () =>
+        processQuery(
+          config.provider.query({ prompt, continuation, cwd: config.cwd, systemContext }),
+          turnRouting,
+          processingIds,
+          config.providerName,
+          prompt,
+        );
+      let result;
+      try {
+        result = await runTurn();
+      } catch (err) {
+        // Stale/corrupt continuation — the id points at provider state that no
+        // longer exists (transcript moved or wiped, e.g. a host upgrade that
+        // rescoped ~/.claude). Don't burn the user's turn on it: clear the
+        // continuation and retry this same turn fresh. Safe to retry because a
+        // stale-session error is raised at session load, before the model has
+        // produced any output. Only a fresh failure falls through to the error
+        // path below.
+        if (!continuation || !config.provider.isSessionInvalid(err)) throw err;
+        log(`Stale session detected (${continuation}) — clearing and retrying this turn fresh`);
+        continuation = undefined;
+        clearContinuation(config.providerName);
+        result = await runTurn();
+      }
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);

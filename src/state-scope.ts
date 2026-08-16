@@ -113,8 +113,18 @@ export function ensureStateScope(scope: StateScope, opts: { disableAutoMemory: b
     initialized.push('conversations/');
   }
 
+  // The link target is a CONTAINER path, dangling on the host — existsSync
+  // FOLLOWS the link and always answers "absent", which would retry
+  // symlinkSync into EEXIST on every spawn. lstat sees the entry itself
+  // (same dance as claude-md-compose.ts's syncSymlink).
   const sharedLink = path.join(scope.workspaceDir, '.claude-shared.md');
-  if (!fs.existsSync(sharedLink)) {
+  let linkPresent = true;
+  try {
+    fs.lstatSync(sharedLink);
+  } catch {
+    linkPresent = false;
+  }
+  if (!linkPresent) {
     try {
       fs.symlinkSync('/app/CLAUDE.md', sharedLink);
       initialized.push('.claude-shared.md');

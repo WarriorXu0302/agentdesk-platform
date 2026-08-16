@@ -60,9 +60,22 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
     initialized.push('groupDir');
   }
 
-  // groups/<folder>/CLAUDE.local.md — per-group agent memory, auto-loaded by
-  // Claude Code. Seeded with caller-provided instructions on first creation.
-  if (seedClaudeLocalMd(groupDir, opts?.instructions)) {
+  // groups/<folder>/instructions.md — the operator-seeded role prompt
+  // (frontdesk persona, worker operating rules, …). TEMPLATE layer: delivered
+  // to EVERY session — per-user scopes included — via the composed CLAUDE.md's
+  // conditional `@./instructions.md` import plus an RO shadow mount
+  // (ADR-0055). Deliberately separate from CLAUDE.local.md, which is INSTANCE
+  // memory: when the two shared one file, owned sessions silently booted
+  // without their seeded persona.
+  const instructionsFile = path.join(groupDir, 'instructions.md');
+  if (opts?.instructions && !fs.existsSync(instructionsFile)) {
+    fs.writeFileSync(instructionsFile, opts.instructions + '\n');
+    initialized.push('instructions.md');
+  }
+
+  // groups/<folder>/CLAUDE.local.md — agent-written memory, auto-loaded by
+  // Claude Code next to the composed CLAUDE.md. Always seeded empty.
+  if (seedClaudeLocalMd(groupDir)) {
     initialized.push('CLAUDE.local.md');
   }
 
@@ -90,15 +103,16 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
 }
 
 /**
- * Seed a `CLAUDE.local.md` in `dir` if absent (the agent's writable memory
- * file, auto-loaded by Claude Code next to the composed CLAUDE.md). Shared by
- * group dirs (initGroupFilesystem) and user state scopes (ADR-0055).
- * Returns true when the file was created.
+ * Seed an empty `CLAUDE.local.md` in `dir` if absent (the agent's writable
+ * memory file, auto-loaded by Claude Code next to the composed CLAUDE.md).
+ * Shared by group dirs (initGroupFilesystem) and user state scopes
+ * (ADR-0055). Operator instructions do NOT belong here — they are template
+ * content and live in `instructions.md`. Returns true when created.
  */
-export function seedClaudeLocalMd(dir: string, instructions?: string): boolean {
+export function seedClaudeLocalMd(dir: string): boolean {
   const claudeLocalFile = path.join(dir, 'CLAUDE.local.md');
   if (fs.existsSync(claudeLocalFile)) return false;
-  fs.writeFileSync(claudeLocalFile, instructions ? instructions + '\n' : '');
+  fs.writeFileSync(claudeLocalFile, '');
   return true;
 }
 

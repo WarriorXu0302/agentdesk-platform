@@ -199,8 +199,14 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
     }
   }
 
-  // Composed entry — imports only.
+  // Composed entry — imports only. The operator-seeded role prompt
+  // (instructions.md — template layer, ADR-0055) loads for EVERY session of
+  // the group, per-user scopes included, via an RO shadow mount; the
+  // instance-layer CLAUDE.local.md auto-loads beside it as memory.
   const imports = ['@./.claude-shared.md'];
+  if (fs.existsSync(path.join(groupDir, 'instructions.md'))) {
+    imports.push('@./instructions.md');
+  }
   for (const name of [...desired.keys()].sort()) {
     imports.push(`@./.claude-fragments/${name}`);
   }

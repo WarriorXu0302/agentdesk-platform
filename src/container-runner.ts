@@ -551,6 +551,14 @@ export function buildMounts(
   if (fs.existsSync(composedClaudeMd)) {
     mounts.push({ hostPath: composedClaudeMd, containerPath: '/workspace/agent/CLAUDE.md', readonly: true });
   }
+  // Operator-seeded role prompt — template layer (ADR-0055). RO for every
+  // session (an agent must not edit its own persona), and for per-user scopes
+  // this shadow is what delivers the instructions at all: the scope workspace
+  // starts empty and the composed CLAUDE.md imports @./instructions.md.
+  const instructionsFile = path.join(groupDir, 'instructions.md');
+  if (fs.existsSync(instructionsFile)) {
+    mounts.push({ hostPath: instructionsFile, containerPath: '/workspace/agent/instructions.md', readonly: true });
+  }
   const fragmentsDir = path.join(groupDir, '.claude-fragments');
   if (fs.existsSync(fragmentsDir)) {
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });

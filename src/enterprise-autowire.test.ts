@@ -174,6 +174,17 @@ describe('enterprise autowire — per-group isolation (ADR-0053)', () => {
     expect(getAgentGroupByFolder(perGroupAgentFolder('fd', 'p2p_alice'))).toBeUndefined();
   });
 
+  it('a DM (p2p) wires per-user so the owner gets their own state scope (ADR-0055)', () => {
+    // Regression: p2p wired session_mode='shared' (owner_user_id NULL), so
+    // every DM user's session mounted the GROUP scope — all DM users of one
+    // frontdesk shared workspace/memory.
+    process.env.ENTERPRISE_AUTO_WIRE_P2P = 'true';
+    seedFrontdesk();
+    const { mg, event } = seedChannel('p2p_alice', false);
+    expect(maybeAutowireEnterpriseFrontdesk(mg, event)).toBe(true);
+    expect(getMessagingGroupAgentByPair(mg.id, 'ag-fd')!.session_mode).toBe('per-user');
+  });
+
   it('clones prompts/ so an ADR-0054 routing-enabled clone can actually boot', () => {
     // Regression (ADR-0053 × ADR-0054): the clone copied container.json but not
     // the prompts/ dir its llm.routing.promptFile points at — provisioning and

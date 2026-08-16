@@ -38,10 +38,10 @@ parts — important for offboarding and incident response:
 
 - **Inbound admission is re-checked on every message.** The router evaluates the
   access gate (`canAccessAgentGroup` — owner / admin / group member) per inbound
-  event, *before* it resolves or creates the session (`src/router.ts`
+  event, _before_ it resolves or creates the session (`src/router.ts`
   `routeInbound` → access gate → session write). So on a role-gated group,
   **`revokeRole()` blocks that user's very next message** — revocation is
-  effectively real-time for *getting in*. It is not a "checked once at session
+  effectively real-time for _getting in_. It is not a "checked once at session
   creation" model.
 - **But the platform does not proactively tear down a running session.** No push
   revocation: a turn already in flight completes, and the user's container
@@ -50,7 +50,7 @@ parts — important for offboarding and incident response:
   operator action (kill the container / archive the session).
 - **A `public` messaging group does not gate on membership** for an un-orged
   (NULL-org) agent group (by design — `unknown_sender_policy='public'` admits
-  anyone). Role revocation has no effect on who can *message* such a group; gate
+  anyone). Role revocation has no effect on who can _message_ such a group; gate
   sensitive behaviour behind the backend gateway there, not group membership.
   **Exception (ADR-0052):** if the agent group belongs to an organization,
   `public` / `sender_scope='all'` still enforce the org-membership prerequisite
@@ -100,7 +100,7 @@ session-level gate is admission control, not a substitute for per-action authz.
 ## Escalation to a human (ADR-0038)
 
 In a mixed AI/human deployment the frontdesk sometimes needs to hand a request
-*out* of the AI flow to a person. That is distinct from delegating to another
+_out_ of the AI flow to a person. That is distinct from delegating to another
 worker agent, and the platform makes it **explicit and observable** rather than
 letting it look like any other a2a message.
 
@@ -119,7 +119,7 @@ nothing more:
 the escalation to a specific person, apply queue priority, or run SLA timers.
 Those are business policy and belong to **your backend gateway**, which reads
 the audit row and decides. Critically, `urgency_level` is agent-supplied and
-therefore *untrusted* — it is recorded for observability only and **never**
+therefore _untrusted_ — it is recorded for observability only and **never**
 drives any core routing or priority decision (a prompt-injected agent must not
 be able to jump a human queue by claiming `urgency='critical'`). The actor on
 the audit row is the host-established session owner, not an agent-claimed id.
@@ -156,7 +156,7 @@ the feedback — nothing more:
   nack rates per worker are visible.
 
 **What the platform does NOT do** — and why that's correct: it does **not**
-re-route the message. Active reroute was *rejected* (not deferred) in ADR-0040,
+re-route the message. Active reroute was _rejected_ (not deferred) in ADR-0040,
 because a worker-triggered re-injection is structurally unsafe inside the trust
 chain (agent-shared `inbound.db` identity pollution would let a prompt-injected
 worker redirect another user's message; and it spawns a conflicting second
@@ -229,7 +229,7 @@ pnpm exec tsx scripts/init-enterprise-topology.ts \
   --workers access-worker,sales-worker,finance-worker
 ```
 
-Worker folders are created as `<namespace>-<name>` (e.g. `agentdesk-finance-worker`). The script also seeds starter `CLAUDE.local.md` instructions and wires frontdesk `<->` worker destinations.
+Worker folders are created as `<namespace>-<name>` (e.g. `agentdesk-finance-worker`). The script also seeds the starter role prompt into `groups/<folder>/instructions.md` (template layer — delivered read-only to every session, per-user scopes included; see ADR-0055. `CLAUDE.local.md` is the agent's own writable memory) and wires frontdesk `<->` worker destinations. Deployments seeded before the instructions.md split can re-run the script to materialize it — seeding is idempotent and only writes missing files.
 
 To wire a shared entry channel at the same time:
 
@@ -274,7 +274,7 @@ into each new group's `container.json`, so a runaway worker can't
 exhaust host memory or fork-bomb the kernel:
 
 | Role      | memoryMb | cpus | pidsLimit |
-|-----------|----------|------|-----------|
+| --------- | -------- | ---- | --------- |
 | frontdesk | 768      | 1    | 384       |
 | worker    | 1024     | 1    | 512       |
 
@@ -334,7 +334,7 @@ cloned `container.json` may drift from the frontdesk over time, which is intende
 for independent per-group agents.
 
 **Custom topologies without forking the core.** If neither built-in fits — say
-you want one agent per *organization*, per *channel*, or pinned to a named expert
+you want one agent per _organization_, per _channel_, or pinned to a named expert
 agent — register your own strategy at startup and select it by name:
 
 ```ts

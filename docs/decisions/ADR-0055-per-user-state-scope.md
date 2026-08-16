@@ -105,8 +105,40 @@ agent 手写的一切(CLAUDE.local.md、conversations/、工作文件、Claude �
 
 ## 验证
 
-- `state-scope.test.ts`:解析规则(owned/ownerless/a2a-root)、确定性 key、防撞、
-  同用户跨 mg 同作用域、初始化幂等、符号链接与 settings 种子。
+- `state-scope.test.ts`:解析规则(owned/ownerless、**a2a root-session 走真实
+  `resolveSession`**)、确定性 key、防撞、同用户跨 mg 同作用域、初始化幂等、
+  符号链接与 settings 种子、owned+routing 的 prompts RO 遮蔽、指令通道端到端。
 - `container-runner` 挂载集成:owned 会话 `/workspace/agent` 与 `/home/node/.claude`
   指向作用域目录且 RO 遮蔽仍指向 groupDir;ownerless 会话与旧布局逐项相等。
 - 全套本地 CI(tsc×2 / eslint / prettier / vitest / bun / audit)+ 真实 CI 双 job。
+
+## 更新(2026-08-17):合并前红队修正(5 视角 × 对抗验证,15 条确认)
+
+初版有一个设计盲点和若干接缝,合并前已全部修复:
+
+1. **运营者种子指令丢失(major,5 个视角独立命中)**。`CLAUDE.local.md` 实为**双职**:
+   既是模板产物(init-enterprise-topology / create_agent / init-cli-agent 把前台人设、
+   classify_intent 协议、worker 守则种进去),又是实例产物(agent 写记忆)。初版把整个
+   文件划入实例层、给 user 作用域种空文件——企业默认拓扑(per-user + root-session worker)
+   下**所有 owned 会话裸启动**。修正:职责拆分——种子指令改落 **`groups/<folder>/instructions.md`
+   (模板层)**,合成 CLAUDE.md 条件导入 `@./instructions.md`,并对**所有**会话 RO 遮蔽
+   (agent 不得改写自己的人设,这顺带比旧行为更强);`CLAUDE.local.md` 自此纯为记忆。
+   **存量部署**:旧种子仍在组级 CLAUDE.local.md 里(ownerless 会话继续自动加载);
+   **重跑 init-enterprise-topology 即补齐 instructions.md**(幂等,缺文件才写)。
+2. **升级中会话 continuation 硬失败(major)**。存量 owned 会话的 continuation 指向旧
+   `.claude-shared` 下的转录,升级后首条消息会以原始 SDK 错误回给用户并吞掉该消息。
+   修正(runner,普适自愈):poll-loop 捕获 `isSessionInvalid` 时**同回合清掉 continuation
+   并重试一次 fresh**(stale 错误发生在会话装载阶段、模型尚未产出,重试安全),
+   不再把用户的回合烧在错误上。
+3. **删组遗留 v2-scopes 孤儿 + ADR-0053 确定性 id 复活已删状态(major)**。
+   `delete-cli-agent` 现在同时删除 `data/v2-scopes/<ag.id>`。
+4. **DM 面泄漏(码根)**:autowire p2p 接线从 `shared` 改为 **`per-user`**——DM 本就
+   一人一 messaging group,但 `shared` 使 owner 为 NULL → 所有 DM 用户共用组作用域。
+   per-user 让 DM 与该用户的群聊 lane 共享同一个人作用域(记忆跟人走;DM 正是
+   personal agent 的主战场)。只影响新接线,存量 wiring 行不动。
+5. **悬空符号链接误判(minor)**:`.claude-shared.md` 指向容器路径,宿主上悬空;
+   `existsSync` 会跟随链接永远答"无"→ 每次 spawn 重试 symlink 打 EEXIST 警告。
+   改用 `lstat`(与 claude-md-compose 的既有做法一致)。
+6. 文档修正:isolation-model 的 skills 措辞(技能**选择**落作用域 claude/skills 符号链接,
+   技能**内容**是共享 RO /app/skills)与 DM 建议(企业场景 DM 用 per-user);
+   enterprise-multi-user 的播种描述改指 instructions.md。
