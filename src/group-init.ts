@@ -62,10 +62,7 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
 
   // groups/<folder>/CLAUDE.local.md — per-group agent memory, auto-loaded by
   // Claude Code. Seeded with caller-provided instructions on first creation.
-  const claudeLocalFile = path.join(groupDir, 'CLAUDE.local.md');
-  if (!fs.existsSync(claudeLocalFile)) {
-    const body = opts?.instructions ? opts.instructions + '\n' : '';
-    fs.writeFileSync(claudeLocalFile, body);
+  if (seedClaudeLocalMd(groupDir, opts?.instructions)) {
     initialized.push('CLAUDE.local.md');
   }
 
@@ -77,10 +74,47 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
   }
 
   // 2. data/v2-sessions/<id>/.claude-shared/ — Claude state + per-group skills
+  // (the GROUP-scope Claude state dir; user scopes get their own via
+  // ensureStateScope → initClaudeStateDir, ADR-0055).
   const claudeDir = path.join(DATA_DIR, 'v2-sessions', group.id, '.claude-shared');
+  initialized.push(...initClaudeStateDir(claudeDir, disableAutoMemory));
+
+  if (initialized.length > 0) {
+    log.info('Initialized group filesystem', {
+      group: group.name,
+      folder: group.folder,
+      id: group.id,
+      steps: initialized,
+    });
+  }
+}
+
+/**
+ * Seed a `CLAUDE.local.md` in `dir` if absent (the agent's writable memory
+ * file, auto-loaded by Claude Code next to the composed CLAUDE.md). Shared by
+ * group dirs (initGroupFilesystem) and user state scopes (ADR-0055).
+ * Returns true when the file was created.
+ */
+export function seedClaudeLocalMd(dir: string, instructions?: string): boolean {
+  const claudeLocalFile = path.join(dir, 'CLAUDE.local.md');
+  if (fs.existsSync(claudeLocalFile)) return false;
+  fs.writeFileSync(claudeLocalFile, instructions ? instructions + '\n' : '');
+  return true;
+}
+
+/**
+ * Initialize (or repair) a Claude state dir — the host directory mounted at
+ * `/home/node/.claude`: settings.json (PreCompact hook + auto-memory policy)
+ * and the skills/ dir that spawn-time symlink sync fills. Idempotent; used
+ * for both the group-scope `.claude-shared` and per-user scopes (ADR-0055).
+ * Returns the list of steps it performed (empty = everything already there).
+ */
+export function initClaudeStateDir(claudeDir: string, disableAutoMemory: boolean): string[] {
+  const initialized: string[] = [];
+
   if (!fs.existsSync(claudeDir)) {
     fs.mkdirSync(claudeDir, { recursive: true });
-    initialized.push('.claude-shared');
+    initialized.push('.claude dir');
   }
 
   const settingsFile = path.join(claudeDir, 'settings.json');
@@ -99,14 +133,7 @@ export function initGroupFilesystem(group: AgentGroup, opts?: { instructions?: s
     initialized.push('skills/');
   }
 
-  if (initialized.length > 0) {
-    log.info('Initialized group filesystem', {
-      group: group.name,
-      folder: group.folder,
-      id: group.id,
-      steps: initialized,
-    });
-  }
+  return initialized;
 }
 
 const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';

@@ -45,7 +45,7 @@ Multiple channels share the same agent (same workspace, memory, personality) but
 **Technical:** Multiple messaging groups are wired to the same agent group with `session_mode: 'shared'` (or `'per-thread'`). Each messaging group gets its own session, but they all run in the same agent group folder.
 
 > Note: this level isolates by **channel/room**, not by **sender**. Two
-> different employees writing in the *same* room share one session here. For an
+> different employees writing in the _same_ room share one session here. For an
 > enterprise bot where many employees share one surface and must not see each
 > other's context, use the user-scoped modes below — that is the platform
 > default, not this level.
@@ -76,13 +76,13 @@ The key question: **Are you okay with any and every piece of information from on
 
 ### Rules of Thumb
 
-| Scenario | Recommended Level / Mode |
-|----------|------------------|
-| **Shared enterprise bot, many employees, one surface** | **User-scoped: `per-user` / `per-user-per-thread`** (the default — see below) |
-| One agent group fronting several team rooms (same trusted audience) | Same agent, separate sessions |
-| Webhook channel + ops-room chat channel (notifications feed context into chat) | Shared session |
-| Two business units that must never see each other's context | Separate agent groups |
-| Frontdesk desk and a sensitive worker with different access levels | Separate agent groups |
+| Scenario                                                                       | Recommended Level / Mode                                                      |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **Shared enterprise bot, many employees, one surface**                         | **User-scoped: `per-user` / `per-user-per-thread`** (the default — see below) |
+| One agent group fronting several team rooms (same trusted audience)            | Same agent, separate sessions                                                 |
+| Webhook channel + ops-room chat channel (notifications feed context into chat) | Shared session                                                                |
+| Two business units that must never see each other's context                    | Separate agent groups                                                         |
+| Frontdesk desk and a sensitive worker with different access levels             | Separate agent groups                                                         |
 
 ### When in Doubt
 
@@ -107,8 +107,22 @@ AgentDesk supports two user-scoped `session_mode` values for that case:
 Use these when:
 
 - many employees share one entry bot
-- you want the same agent group/workspace but separate conversation state per person
+- you want the same agent (template, config, skills) but a **separate workspace,
+  memory, and conversation state per person**
 - group chat is only a coordination surface and execution should not share context
+
+**State isolation (ADR-0055):** a user-scoped session mounts a per-user _state
+scope_ — its own `/workspace/agent` (working files, `CLAUDE.local.md` memory,
+`conversations/` transcripts) and its own `/home/node/.claude` (Claude state,
+auto-memory) under `data/v2-scopes/<agent_group>/<user>/`. Config and composed
+artifacts (`container.json`, `CLAUDE.md`, skills, `prompts/`) stay group-level
+as read-only mounts. So per-user modes isolate **workspace and memory per
+person**, not just conversation state; ownerless modes (`shared`, `per-thread`,
+`agent-shared`) keep the historical group-level layout, where memory sharing is
+the documented feature. The same-user scope is shared across that user's
+sessions and threads — memory follows the person, not the chat room — and
+root-session a2a lanes inherit the owner, so per-user isolation propagates
+through delegation.
 
 Recommended defaults:
 
@@ -136,7 +150,7 @@ messaging_group_agents (session_mode, trigger_rules, priority)
 Above the channel↔agent isolation is an optional **tenant** boundary. An
 `agent_group` belongs to at most one `organization` (`agent_groups.organization_id`,
 nullable — `NULL` = legacy / un-orged, no tenancy). `organizations` +
-`organization_members` (membership = *reachability*, never privilege) draw the
+`organization_members` (membership = _reachability_, never privilege) draw the
 boundary; `user_roles.organization_id` carries org-scoped grants (`org-admin`,
 org-scoped `operator`/`viewer`).
 
