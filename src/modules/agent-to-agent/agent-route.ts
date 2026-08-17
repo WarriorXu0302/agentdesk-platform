@@ -30,7 +30,12 @@ import {
   getMostRecentPeerSourceSessionId,
   latestConversationThreadId,
 } from '../../db/session-db.js';
-import { getSession, setSessionConversationThreadId } from '../../db/sessions.js';
+import {
+  findNewestOwnedSessionForAgent,
+  findNewestOwnerlessSessionForAgent,
+  getSession,
+  setSessionConversationThreadId,
+} from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
 import { a2aOriginRejectedTotal } from '../../metrics.js';
@@ -285,22 +290,45 @@ function resolveTargetSession(msg: RoutableAgentMessage, sourceSession: Session,
     ).session;
   }
 
-  // Privacy-downgrade observability (ADR-0056): an OWNED source funnelling
-  // into an agent-shared lane collapses that user's isolation one hop
-  // downstream — every user of this target shares one session, one
-  // conversation and (ADR-0055) one state scope. Not refused (existing
-  // topologies depend on shared workers), but surfaced once per edge so the
-  // operator can set a2aSessionMode='root-session' on the target.
-  if (sourceSession.owner_user_id && targetAgentGroupId !== sourceSession.agent_group_id) {
-    const edge = `${sourceSession.agent_group_id}->${targetAgentGroupId}`;
-    if (!warnedSharedLaneEdges.has(edge)) {
-      warnedSharedLaneEdges.add(edge);
-      log.warn('a2a: per-user source delegating into an agent-shared lane — user isolation ends at this hop', {
-        sourceAgentGroupId: sourceSession.agent_group_id,
-        targetAgentGroupId,
-        fix: "set a2aSessionMode='root-session' in the target's container.json",
-      });
+  // Owner-aware fall-through (red-team fix on the owner cross-check): the
+  // legacy resolution below is findSessionByAgentGroup — newest active, NO
+  // owner filter — so an OWNED source's message could land in another user's
+  // owned session (including the very candidate the cross-check just
+  // rejected, whenever it happens to be newest). An owned source resolves in
+  // strict preference order instead: (1) the same user's newest lane on the
+  // target; (2) the newest OWNERLESS shared lane (serves many users by
+  // design — identity travels per message); (3) no session at all → create a
+  // fresh lane bound to the source's root+owner, never a stranger's lane.
+  if (sourceSession.owner_user_id) {
+    const sameOwner = findNewestOwnedSessionForAgent(targetAgentGroupId, sourceSession.owner_user_id);
+    if (sameOwner) return sameOwner;
+    const sharedLane = findNewestOwnerlessSessionForAgent(targetAgentGroupId);
+    if (sharedLane) {
+      // Privacy-downgrade observability (ADR-0056): an OWNED source landing
+      // in a shared lane means this user's isolation ends at this hop. Not
+      // refused (existing topologies depend on shared workers); once per edge.
+      if (targetAgentGroupId !== sourceSession.agent_group_id) {
+        const edge = `${sourceSession.agent_group_id}->${targetAgentGroupId}`;
+        if (!warnedSharedLaneEdges.has(edge)) {
+          warnedSharedLaneEdges.add(edge);
+          log.warn('a2a: per-user source delegating into an agent-shared lane — user isolation ends at this hop', {
+            sourceAgentGroupId: sourceSession.agent_group_id,
+            targetAgentGroupId,
+            fix: "set a2aSessionMode='root-session' in the target's container.json",
+          });
+        }
+      }
+      return sharedLane;
     }
+    return resolveSession(
+      targetAgentGroupId,
+      null,
+      null,
+      'agent-shared',
+      sourceSession.owner_user_id,
+      sourceSession.root_session_id ?? sourceSession.id,
+      sourceDepth,
+    ).session;
   }
   return resolveSession(targetAgentGroupId, null, null, 'agent-shared', null, null, sourceDepth).session;
 }

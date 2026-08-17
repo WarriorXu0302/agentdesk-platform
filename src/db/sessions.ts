@@ -105,6 +105,33 @@ export function findSessionByAgentGroup(agentGroupId: string): Session | undefin
     .get(agentGroupId) as Session | undefined;
 }
 
+/**
+ * Newest active session of the group OWNED by this user (any messaging
+ * group / thread). The owner-aware a2a fall-through (agent-route) uses this
+ * so an owned source's reply lands in the same user's lane — never in the
+ * newest-any-owner session findSessionByAgentGroup would pick.
+ */
+export function findNewestOwnedSessionForAgent(agentGroupId: string, ownerUserId: string): Session | undefined {
+  return getDb()
+    .prepare(
+      "SELECT * FROM sessions WHERE agent_group_id = ? AND owner_user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(agentGroupId, ownerUserId) as Session | undefined;
+}
+
+/**
+ * Newest active OWNERLESS session of the group — a shared lane, which serves
+ * multiple users by design (identity travels per message via origin_user_id),
+ * as opposed to another user's private (owned, ADR-0055 user-scoped) lane.
+ */
+export function findNewestOwnerlessSessionForAgent(agentGroupId: string): Session | undefined {
+  return getDb()
+    .prepare(
+      "SELECT * FROM sessions WHERE agent_group_id = ? AND owner_user_id IS NULL AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(agentGroupId) as Session | undefined;
+}
+
 export function findSessionForAgentRoot(agentGroupId: string, rootSessionId: string): Session | undefined {
   return getDb()
     .prepare(

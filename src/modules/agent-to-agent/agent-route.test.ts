@@ -333,14 +333,20 @@ describe('routeAgentMessage return-path', () => {
     initSessionFolder(A, S_bob.id);
     initSessionFolder(B, SW.id);
 
-    // Bob's delegation lands a row in SW's inbound (shared-worker interleave).
-    await routeAgentMessage(
-      { id: 'msg-bob-deleg', platform_id: B, content: JSON.stringify({ text: 'bob asks' }), in_reply_to: null },
-      S_bob,
-    );
-    const swRows = readInbound(B, SW.id);
-    expect(swRows).toHaveLength(1);
-    const bobAnchor = swRows[0].id;
+    // A poisoned/stale anchor: an inbound row in SW whose SOURCE resolves to
+    // Bob's session. Constructed directly because the owner-aware forward
+    // path no longer routes Bob's traffic into Alice's lane — this simulates
+    // pre-fix contamination or a container-forged in_reply_to.
+    writeSessionMessage(B, SW.id, {
+      id: 'poisoned-anchor',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: A,
+      channelType: 'agent',
+      content: JSON.stringify({ text: 'bob asks' }),
+      sourceSessionId: S_bob.id,
+      originUserId: 'ou_bob',
+    });
 
     // Alice's worker lane replies — anchored (stale/poisoned) on BOB's row.
     await routeAgentMessage(
@@ -348,7 +354,7 @@ describe('routeAgentMessage return-path', () => {
         id: 'msg-w-reply',
         platform_id: A,
         content: JSON.stringify({ text: 'answer for alice' }),
-        in_reply_to: bobAnchor,
+        in_reply_to: 'poisoned-anchor',
       },
       SW,
     );
@@ -359,6 +365,120 @@ describe('routeAgentMessage return-path', () => {
     const aliceRows = readInbound(A, S_alice.id);
     expect(aliceRows).toHaveLength(1);
     expect(JSON.parse(aliceRows[0].content).text).toBe('answer for alice');
+  });
+
+  it('DEFAULT (agent-shared) target: rejected anchor re-derives to the same owner’s lane, not the newest session', async () => {
+    // Red-team: the first cut of the owner cross-check only worked when the
+    // target opted into root-session — the default fall-through picked the
+    // newest-any-owner session, which could be the very session just
+    // rejected. Now an owned source resolves same-owner-first regardless of
+    // recency. NOTE: no writeGroupConfig — 'a' runs the default mode.
+    const S_alice: Session = {
+      ...S1,
+      id: 'sess-A-alice',
+      owner_user_id: 'ou_alice',
+      created_at: '2026-03-01T00:00:00.000Z',
+    };
+    const S_bob: Session = {
+      ...S1,
+      id: 'sess-A-bob',
+      owner_user_id: 'ou_bob',
+      // Bob's session is the NEWEST — the old fall-through would pick it.
+      created_at: '2026-03-02T00:00:00.000Z',
+    };
+    const SW: Session = {
+      ...SB,
+      id: 'sess-B-alice-lane',
+      owner_user_id: 'ou_alice',
+      root_session_id: S_alice.id,
+      created_at: '2026-03-03T00:00:00.000Z',
+    };
+    createSession(S_alice);
+    createSession(S_bob);
+    createSession(SW);
+    initSessionFolder(A, S_alice.id);
+    initSessionFolder(A, S_bob.id);
+    initSessionFolder(B, SW.id);
+
+    writeSessionMessage(B, SW.id, {
+      id: 'poisoned-anchor',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: A,
+      channelType: 'agent',
+      content: JSON.stringify({ text: 'bob asks' }),
+      sourceSessionId: S_bob.id,
+      originUserId: 'ou_bob',
+    });
+
+    await routeAgentMessage(
+      {
+        id: 'msg-w-reply',
+        platform_id: A,
+        content: JSON.stringify({ text: 'answer for alice' }),
+        in_reply_to: 'poisoned-anchor',
+      },
+      SW,
+    );
+
+    expect(readInbound(A, S_bob.id)).toHaveLength(0); // newest AND rejected — stays clean
+    expect(readInbound(A, S_alice.id)).toHaveLength(1); // same-owner lane wins
+  });
+
+  it('same-owner anchor is HONORED — delivered to the anchored session, never re-derived (allow-path)', async () => {
+    // Red-team: mutating the cross-check to reject ALL owned anchors passed
+    // the whole suite. Pin the allow path: an anchor at the user's OLDER
+    // session must win over the same user's newer one — re-derivation would
+    // have picked the newest same-owner lane instead.
+    const S_alice_old: Session = {
+      ...S1,
+      id: 'sess-A-alice-old',
+      owner_user_id: 'ou_alice',
+      created_at: '2026-03-01T00:00:00.000Z',
+    };
+    const S_alice_new: Session = {
+      ...S1,
+      id: 'sess-A-alice-new',
+      owner_user_id: 'ou_alice',
+      created_at: '2026-03-02T00:00:00.000Z',
+    };
+    const SW: Session = {
+      ...SB,
+      id: 'sess-B-alice-lane',
+      owner_user_id: 'ou_alice',
+      root_session_id: S_alice_old.id,
+      created_at: '2026-03-03T00:00:00.000Z',
+    };
+    createSession(S_alice_old);
+    createSession(S_alice_new);
+    createSession(SW);
+    initSessionFolder(A, S_alice_old.id);
+    initSessionFolder(A, S_alice_new.id);
+    initSessionFolder(B, SW.id);
+
+    writeSessionMessage(B, SW.id, {
+      id: 'legit-anchor',
+      kind: 'chat',
+      timestamp: now(),
+      platformId: A,
+      channelType: 'agent',
+      content: JSON.stringify({ text: 'alice asks from her older lane' }),
+      sourceSessionId: S_alice_old.id,
+      originUserId: 'ou_alice',
+    });
+
+    await routeAgentMessage(
+      {
+        id: 'msg-w-reply',
+        platform_id: A,
+        content: JSON.stringify({ text: 'answer' }),
+        in_reply_to: 'legit-anchor',
+      },
+      SW,
+    );
+
+    expect(readInbound(A, S_alice_old.id)).toHaveLength(1); // anchor honored
+    expect(readInbound(A, S_alice_new.id)).toHaveLength(0); // not re-derived to newest
   });
 
   it('fallback: a2a with no in_reply_to falls through to newest-session lookup', async () => {

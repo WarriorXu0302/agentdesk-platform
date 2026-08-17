@@ -524,6 +524,43 @@ describe('reply anchor integrity (a2a return path)', () => {
   });
 });
 
+describe('reply anchor peer filter', () => {
+  it('the turn anchor only applies to ITS OWN peer — other peers keep most-recent resolution', async () => {
+    // Red-team: deleting the channel/platform predicate from the anchor
+    // lookup passed the whole suite. Pin it: the turn anchor here belongs to
+    // peer "other-desk" (first row of the batch); a reply to "parent-desk"
+    // must NOT inherit it and falls back to parent's own newest row.
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('parent-desk', 'Parent Desk', 'agent', NULL, NULL, 'ag-parent'),
+                ('other-desk', 'Other Desk', 'agent', NULL, NULL, 'ag-other')`,
+      )
+      .run();
+    // mY first → it is the batch's turn anchor (peer: ag-other).
+    insertMessage('mY', { sender: 'other', text: 'status?' }, { platformId: 'ag-other', channelType: 'agent' });
+    insertMessage('m1', { sender: 'desk', text: 'numbers?' }, { platformId: 'ag-parent', channelType: 'agent' });
+
+    const provider = new MockProvider(
+      {},
+      () => '<message to="other-desk">fine</message><message to="parent-desk">attached</message>',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 3000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 2, 3000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    const otherOut = out.find((m) => m.platform_id === 'ag-other');
+    const parentOut = out.find((m) => m.platform_id === 'ag-parent');
+    expect(otherOut!.in_reply_to).toBe('mY'); // its own turn anchor
+    expect(parentOut!.in_reply_to).toBe('m1'); // NOT mY — falls back to parent's newest
+
+    await loopPromise.catch(() => {});
+  });
+});
+
 describe('stale continuation recovery', () => {
   /**
    * Provider whose stream throws a stale-session error whenever a
