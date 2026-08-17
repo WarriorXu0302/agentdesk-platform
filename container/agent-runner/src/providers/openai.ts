@@ -1406,13 +1406,16 @@ export class OpenAIProvider implements AgentProvider {
       const conversationsDir = '/workspace/agent/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
       const now = new Date();
+      // Millisecond-derived suffix matches the Claude PreCompact archiver
+      // (ADR-0057): two sessions of the same scope compacting in the same
+      // second must not overwrite each other's window.
       const stamp = `${now.toISOString().split('T')[0]}-openai-compact-${now
         .getHours()
         .toString()
         .padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now
         .getSeconds()
         .toString()
-        .padStart(2, '0')}`;
+        .padStart(2, '0')}-${Date.now().toString(36).slice(-6)}`;
       const messages = transcriptToChatMessages(oldWindow);
       const lines = [`# Compacted conversation window`, '', `Archived: ${now.toLocaleString('en-US')}`, '', '---', ''];
       for (const m of messages) {

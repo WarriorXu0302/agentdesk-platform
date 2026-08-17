@@ -64,7 +64,11 @@ async function main(): Promise<void> {
   // shared base (/app/CLAUDE.md) and each enabled module's fragment.
   // Per-group memory lives in /workspace/agent/CLAUDE.local.md
   // (auto-loaded) when the selected provider supports it.
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined, config.memoryMode);
+  const instructions = buildSystemPromptAddendum(
+    config.assistantName || undefined,
+    config.memoryMode,
+    config.agentGroupId || undefined,
+  );
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];

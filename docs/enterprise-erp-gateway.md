@@ -149,9 +149,9 @@ this key to dedupe retried writes on your side.
 
 ### `requesterSource` is how the gateway decides how much to trust the `requester` block
 
-| value | meaning | recommended gateway policy |
-|-------|---------|----------------------------|
-| `session` | Identity was derived from the session's inbound messages — host-written, container cannot forge. Authoritative. | Normal permission flow. Attribute the action to `requester.userId`. |
+| value            | meaning                                                                                                                                                                                            | recommended gateway policy                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `session`        | Identity was derived from the session's inbound messages — host-written, container cannot forge. Authoritative.                                                                                    | Normal permission flow. Attribute the action to `requester.userId`.                                                              |
 | `agent-asserted` | No trusted identity was available at batch start (scheduled task, a2a hop with no attribution source, orphan session). The `requester` block reflects whatever the agent passed as tool arguments. | Be strict. Default to rejecting writes. Allow only read / aggregate / non-destructive operations, and clearly log the ambiguity. |
 
 The agent cannot set this field — it's set by the container runtime based on
@@ -220,7 +220,7 @@ proxy; the proxy verifies the token, confirms the request's claimed agent group
 matches the token's authoritative (central-DB) group, signs the canonical bytes
 with the real key, and forwards. The backend sees the exact same signed request
 as in direct mode — no contract change. From the gateway's perspective nothing
-changes; this only moves *where* the signature is produced. See ADR-0034 for the
+changes; this only moves _where_ the signature is produced. See ADR-0034 for the
 threat model, token scoping, source-IP pin caveats, and audit columns.
 
 ### Enabling signing
@@ -326,7 +326,7 @@ When the host signing proxy is enabled, the proxy writes its own **authoritative
 rows carrying facts only the host knows, via additive (nullable) columns added by
 migration 029: `signed_as_group`, `token_jti`, `proxy_request_id`,
 `identity_mismatch`, `requester_source_coerced`, `audit_phase`. These rows are
-written in two phases — an `audit_phase='intent'` row (`status='pending'`) *before*
+written in two phases — an `audit_phase='intent'` row (`status='pending'`) _before_
 forwarding, updated to `audit_phase='final'` with the outcome afterwards — so a
 crash mid-call still leaves a forensic row. Any `intent` row left stranded by a
 crash is reconciled to a terminal `error` at the next host start. The default
@@ -352,20 +352,20 @@ agent so it can decide whether to retry. Two ways your backend can drive this:
 2. **HTTP status only** — if the body isn't a structured error, the platform
    maps the status code:
 
-| HTTP status | error code | retryable (default) |
-|-------------|-----------|---------------------|
-| 401, 403 | `BACKEND_UNAUTHORIZED` | no |
-| 404 | `OPERATION_NOT_FOUND` | no |
-| 400, 422 | `VALIDATION_FAILED` | no |
-| 5xx | `BACKEND_UNAVAILABLE` | yes |
-| other | `UNKNOWN` | no |
+| HTTP status | error code             | retryable (default) |
+| ----------- | ---------------------- | ------------------- |
+| 401, 403    | `BACKEND_UNAUTHORIZED` | no                  |
+| 404         | `OPERATION_NOT_FOUND`  | no                  |
+| 400, 422    | `VALIDATION_FAILED`    | no                  |
+| 5xx         | `BACKEND_UNAVAILABLE`  | yes                 |
+| other       | `UNKNOWN`              | no                  |
 
 Additional codes the platform itself can emit (not from your HTTP status):
 
-| code | when |
-|------|------|
-| `TIMEOUT` | request exceeded `backendGateway.timeoutMs` (retryable) |
-| `GATEWAY_NOT_CONFIGURED` | the agent group has no `baseUrl` |
+| code                        | when                                                                       |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `TIMEOUT`                   | request exceeded `backendGateway.timeoutMs` (retryable)                    |
+| `GATEWAY_NOT_CONFIGURED`    | the agent group has no `baseUrl`                                           |
 | `CONTRACT_VERSION_MISMATCH` | backend echoed a different `contractVersion` (warn-only, not a hard error) |
 
 The code is also folded into the `gateway_audit` row (see below) as an
@@ -384,7 +384,7 @@ container-emitted audit message.
 - **Domain "no" that isn't an infra error** (e.g. "insufficient budget"):
   prefer `ok: false` in a **2xx** result with a structured business reason the
   agent can relay, rather than a transport error code. The closed enum is for
-  *transport/retry* classification, not for business outcomes.
+  _transport/retry_ classification, not for business outcomes.
 
 ## Transactions, partial failure & compensation
 
@@ -412,7 +412,7 @@ not a contract gap. Three patterns, in order of preference:
    recoverable.** Every mutating `/execute` carries a platform-generated
    `idempotencyKey` (see [`idempotencyKey`](#idempotencykey-write-operations));
    dedupe on it so a host retry replays the prior result instead of double-
-   writing. For a step that a *later* step invalidates, expose an explicit
+   writing. For a step that a _later_ step invalidates, expose an explicit
    **compensating operation** (e.g. `sales.order.unpost`, `payment.refund`) and
    have the agent call it — do not expect the platform to undo a committed
    write. Record both the original and the compensation in your backend audit so
@@ -441,11 +441,11 @@ Request — each operation carries its **own** `idempotencyKey`:
   // envelope: contractVersion, agent, requester, requesterSource
   "operations": [
     { "operation": "sales.order.create", "input": { "sku": "A", "quantity": 1 }, "idempotencyKey": "k1" },
-    { "operation": "sales.order.create", "input": { "sku": "B", "quantity": 2 }, "idempotencyKey": "k2" }
+    { "operation": "sales.order.create", "input": { "sku": "B", "quantity": 2 }, "idempotencyKey": "k2" },
   ],
   "context": {},
   "dryRun": false,
-  "atomic": false   // optional; see below
+  "atomic": false, // optional; see below
 }
 ```
 
@@ -455,10 +455,10 @@ Response — `results` is index-aligned with `operations`:
 {
   "ok": true,
   "results": [
-    { "ok": true, "result": { /* ... */ }, "auditId": "..." },
-    { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "..." } }
+    { "ok": true, "result": {/* ... */}, "auditId": "..." },
+    { "ok": false, "error": { "code": "VALIDATION_FAILED", "message": "..." } },
   ],
-  "partial": true   // best-effort: true when any op failed
+  "partial": true, // best-effort: true when any op failed
 }
 ```
 
@@ -628,9 +628,13 @@ chooses how to hand them to your backend.
    field of the operation input:
 
    ```json
-   { "operation": "finance.invoice.submit",
-     "input": { "vendor": "ACME",
-                "document": { "filename": "po-8821.pdf", "contentType": "application/pdf", "base64": "<...>" } } }
+   {
+     "operation": "finance.invoice.submit",
+     "input": {
+       "vendor": "ACME",
+       "document": { "filename": "po-8821.pdf", "contentType": "application/pdf", "base64": "<...>" }
+     }
+   }
    ```
 
    Base64 adds ~33% overhead, so keep the encoded size comfortably under your
@@ -640,7 +644,7 @@ chooses how to hand them to your backend.
 2. **Already-hosted files: pass a URL/handle, not the bytes.** When the file
    already lives in your DMS / object store, put its stable URL or document id in
    `input`, and `gateway_memory_upsert` the reference if it should be remembered
-   across turns (store the *reference*, never the blob, in memory).
+   across turns (store the _reference_, never the blob, in memory).
 
 3. **Large or binary documents: out-of-band file service (pre-signed URL).**
    Keep big payloads off the JSON path entirely:
@@ -697,8 +701,26 @@ Suggested namespaces:
 - `user.profile`
 - `user.preferences`
 - `user.permission_hints`
-- `conversation.summary`
+- `persona` — durable facts the user states about themselves (role, expertise,
+  preferences, projects); written live by the agent under its persona
+  distillation rules (ADR-0057)
+- `conversation.summary.<agentGroupId>` — auto-saved compaction summaries,
+  one namespace **per agent group** (ADR-0057; the platform's flush writes
+  this per-agent form so one user's Finance-agent context never surfaces in
+  their HR-agent recall). The bare `conversation.summary` form appears only
+  from pre-ADR-0057 runners or when the runner has no agent group id —
+  treat both as the same family for retention/curation policy.
 - `approval.history`
+
+**Trust note for `persona` (and any agent-written namespace):** the request's
+`context` block — including `context.source: 'user-stated'` — is
+**agent-asserted**, exactly like any other model-supplied argument; only
+`requesterSource` is host-tagged (see above). A prompt-injected agent can claim
+`user-stated` on a fabricated fact, and persona records are long-lived, so this
+namespace deserves your strictest write-side curation: version rather than
+overwrite (ADR-0050 A.U.D.N.), surface conflicts, and expose records to
+operator review / the `/memory/feedback` loop (ADR-0043). Do not let a memory
+record substitute for per-operation authorization.
 
 ### Subject scoping & isolation (the backend's job)
 
@@ -713,13 +735,13 @@ warning for a mis-scoped subject, so make the scope explicit and enforce it.
 Recommended subject-type vocabulary (pick the smallest scope that fits the
 fact), widest → narrowest:
 
-| `subject.type` | `subject.id` example | Use for | Who may read |
-|---|---|---|---|
-| `org` | `org:acme` | org-wide policy, holiday calendar | everyone in the org |
-| `department` | `dept:finance` | departmental SOPs, cost centers | members of that department |
-| `team` | `team:qa-eu` | team conventions, rotation | members of that team |
-| `contract` | `contract:CT-8821` | per-engagement state | parties on that contract |
-| `user` | `feishu:ou_alice` | personal prefs, drafts, PII | that user only |
+| `subject.type` | `subject.id` example | Use for                           | Who may read               |
+| -------------- | -------------------- | --------------------------------- | -------------------------- |
+| `org`          | `org:acme`           | org-wide policy, holiday calendar | everyone in the org        |
+| `department`   | `dept:finance`       | departmental SOPs, cost centers   | members of that department |
+| `team`         | `team:qa-eu`         | team conventions, rotation        | members of that team       |
+| `contract`     | `contract:CT-8821`   | per-engagement state              | parties on that contract   |
+| `user`         | `feishu:ou_alice`    | personal prefs, drafts, PII       | that user only             |
 
 Isolation rules your gateway must enforce on **every** `get` / `upsert` /
 `search`:
@@ -762,7 +784,7 @@ business memory.
   "agent": { "agentGroupId": "ag-...", "groupName": "...", "assistantName": "..." },
   "requester": { "userId": "feishu:ou_xxx", "channelType": "feishu", "platformId": "oc_xxx", "threadId": null },
   "requesterSource": "session",
-  "namespace": "conversation.summary",
+  "namespace": "conversation.summary.ag-frontdesk",
   "query": "what did the user say about the Q3 budget",
   "subject": { "type": "user", "id": "feishu:ou_xxx" },
   "limit": 10,
@@ -791,7 +813,7 @@ provenance block + an optional `score`:
     {
       "value": { "note": "user prefers async approvals" },
       "source": {
-        "namespace": "conversation.summary",
+        "namespace": "conversation.summary.ag-frontdesk",
         "subjectType": "user",
         "subjectId": "feishu:ou_xxx",
         "recordId": "rec_8123",
@@ -827,7 +849,7 @@ Over months, a `user.preferences` or `conversation.summary` namespace
 accumulates facts that drift, get superseded, or contradict each other. If your
 gateway just key-addresses and overwrites, stale facts linger and recall returns
 them as if current — and the agent has no way to tell. The `/memory/feedback`
-endpoint (ADR-0043) lets the agent/operator *flag* a bad record, but flagging
+endpoint (ADR-0043) lets the agent/operator _flag_ a bad record, but flagging
 isn't resolving; resolution is a **curation** step the backend owns.
 
 The recommended write-side shape is **A.U.D.N.** — on each upsert, reconcile the
@@ -860,9 +882,8 @@ ISO-8601 fields on each search result for this:
 {
   "ok": true,
   "results": [
-    { "value": { "city": "SF" },  "validAt": "2026-06-15T00:00:00Z" },
-    { "value": { "city": "NYC" }, "validAt": "2026-06-01T00:00:00Z",
-      "invalidAt": "2026-06-15T00:00:00Z" }
+    { "value": { "city": "SF" }, "validAt": "2026-06-15T00:00:00Z" },
+    { "value": { "city": "NYC" }, "validAt": "2026-06-01T00:00:00Z", "invalidAt": "2026-06-15T00:00:00Z" }
   ]
 }
 ```

@@ -4,11 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import type { BackendGatewayConfig, RunnerConfig } from '../config.js';
 import { closeSessionDb, getOutboundDb, initTestSessionDb } from '../db/connection.js';
-import {
-  clearRequestIdentity,
-  setRequestIdentity,
-  type RequestIdentity,
-} from '../request-context.js';
+import { clearRequestIdentity, setRequestIdentity, type RequestIdentity } from '../request-context.js';
 import {
   computeGatewaySignature,
   erpAuthorize,
@@ -149,10 +145,10 @@ describe('erp gateway mcp tools', () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as typeof fetch;
 
-    const result = await handleGatewayDescribe(
-      configuredRuntime({ baseUrl: 'https://erp-gateway.example' }),
-      { userId: 'feishu:ou_123', channelType: 'feishu' },
-    );
+    const result = await handleGatewayDescribe(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      userId: 'feishu:ou_123',
+      channelType: 'feishu',
+    });
 
     expect(result.isError).toBeUndefined();
     expect(body?.requesterSource).toBe('agent-asserted');
@@ -177,10 +173,9 @@ describe('erp gateway mcp tools', () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as typeof fetch;
 
-    await handleGatewayDescribe(
-      configuredRuntime({ baseUrl: 'https://erp-gateway.example' }),
-      { userId: 'feishu:ou_agent_claim' },
-    );
+    await handleGatewayDescribe(configuredRuntime({ baseUrl: 'https://erp-gateway.example' }), {
+      userId: 'feishu:ou_agent_claim',
+    });
     expect(body?.requesterSource).toBe('agent-asserted');
   });
 
@@ -605,8 +600,7 @@ describe('erp gateway mcp tools', () => {
 
   it('emits an gateway_audit system message with a path-scoped input_hash', async () => {
     setRequestIdentity(sessionIdentity());
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ ok: true }), { status: 200 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) as typeof fetch;
 
     // Run two memory calls with DIFFERENT payloads on the same namespace.
     // Under the old single-field hasher they'd collapse to the same hash.
@@ -1025,7 +1019,7 @@ describe('flushCompactionSummary (roadmap 4.1, ADR-0041)', () => {
     } as unknown as RunnerConfig;
   }
 
-  it('upserts conversation.summary under value.autoSummary for the captured user', async () => {
+  it('upserts under the PER-AGENT namespace for the captured user (ADR-0057)', async () => {
     let path: string | undefined;
     let body: Record<string, unknown> | undefined;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1038,7 +1032,10 @@ describe('flushCompactionSummary (roadmap 4.1, ADR-0041)', () => {
 
     expect(path).toContain('/memory/upsert');
     expect(body).toMatchObject({
-      namespace: 'conversation.summary',
+      // Regression (ADR-0057): a bare user-global 'conversation.summary'
+      // collapsed every agent the user talks to into one record — the
+      // Finance agent could recall the HR agent's compacted conversation.
+      namespace: 'conversation.summary.ag-frontdesk',
       subject: { type: 'user', id: 'feishu:ou_123' },
       value: { autoSummary: 'user asked about Q3 budget; decided to defer' },
       merge: true,
