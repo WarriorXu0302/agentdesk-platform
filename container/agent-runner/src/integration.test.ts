@@ -483,6 +483,47 @@ class CompactingProvider {
 }
 
 // Helper: run poll loop until aborted or timeout
+describe('reply anchor integrity (a2a return path)', () => {
+  it('a reply to a peer anchors on THIS turn’s trigger, not the newest row from that peer', async () => {
+    // The host routes a2a replies by dereferencing in_reply_to → origin
+    // session, so an anchor stolen by a row that arrived mid-turn (another
+    // user's delegation into a shared worker) is a cross-USER delivery.
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('parent-desk', 'Parent Desk', 'agent', NULL, NULL, 'ag-parent')`,
+      )
+      .run();
+    // m1 = this turn's trigger; m2 = a second delegation from the SAME peer
+    // already sitting in the db when the reply is dispatched (newest by seq).
+    insertMessage(
+      'm1',
+      { sender: 'desk', text: 'alice asks: quarterly numbers?' },
+      { platformId: 'ag-parent', channelType: 'agent' },
+    );
+    insertMessage(
+      'm2',
+      { sender: 'desk', text: 'bob asks: headcount?' },
+      { platformId: 'ag-parent', channelType: 'agent' },
+    );
+
+    const provider = new MockProvider({}, () => '<message to="parent-desk">numbers attached</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 3000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 3000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(out[0].channel_type).toBe('agent');
+    // the turn anchor (first row of the batch) — NOT the newest row m2
+    expect(out[0].in_reply_to).toBe('m1');
+
+    await loopPromise.catch(() => {});
+  });
+});
+
 describe('stale continuation recovery', () => {
   /**
    * Provider whose stream throws a stale-session error whenever a

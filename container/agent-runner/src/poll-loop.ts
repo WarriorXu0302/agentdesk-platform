@@ -18,6 +18,7 @@ import {
   clearCurrentClassificationId,
   clearCurrentInReplyTo,
   getCurrentClassificationId,
+  getCurrentInReplyTo,
   setCurrentInReplyTo,
 } from './current-batch.js';
 import {
@@ -1288,6 +1289,28 @@ function resolveDestinationThread(
 ): { threadId: string | null; inReplyTo: string | null } | null {
   try {
     const db = getInboundDb();
+    // AGENT peers only: prefer THIS turn's anchor when it belongs to the
+    // requested peer. The most-recent-row fallback below can be poisoned by
+    // interleaving — the host inserts rows regardless of turn boundaries, so
+    // a delegation that arrived MID-turn (another user's, in a shared
+    // worker) would steal the reply anchor, and the host routes a2a replies
+    // by dereferencing exactly this id (in_reply_to → origin session): a
+    // stolen anchor is a cross-lane, cross-USER delivery. send_message and
+    // writeDirectDelegation already use the turn anchor; this aligns the
+    // <message to> dispatcher with them. CHANNEL surfaces keep the
+    // most-recent-thread behavior on purpose: a batch may span threads, and
+    // replying into the newest thread is the designed channel UX — channel
+    // delivery does not resolve sessions through in_reply_to, so the
+    // cross-user hazard does not apply there.
+    if (channelType === 'agent') {
+      const turnAnchor = getCurrentInReplyTo();
+      if (turnAnchor) {
+        const anchorRow = db
+          .prepare(`SELECT thread_id, id FROM messages_in WHERE id = ? AND channel_type = ? AND platform_id = ?`)
+          .get(turnAnchor, channelType, platformId) as { thread_id: string | null; id: string } | undefined;
+        if (anchorRow) return { threadId: anchorRow.thread_id, inReplyTo: anchorRow.id };
+      }
+    }
     const row = db
       .prepare(
         `SELECT thread_id, id FROM messages_in

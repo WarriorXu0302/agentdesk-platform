@@ -246,7 +246,27 @@ function resolveTargetSession(msg: RoutableAgentMessage, sourceSession: Session,
   if (originSessionId) {
     const candidate = getSession(originSessionId);
     if (candidate && candidate.agent_group_id === targetAgentGroupId && candidate.status === 'active') {
-      return candidate;
+      // Owner cross-check (coherence review, delegation seam). in_reply_to
+      // and the peer-affinity row are CONTAINER-written; until now they were
+      // validated only on WHICH AGENT they point at, never on WHOSE lane.
+      // When both sides carry a host-established owner and they disagree,
+      // honoring the anchor would deliver this reply into another user's
+      // session — pure interleaving in a shared worker is enough to hit it,
+      // no injection required. Reject the candidate and fall through to lane
+      // resolution below, which re-derives the destination from the source
+      // session's own root/owner. NULL on either side = legacy/shared lane,
+      // nothing trustworthy to compare — unchanged behavior.
+      const srcOwner = sourceSession.owner_user_id ?? null;
+      const dstOwner = candidate.owner_user_id ?? null;
+      if (srcOwner !== null && dstOwner !== null && srcOwner !== dstOwner) {
+        log.warn('a2a return path: reply anchor points at another user’s lane — re-deriving destination', {
+          sourceSessionId: sourceSession.id,
+          anchoredSessionId: candidate.id,
+          targetAgentGroupId,
+        });
+      } else {
+        return candidate;
+      }
     }
   }
 

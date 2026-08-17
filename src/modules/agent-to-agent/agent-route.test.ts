@@ -301,6 +301,66 @@ describe('routeAgentMessage return-path', () => {
     expect(s2Rows).toHaveLength(0);
   });
 
+  it('reply anchored on another user’s lane is re-derived, never honored (owner cross-check)', async () => {
+    // The interleave attack surface: in_reply_to is container-written; until
+    // the owner cross-check, only WHICH AGENT it pointed at was validated —
+    // a worker lane owned by Alice could anchor its reply on Bob's row and
+    // the host would deliver Alice's answer into Bob's session.
+    writeGroupConfig('a', { a2aSessionMode: 'root-session' });
+    const S_alice: Session = {
+      ...S1,
+      id: 'sess-A-alice',
+      owner_user_id: 'ou_alice',
+      created_at: '2026-03-01T00:00:00.000Z',
+    };
+    const S_bob: Session = {
+      ...S1,
+      id: 'sess-A-bob',
+      owner_user_id: 'ou_bob',
+      created_at: '2026-03-02T00:00:00.000Z',
+    };
+    const SW: Session = {
+      ...SB,
+      id: 'sess-B-alice-lane',
+      owner_user_id: 'ou_alice',
+      root_session_id: S_alice.id,
+      created_at: '2026-03-03T00:00:00.000Z',
+    };
+    createSession(S_alice);
+    createSession(S_bob);
+    createSession(SW);
+    initSessionFolder(A, S_alice.id);
+    initSessionFolder(A, S_bob.id);
+    initSessionFolder(B, SW.id);
+
+    // Bob's delegation lands a row in SW's inbound (shared-worker interleave).
+    await routeAgentMessage(
+      { id: 'msg-bob-deleg', platform_id: B, content: JSON.stringify({ text: 'bob asks' }), in_reply_to: null },
+      S_bob,
+    );
+    const swRows = readInbound(B, SW.id);
+    expect(swRows).toHaveLength(1);
+    const bobAnchor = swRows[0].id;
+
+    // Alice's worker lane replies — anchored (stale/poisoned) on BOB's row.
+    await routeAgentMessage(
+      {
+        id: 'msg-w-reply',
+        platform_id: A,
+        content: JSON.stringify({ text: 'answer for alice' }),
+        in_reply_to: bobAnchor,
+      },
+      SW,
+    );
+
+    // The anchor is rejected (owner mismatch) and the lane re-derived from
+    // the worker session's own root — Alice gets her answer, Bob gets nothing.
+    expect(readInbound(A, S_bob.id)).toHaveLength(0);
+    const aliceRows = readInbound(A, S_alice.id);
+    expect(aliceRows).toHaveLength(1);
+    expect(JSON.parse(aliceRows[0].content).text).toBe('answer for alice');
+  });
+
   it('fallback: a2a with no in_reply_to falls through to newest-session lookup', async () => {
     // No prior conversation. B initiates an a2a to A out of the blue.
     await routeAgentMessage(
