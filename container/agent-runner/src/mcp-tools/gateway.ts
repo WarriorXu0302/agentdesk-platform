@@ -1345,7 +1345,8 @@ export const erpMemorySearch: McpToolDefinition = {
       properties: {
         namespace: {
           type: 'string',
-          description: 'Stable memory namespace to search within, e.g. "user.profile", "conversation.summary".',
+          description:
+            'Stable memory namespace to search within, e.g. "user.profile", "persona", or this agent\'s compaction-summary namespace ("conversation.summary.<agentGroupId>" — the exact name appears in your Memory policy section).',
         },
         query: { type: 'string', description: 'Free-text search/recall query. Required.' },
         subjectType: { type: 'string', description: 'Memory subject type. Default: "user".' },

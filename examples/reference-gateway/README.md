@@ -25,15 +25,15 @@ real backend persists it with the write). The inline comments in
 
 ## What it implements
 
-| Endpoint | Behaviour |
-|---|---|
-| `POST /describe` | returns an operation catalog (`conformance.noop`, `demo.echo`, `demo.order.create`, plus a realistic read+write pair `todo.list` / `todo.create`) and a memory-namespace catalog |
-| `POST /authorize` | allows reads; denies a **mutating** op when `requesterSource` is `agent-asserted` |
-| `POST /execute` | `dryRun` → `preview`; otherwise → `result`; **replays the same result for a repeated `idempotencyKey`** so host retries can't double-write; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND` |
-| `POST /bulk_execute` | runs many operations in one round-trip (ADR-0036); per-op idempotency replay; `atomic` pre-validates then commits all-or-nothing; best-effort returns per-op `results[]` + `partial` |
-| `POST /task/status` | async task poll (ADR-0037); `submitAsync:true` on `/execute` returns a `taskId`, this returns its `{status, result?}` (idempotent by key; unknown id → `failed`, not 404) |
-| `POST /memory/get` | exact lookup by `(namespace, subject)`; returns the live `value` + `source` provenance + `validAt` |
-| `POST /memory/upsert` | A.U.D.N. reconciliation (ADR-0050): canonical-value equality → `no-op`; change → supersede (invalidate the old version, append a new one). Returns `value` + `source` + `validAt` + `op` |
+| Endpoint              | Behaviour                                                                                                                                                                                                                   |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /describe`      | returns an operation catalog (`conformance.noop`, `demo.echo`, `demo.order.create`, plus a realistic read+write pair `todo.list` / `todo.create`) and a memory-namespace catalog                                            |
+| `POST /authorize`     | allows reads; denies a **mutating** op when `requesterSource` is `agent-asserted`                                                                                                                                           |
+| `POST /execute`       | `dryRun` → `preview`; otherwise → `result`; **replays the same result for a repeated `idempotencyKey`** so host retries can't double-write; returns an `auditId`; unknown op → structured `OPERATION_NOT_FOUND`             |
+| `POST /bulk_execute`  | runs many operations in one round-trip (ADR-0036); per-op idempotency replay; `atomic` pre-validates then commits all-or-nothing; best-effort returns per-op `results[]` + `partial`                                        |
+| `POST /task/status`   | async task poll (ADR-0037); `submitAsync:true` on `/execute` returns a `taskId`, this returns its `{status, result?}` (idempotent by key; unknown id → `failed`, not 404)                                                   |
+| `POST /memory/get`    | exact lookup by `(namespace, subject)`; returns the live `value` + `source` provenance + `validAt`                                                                                                                          |
+| `POST /memory/upsert` | A.U.D.N. reconciliation (ADR-0050): canonical-value equality → `no-op`; change → supersede (invalidate the old version, append a new one). Returns `value` + `source` + `validAt` + `op`                                    |
 | `POST /memory/search` | naive keyword match over stored JSON, scoped by namespace + subject; returns `{ value, source, score, validAt, invalidAt? }[]` — live only by default, `includeHistory: true` adds superseded versions (ADR-0033, ADR-0050) |
 
 Every response carries `contractVersion: 1`. The `requesterSource='session'` vs
@@ -102,7 +102,7 @@ GATEWAY_STRICT_RESPONSES=true pnpm exec tsx scripts/gateway-conformance.ts http:
 GATEWAY_SIGNING_KEY=test-key pnpm exec tsx scripts/gateway-conformance.ts http://localhost:8089
 ```
 
-(Probing a signed gateway *without* the key returns `401` on every endpoint —
+(Probing a signed gateway _without_ the key returns `401` on every endpoint —
 that is the verification working, not a contract violation.)
 
 ## Point an agent group at it
@@ -137,7 +137,7 @@ curl -s -X POST http://localhost:8088/memory/upsert -H 'content-type: applicatio
   "agent": { "agentGroupId": "ag1", "groupName": "FD", "assistantName": "FD" },
   "requester": { "userId": "feishu:ou_alice" },
   "requesterSource": "session",
-  "namespace": "conversation.summary",
+  "namespace": "conversation.summary.ag-frontdesk",
   "subject": { "type": "user", "id": "feishu:ou_alice" },
   "value": { "note": "alice prefers async approvals for the Q3 budget" },
   "merge": true,
@@ -150,7 +150,7 @@ curl -s -X POST http://localhost:8088/memory/search -H 'content-type: applicatio
   "agent": { "agentGroupId": "ag1", "groupName": "FD", "assistantName": "FD" },
   "requester": { "userId": "feishu:ou_alice" },
   "requesterSource": "session",
-  "namespace": "conversation.summary",
+  "namespace": "conversation.summary.ag-frontdesk",
   "query": "Q3 budget approvals",
   "subject": { "type": "user", "id": "feishu:ou_alice" },
   "limit": 5,

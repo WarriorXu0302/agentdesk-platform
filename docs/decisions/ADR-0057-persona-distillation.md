@@ -79,3 +79,35 @@ ADR-0055 给了物理载体(per-user scope);缺的是 persona 的**内容层**�
 - `destinations.test.ts`:gateway 模式含 persona ritual + provenance 硬规则 + 具体命名空间;
   workspace 模式两者皆无;
 - 文档:configuration-reference 的 memoryMode 行如实描述;本 ADR 记录取舍。
+
+## 修正(2026-08-17,合并前红队:5 视角 16 条发现;7 个核验 agent 死于用量限额,
+
+## 该 7 条由主会话逐条对照代码手工核验——未核验≠已排除)
+
+全部为提示词/文档接缝,无运行时缺陷;已在合并前修复:
+
+1. **说话人绑定(手工核验,原判 major)**:ritual 只说"用户本人陈述的事实",未绑定
+   "本回合触发者"。ownerless 共享会话里多人交错发言,而默认 subject 解析为**当前回合**
+   的请求者——模型可能把 A 说的话以 B 的 host 验证身份写进 persona。
+   修复:新增第二条硬规则(speaker binding):只蒸馏触发本回合的人陈述的事实,
+   多人场景不确定谁说的就不写。
+2. **群面泄漏克制(手工核验)**:recall 指令鼓励处处个性化,未提醒"私聊里学到的事实
+   别在群里当众复述"。修复:recall 行补克制条款(默默用于调整答案,不当众引用)。
+3. **"never surface as yours" 过度承诺(手工核验,原判 major)**:平台只改了自己
+   flush 的命名空间字符串,读侧命名空间仍是自由参数,隔离一如既往是后端契约职责。
+   修复:措辞改为"按 user×agent 键控;隔离由后端执行(与所有记忆一致)"。
+4. **悬空引用(手工核验)**:gateway.instructions.md 随所有模式合成,但它引用的
+   "Memory policy" 段只在 gateway 模式存在。修复:两处(persona/压缩召回)改为
+   条件措辞,workspace 模式下自洽(指向 conversations/ 与工作区记忆文件)。
+5. **后端契约文档缺口(红队确认,2 条)**:`persona` 与 `conversation.summary.<agId>`
+   家族此前只有 agent 侧文档;`context.source='user-stated'` 是 agent 断言
+   (只有 requesterSource 是宿主打标)从未告知后端实现者。修复:契约文档补
+   命名空间清单 + Trust note(persona 应受最严写侧策展;记忆记录不得替代按操作 authz);
+   参考网关 README 与契约示例同步换成按-agent 命名空间。
+6. **其余确认小项**:openai 归档文件名补毫秒后缀(与 claude 对齐,ADR 陈述变真);
+   search 工具 schema 示例不再教旧裸命名空间;无 agentGroupId 时提示词与 flush 的
+   回退命名空间对齐(都为裸形式);container/CLAUDE.md 顶部与 conversation-history
+   段的无条件"记 preferences 进文件"改为模式感知。
+
+红队运维教训(记入 workflow-agent-failure-false-clean 教训族):核验 agent 挂掉时
+其攻击发现必须**当作未决**人工处理,绝不能因"没进 confirmed 清单"视为已排除。
