@@ -383,7 +383,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   // authoritative per-message, so this chains across hops (each hop's inbound row
   // carries the id the previous hop wrote). Null-safe — never an authz input,
   // never blocks routing.
-  let conversationThreadId: string | null = null;
+  let conversationThreadId: string | null;
   const srcDbForOrigin = openInboundDb(session.agent_group_id, session.id);
   try {
     const claimed = msg.origin_user_id ?? null;

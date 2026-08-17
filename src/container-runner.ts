@@ -695,7 +695,7 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
   // Remove symlinks not in the desired set
   for (const entry of fs.readdirSync(skillsDir)) {
     const entryPath = path.join(skillsDir, entry);
-    let isSymlink = false;
+    let isSymlink: boolean;
     try {
       isSymlink = fs.lstatSync(entryPath).isSymbolicLink();
     } catch {

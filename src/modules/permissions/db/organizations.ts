@@ -102,7 +102,6 @@ export function assignAgentGroupToOrg(
     .all() as Array<{ user_id: string }>) {
     principals.add(r.user_id);
   }
-  let enrolled = 0;
   const before = db
     .prepare('SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?')
     .get(organizationId) as { n: number };
@@ -110,7 +109,7 @@ export function assignAgentGroupToOrg(
   const after = db
     .prepare('SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?')
     .get(organizationId) as { n: number };
-  enrolled = after.n - before.n;
+  const enrolled = after.n - before.n;
   recordEnterpriseAudit({
     eventType: 'agent_group_org_assigned',
     agentGroupId,
