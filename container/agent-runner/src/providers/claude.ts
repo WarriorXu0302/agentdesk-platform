@@ -280,7 +280,12 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 
       const conversationsDir = '/workspace/agent/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
-      const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
+      // Millisecond-derived suffix: two sessions of the same scope (same
+      // user, e.g. a group lane and a DM lane) compacting the same day with
+      // the same topic slug must not overwrite each other's transcript
+      // (ADR-0057; date+slug alone collided).
+      const suffix = Date.now().toString(36).slice(-6);
+      const filename = `${new Date().toISOString().split('T')[0]}-${name}-${suffix}.md`;
       fs.writeFileSync(
         path.join(conversationsDir, filename),
         formatTranscriptMarkdown(messages, summary, assistantName),

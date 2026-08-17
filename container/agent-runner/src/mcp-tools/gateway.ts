@@ -599,7 +599,9 @@ function checkResponse(
       });
       return { ok: false, message: msg, code: 'VALIDATION_FAILED', retryable: false };
     }
-    log(`warn: ${pathname} response does not match contract (allowed; set GATEWAY_STRICT_RESPONSES=true to reject): ${detail}`);
+    log(
+      `warn: ${pathname} response does not match contract (allowed; set GATEWAY_STRICT_RESPONSES=true to reject): ${detail}`,
+    );
     emitAuditMessage({
       path: pathname,
       body,
@@ -822,7 +824,8 @@ export async function handleGatewayExecute(
     getString(args, 'idempotencyKey') ??
     (dryRun
       ? null
-      : (deriveStableIdempotencyKey({ callsite: 'exec', operation, input, context, submitAsync }) ?? crypto.randomUUID()));
+      : (deriveStableIdempotencyKey({ callsite: 'exec', operation, input, context, submitAsync }) ??
+        crypto.randomUUID()));
   const body: Record<string, unknown> = {
     agent: agentBlock(runtime),
     requester,
@@ -892,8 +895,13 @@ export async function handleGatewayBulkExecute(
         ? op.idempotencyKey
         : dryRun
           ? null
-          : (deriveStableIdempotencyKey({ callsite: `bulk[${i}]`, operation, input, context: bulkContext, submitAsync: false }) ??
-            crypto.randomUUID());
+          : (deriveStableIdempotencyKey({
+              callsite: `bulk[${i}]`,
+              operation,
+              input,
+              context: bulkContext,
+              submitAsync: false,
+            }) ?? crypto.randomUUID());
     return { operation, input, idempotencyKey };
   });
   if (operations.some((o) => !o.operation)) {
@@ -1054,21 +1062,28 @@ export async function flushCompactionSummary(
   const requesterSource: RequesterSource = identity?.source ?? 'agent-asserted';
 
   const runtime = toolRuntimeConfigFromRunner(config);
+  // Namespace carries the AGENT GROUP dimension (ADR-0057). A bare
+  // 'conversation.summary' keyed only by user collapsed every agent the user
+  // talks to into one record: whichever compacted last silently superseded
+  // the others, and the Finance agent could recall the HR agent's compacted
+  // conversation as its own. Per-user-per-agent matches the ADR-0055 scope
+  // key — memory follows the person, per agent.
+  const namespace = runtime.agentGroupId ? `conversation.summary.${runtime.agentGroupId}` : 'conversation.summary';
   const result = await callGateway(runtime, '/memory/upsert', {
     agent: agentBlock(runtime),
     requester,
     requesterSource,
-    namespace: 'conversation.summary',
+    namespace,
     subject: { type: 'user', id: userId },
     value: { autoSummary: trimmed },
     merge: true,
     context: { source: 'compaction' },
   });
   if (!result.ok) {
-    log(`conversation.summary flush skipped (${result.code}): ${result.message}`);
+    log(`${namespace} flush skipped (${result.code}): ${result.message}`);
     return;
   }
-  log(`conversation.summary flushed for user:${userId}`);
+  log(`${namespace} flushed for user:${userId}`);
 }
 
 export async function handleGatewayMemoryFeedback(
@@ -1328,7 +1343,10 @@ export const erpMemorySearch: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        namespace: { type: 'string', description: 'Stable memory namespace to search within, e.g. "user.profile", "conversation.summary".' },
+        namespace: {
+          type: 'string',
+          description: 'Stable memory namespace to search within, e.g. "user.profile", "conversation.summary".',
+        },
         query: { type: 'string', description: 'Free-text search/recall query. Required.' },
         subjectType: { type: 'string', description: 'Memory subject type. Default: "user".' },
         subjectId: {
