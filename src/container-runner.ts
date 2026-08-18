@@ -60,9 +60,13 @@ import {
   heartbeatPath,
   markContainerRunning,
   markContainerStopped,
+  openInboundDb,
   sessionDir,
   writeSessionRouting,
 } from './session-manager.js';
+import { admissionQueueSize, drainAdmissionSlot, enqueueAdmission, type AdmissionDeps } from './admission-queue.js';
+import { getSession } from './db/sessions.js';
+import { countDueMessages } from './db/session-db.js';
 import { writeRosterSlots } from './roster-dm.js';
 import type { AgentGroup, Session } from './types.js';
 
@@ -74,6 +78,23 @@ const activeContainers = new Map<string, { process: ChildProcess; containerName:
 // Warn-once registry for the role×routing coherence warn in buildMounts
 // (ADR-0056) — per group per host run, so a respawning group doesn't spam.
 const warnedWorkerRoutingGroups = new Set<string>();
+
+// Real dependencies for the admission drain (see admission-queue.ts). The
+// hasDueWork probe mirrors host-sweep's due check: open-read-close on the
+// session's inbound.db — the cross-mount reliability pattern, not an
+// optimization shortcut.
+const admissionDeps: AdmissionDeps = {
+  getSession,
+  hasDueWork(session) {
+    const inDb = openInboundDb(session.agent_group_id, session.id);
+    try {
+      return countDueMessages(inDb) > 0;
+    } finally {
+      inDb.close();
+    }
+  },
+  wake: (session) => wakeContainer(session),
+};
 
 /**
  * Session ids whose container we just asked to stop via killContainer.
@@ -225,12 +246,17 @@ export function wakeContainer(session: Session): Promise<boolean> {
       });
       if (!admit) {
         wakeRejectedTotal.labels('capacity').inc();
-        log.warn('Wake rejected — concurrent container cap reached', {
+        // Event-driven slot handoff (concurrency stage 0): queue the session
+        // so the next freed slot admits it immediately instead of waiting up
+        // to a full sweep tick (60s). The sweep stays as the fallback path.
+        enqueueAdmission(session.id);
+        log.warn('Wake rejected — concurrent container cap reached; queued for the next freed slot', {
           sessionId: session.id,
           agentGroupId: session.agent_group_id,
           active: activeContainers.size,
           inFlight: activeContainers.size + wakePromises.size,
           cap: MAX_CONCURRENT_CONTAINERS,
+          queueDepth: admissionQueueSize(),
         });
         return false;
       }
@@ -351,6 +377,9 @@ async function spawnContainer(session: Session): Promise<void> {
           failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
         }
         log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
+        // Slot freed — admit the next capacity-queued session immediately
+        // (concurrency stage 0) instead of waiting for the next sweep tick.
+        drainAdmissionSlot(admissionDeps);
       });
 
       container.on('error', (err) => {
@@ -362,6 +391,7 @@ async function spawnContainer(session: Session): Promise<void> {
         containerExitsTotal.labels(agentGroup.id, 'crash').inc();
         failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
         log.error('Container spawn error', { sessionId: session.id, err });
+        drainAdmissionSlot(admissionDeps);
       });
     },
   );
