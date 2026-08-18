@@ -141,6 +141,18 @@ export const wakeRejectedTotal = new client.Counter({
   registers: [registry],
 });
 
+export const admissionQueueDepth = new client.Gauge({
+  name: `${METRIC_PREFIX}_admission_queue_depth`,
+  help: 'Sessions waiting for a container slot (capacity-rejected wakes queued for the next freed slot)',
+  registers: [registry],
+});
+
+export const admissionAdmittedTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_admission_admitted_total`,
+  help: 'Sessions admitted from the admission queue into a freed container slot',
+  registers: [registry],
+});
+
 export const containerExitsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_container_exits_total`,
   help: 'Container exit events by outcome',

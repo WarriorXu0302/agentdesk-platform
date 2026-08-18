@@ -58,11 +58,16 @@ import {
 import { openaiViaOneCliEnabled } from './providers/openai.js';
 import {
   heartbeatPath,
+  inboundDbPath,
   markContainerRunning,
   markContainerStopped,
+  openInboundDb,
   sessionDir,
   writeSessionRouting,
 } from './session-manager.js';
+import { admissionQueueSize, drainAdmissionSlot, enqueueAdmission, type AdmissionDeps } from './admission-queue.js';
+import { getSession } from './db/sessions.js';
+import { countDueMessages } from './db/session-db.js';
 import { writeRosterSlots } from './roster-dm.js';
 import type { AgentGroup, Session } from './types.js';
 
@@ -74,6 +79,40 @@ const activeContainers = new Map<string, { process: ChildProcess; containerName:
 // Warn-once registry for the role×routing coherence warn in buildMounts
 // (ADR-0056) — per group per host run, so a respawning group doesn't spam.
 const warnedWorkerRoutingGroups = new Set<string>();
+
+// Real dependencies for the admission drain (see admission-queue.ts). The
+// hasDueWork probe mirrors host-sweep's due check — including the existsSync
+// guard, so probing a torn/archived session dir never CREATES an empty
+// inbound.db as a side effect (better-sqlite3 defaults fileMustExist:false).
+const admissionDeps: AdmissionDeps = {
+  getSession,
+  isRunning: (session) => isContainerRunning(session.id),
+  hasDueWork(session) {
+    if (!fs.existsSync(inboundDbPath(session.agent_group_id, session.id))) return false;
+    const inDb = openInboundDb(session.agent_group_id, session.id);
+    try {
+      return countDueMessages(inDb) > 0;
+    } finally {
+      inDb.close();
+    }
+  },
+  wake: (session) => wakeContainer(session),
+};
+
+// Admission drain is disabled for the rest of the process lifetime once
+// graceful shutdown begins: the close handlers of the very containers we are
+// stopping would otherwise re-spawn queued sessions into fresh containers
+// that escape stopAllContainers' snapshot and outlive the host — worst case
+// two containers on one session dir after a fast restart (two writers on
+// outbound.db, a three-DB invariant violation).
+let admissionDrainDisabled = false;
+
+// A container that dies almost immediately after spawn signals an
+// environment problem (daemon flapping, broken image), not a freed healthy
+// slot: draining on it would chain-flush the whole queue through failing
+// spawns in seconds. Idle exits are always healthy; crashes only hand their
+// slot on after a real lifetime.
+const MIN_HEALTHY_LIFETIME_MS = 10_000;
 
 /**
  * Session ids whose container we just asked to stop via killContainer.
@@ -225,12 +264,17 @@ export function wakeContainer(session: Session): Promise<boolean> {
       });
       if (!admit) {
         wakeRejectedTotal.labels('capacity').inc();
-        log.warn('Wake rejected — concurrent container cap reached', {
+        // Event-driven slot handoff (concurrency stage 0): queue the session
+        // so the next freed slot admits it immediately instead of waiting up
+        // to a full sweep tick (60s). The sweep stays as the fallback path.
+        enqueueAdmission(session.id);
+        log.warn('Wake rejected — concurrent container cap reached; queued for the next freed slot', {
           sessionId: session.id,
           agentGroupId: session.agent_group_id,
           active: activeContainers.size,
           inFlight: activeContainers.size + wakePromises.size,
           cap: MAX_CONCURRENT_CONTAINERS,
+          queueDepth: admissionQueueSize(),
         });
         return false;
       }
@@ -322,6 +366,22 @@ async function spawnContainer(session: Session): Promise<void> {
       const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
       activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
+
+      // Slot-handoff gate (ADR-0059 red-team round): drain at most once per
+      // container ('error' AND 'close' can both fire for one failed spawn),
+      // never during shutdown, and only when the exit signals a HEALTHY freed
+      // slot (idle exit, or a crash after a real lifetime — an instant death
+      // means the environment is broken and admitting the next session would
+      // chain-flush the queue through failing spawns).
+      const spawnedAt = Date.now();
+      let slotHandedOff = false;
+      const handOffSlot = (outcome: string): void => {
+        if (slotHandedOff || admissionDrainDisabled) return;
+        slotHandedOff = true;
+        if (outcome === 'idle' || Date.now() - spawnedAt >= MIN_HEALTHY_LIFETIME_MS) {
+          drainAdmissionSlot(admissionDeps);
+        }
+      };
       markContainerRunning(session.id);
 
       // Log stderr
@@ -351,6 +411,7 @@ async function spawnContainer(session: Session): Promise<void> {
           failSessionRootSpan(session.id, `container ${outcome} (code=${code})`);
         }
         log.info('Container exited', { sessionId: session.id, code, containerName, outcome });
+        handOffSlot(outcome);
       });
 
       container.on('error', (err) => {
@@ -362,6 +423,7 @@ async function spawnContainer(session: Session): Promise<void> {
         containerExitsTotal.labels(agentGroup.id, 'crash').inc();
         failSessionRootSpan(session.id, `container spawn error: ${err.message}`);
         log.error('Container spawn error', { sessionId: session.id, err });
+        handOffSlot('crash');
       });
     },
   );
@@ -391,6 +453,10 @@ export async function killContainer(sessionId: string, reason: string): Promise<
  * marking it stopped). Best-effort + bounded by the caller's shutdown deadline.
  */
 export async function stopAllContainers(reason: string): Promise<void> {
+  // From this point the process is going down: the close handlers of the
+  // containers we are about to stop must NOT hand their slots to queued
+  // sessions (see admissionDrainDisabled above).
+  admissionDrainDisabled = true;
   const entries = [...activeContainers.entries()];
   if (entries.length === 0) return;
   log.info('Stopping active containers on shutdown', { count: entries.length, reason });
