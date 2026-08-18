@@ -107,7 +107,14 @@ export const METRIC_PREFIX = /^[0-9]/.test(rawMetricPrefix) ? `_${rawMetricPrefi
  * their own desks/workers on top. No business-specific roles are baked in.
  */
 export const DEFAULT_FRONTDESK_FOLDER = `${PLATFORM_PROTOCOL_NAMESPACE}-frontdesk`;
-export const DEFAULT_FRONTDESK_NAME = `${PLATFORM_BRAND} Frontdesk`;
+/**
+ * USER-FACING display name of the entry agent. Deliberately NOT "Frontdesk"
+ * (ADR-0060): to the user this is their assistant, not a reception desk that
+ * transfers them onward — delegation is internal plumbing. The folder keeps
+ * the `-frontdesk` slug: it is an operator/topology identifier, never shown
+ * in a chat.
+ */
+export const DEFAULT_FRONTDESK_NAME = `${PLATFORM_BRAND} Assistant`;
 
 /** Folder prefix for worker agent groups created by the bootstrap script. */
 export const DEFAULT_WORKER_FOLDER_PREFIX = PLATFORM_PROTOCOL_NAMESPACE;
