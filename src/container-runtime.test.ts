@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock log
 vi.mock('./log.js', () => ({
@@ -23,6 +23,7 @@ vi.mock('child_process', () => ({
 
 import {
   CONTAINER_RUNTIME_BIN,
+  ociRuntimeArgs,
   readonlyMountArgs,
   stopContainer,
   ensureContainerRuntimeRunning,
@@ -36,6 +37,41 @@ beforeEach(() => {
 });
 
 // --- Pure functions ---
+
+describe('ociRuntimeArgs (ADR-0058)', () => {
+  const saved = process.env.CONTAINER_OCI_RUNTIME;
+  beforeEach(() => {
+    delete process.env.CONTAINER_OCI_RUNTIME;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CONTAINER_OCI_RUNTIME;
+    else process.env.CONTAINER_OCI_RUNTIME = saved;
+  });
+
+  it('defaults to the engine runtime — no flag at all', () => {
+    expect(ociRuntimeArgs()).toEqual([]);
+    expect(ociRuntimeArgs(null)).toEqual([]);
+  });
+
+  it('host-wide env selects the runtime', () => {
+    process.env.CONTAINER_OCI_RUNTIME = 'runsc';
+    expect(ociRuntimeArgs()).toEqual(['--runtime=runsc']);
+  });
+
+  it('per-group override beats the host env', () => {
+    process.env.CONTAINER_OCI_RUNTIME = 'runsc';
+    expect(ociRuntimeArgs('kata-runtime')).toEqual(['--runtime=kata-runtime']);
+  });
+
+  it('an invalid name degrades to the engine default with a warning — never blocks the spawn', () => {
+    expect(ociRuntimeArgs('runsc; rm -rf /')).toEqual([]);
+    expect(log.warn).toHaveBeenCalledWith('Ignoring invalid OCI runtime name — using the engine default', {
+      configured: 'runsc; rm -rf /',
+    });
+    process.env.CONTAINER_OCI_RUNTIME = 'bad name!';
+    expect(ociRuntimeArgs()).toEqual([]);
+  });
+});
 
 describe('readonlyMountArgs', () => {
   it('returns -v flag with :ro suffix', () => {

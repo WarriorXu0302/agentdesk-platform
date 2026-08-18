@@ -125,6 +125,16 @@ describe('container.json read-modify-write safety', () => {
     expect(() => readContainerConfig('arr')).toThrow(/failed to parse/);
   });
 
+  it('ociRuntime round-trips; an invalid value degrades to unset (ADR-0058)', () => {
+    writeRaw('sandboxed', JSON.stringify({ ociRuntime: 'runsc' }));
+    expect(readContainerConfig('sandboxed').ociRuntime).toBe('runsc');
+
+    // Fail-safe: a typo must fall back to the engine default, never produce
+    // a config that blocks the spawn.
+    writeRaw('sandboxed-bad', JSON.stringify({ ociRuntime: 'runsc; rm -rf /' }));
+    expect(readContainerConfig('sandboxed-bad').ociRuntime).toBeUndefined();
+  });
+
   it('preserves operator keys this interface does not model (round-trip is lossless)', () => {
     // Regression: the reader mapped only its known keys into a fresh object, so
     // documented runner-read fields (idleExitMs, confidenceThreshold) vanished
