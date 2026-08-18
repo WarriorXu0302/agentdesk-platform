@@ -481,6 +481,37 @@ describe('routeAgentMessage return-path', () => {
     expect(readInbound(A, S_alice_new.id)).toHaveLength(0); // not re-derived to newest
   });
 
+  it('owned source with NO same-owner lane prefers the ownerless shared lane over a stranger’s newer owned session', async () => {
+    // Pins fall-through path 2: Alice has no lane of her own on A; a
+    // stranger's (Bob's) owned session is the NEWEST on the group. The reply
+    // must land in the newest OWNERLESS shared lane (S2, multi-user by
+    // design), never in Bob's private lane.
+    const S_bob: Session = {
+      ...S1,
+      id: 'sess-A-bob',
+      owner_user_id: 'ou_bob',
+      created_at: '2026-03-02T00:00:00.000Z', // newest on the group
+    };
+    const SW: Session = {
+      ...SB,
+      id: 'sess-B-alice-lane',
+      owner_user_id: 'ou_alice',
+      created_at: '2026-03-03T00:00:00.000Z',
+    };
+    createSession(S_bob);
+    createSession(SW);
+    initSessionFolder(A, S_bob.id);
+    initSessionFolder(B, SW.id);
+
+    await routeAgentMessage(
+      { id: 'msg-w-note', platform_id: A, content: JSON.stringify({ text: 'status update' }), in_reply_to: null },
+      SW,
+    );
+
+    expect(readInbound(A, S_bob.id)).toHaveLength(0); // stranger's newest lane stays clean
+    expect(readInbound(A, S2.id)).toHaveLength(1); // newest ownerless shared lane wins
+  });
+
   it('fallback: a2a with no in_reply_to falls through to newest-session lookup', async () => {
     // No prior conversation. B initiates an a2a to A out of the blue.
     await routeAgentMessage(
