@@ -140,6 +140,15 @@ export interface ContainerConfig {
    * - `root-session`: one a2a session per target agent group and root session
    */
   a2aSessionMode?: A2aSessionMode;
+  /**
+   * OCI runtime override for this group's containers (ADR-0058) — e.g.
+   * `runsc` (gVisor) or `kata-runtime` (Kata/microVM). Maps to
+   * `docker run --runtime <value>`. Unset = the host-wide
+   * CONTAINER_OCI_RUNTIME env when present, else the engine default (runc).
+   * Lets an operator harden selected groups (untrusted-code workers) without
+   * touching the rest of the fleet.
+   */
+  ociRuntime?: string;
   /** Agent group ID — set by the host, read by the runner. */
   agentGroupId?: string;
   /** Max messages per prompt. Falls back to code default if unset. */
@@ -223,6 +232,21 @@ function normalizeMemoryMode(value: unknown): MemoryMode | undefined {
 
 function normalizeA2aSessionMode(value: unknown): A2aSessionMode | undefined {
   return value === 'agent-shared' || value === 'root-session' ? value : undefined;
+}
+
+/**
+ * OCI runtime name (ADR-0058). Fail-safe: an invalid value degrades to
+ * "unset" with a warning — a typo here must fall back to the engine default,
+ * never produce a container that can't spawn (the ADR-0053×0054 lesson:
+ * a boot-blocking config error becomes a silent retry loop).
+ */
+function normalizeOciRuntime(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string' && /^[a-zA-Z0-9_.-]+$/.test(value.trim()) && value.trim()) {
+    return value.trim();
+  }
+  log.warn('container.json: ignoring invalid ociRuntime (must match [a-zA-Z0-9_.-]+)', { got: value });
+  return undefined;
 }
 
 function requiredRoutingString(value: unknown, field: string): string {
@@ -486,6 +510,7 @@ export function readContainerConfig(folder: string): ContainerConfig {
     assistantName: raw.assistantName,
     memoryMode: normalizeMemoryMode(raw.memoryMode),
     a2aSessionMode: normalizeA2aSessionMode(raw.a2aSessionMode),
+    ociRuntime: normalizeOciRuntime(raw.ociRuntime),
     agentGroupId: raw.agentGroupId,
     maxMessagesPerPrompt: raw.maxMessagesPerPrompt,
     resources: normalizeResources(raw.resources),

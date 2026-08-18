@@ -26,6 +26,7 @@ import { readContainerConfig, writeContainerConfig } from './container-config.js
 import {
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
+  ociRuntimeArgs,
   readonlyMountArgs,
   stopContainer,
   stopContainerAsync,
@@ -934,6 +935,10 @@ export async function buildContainerArgs(
   signingProxy?: SpawnSigningProxy,
 ): Promise<string[]> {
   const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
+
+  // OCI runtime override (ADR-0058): per-group ociRuntime > host env
+  // CONTAINER_OCI_RUNTIME > engine default. gVisor/Kata by config alone.
+  args.push(...ociRuntimeArgs(containerConfig.ociRuntime));
 
   // Resource limits (multi-tenant safety net). Fields are opt-in in
   // container.json; when missing, Docker defaults to unlimited.

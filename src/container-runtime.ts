@@ -25,6 +25,26 @@ const STOP_TIMEOUT_MS = 5000;
  */
 export const CONTAINER_RUNTIME_BIN = process.env.CONTAINER_RUNTIME || 'docker';
 
+/**
+ * OCI runtime selection (ADR-0058, extensibility tier 1). Precedence:
+ * per-group container.json `ociRuntime` > host-wide CONTAINER_OCI_RUNTIME
+ * env > engine default (runc). Any OCI-compatible runtime — gVisor's
+ * `runsc`, Kata's `kata-runtime` — becomes a pure config change; podman /
+ * nerdctl swap via CONTAINER_RUNTIME as before. Fail-safe: an invalid name
+ * degrades to the engine default with a warning, never blocks the spawn
+ * (a boot-refusing config error turns into a silent retry loop — the
+ * ADR-0053×0054 failure mode).
+ */
+export function ociRuntimeArgs(groupOverride?: string | null): string[] {
+  const configured = groupOverride?.trim() || process.env.CONTAINER_OCI_RUNTIME?.trim() || '';
+  if (!configured) return [];
+  if (!/^[a-zA-Z0-9_.-]+$/.test(configured)) {
+    log.warn('Ignoring invalid OCI runtime name — using the engine default', { configured });
+    return [];
+  }
+  return [`--runtime=${configured}`];
+}
+
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
   // On Linux, host.docker.internal isn't built-in — add it explicitly
