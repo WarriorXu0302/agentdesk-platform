@@ -31,7 +31,7 @@ import { run } from './init-enterprise-topology.js';
 // script builds folder names off `DEFAULT_FRONTDESK_FOLDER` /
 // `buildWorkerFolder`, so the tests reference the same derived slugs.
 const FRONTDESK_FOLDER = 'agentdesk-frontdesk';
-const FRONTDESK_NAME = 'AgentDesk Frontdesk';
+const FRONTDESK_NAME = 'AgentDesk Assistant'; // user-facing: an assistant, not a reception desk (ADR-0060)
 const ACCESS_WORKER_FOLDER = 'agentdesk-access-worker';
 
 beforeEach(() => {
@@ -147,6 +147,15 @@ describe('init-enterprise-topology', () => {
     // No business workers and no secondary desk are provisioned by default.
     expect(getAgentGroupByFolder(ACCESS_WORKER_FOLDER)).toBeUndefined();
     expect(getAgentGroupByFolder('agentdesk-lab-frontdesk')).toBeUndefined();
+
+    // Invisible-desk contract (ADR-0060): the seeded persona forbids
+    // announcing hand-offs and no longer presents the agent as a router.
+    const seed = fs.readFileSync(path.join(TEST_ROOT, 'groups', FRONTDESK_FOLDER, 'instructions.md'), 'utf8');
+    expect(seed).toContain('Speaking as one assistant');
+    expect(seed).toContain('NEVER say "I\'ll transfer you"');
+    expect(seed).toContain("You are the user's own assistant");
+    expect(seed).not.toContain('You are the shared frontdesk agent');
+    expect(seed).not.toContain('greet the user and classify the request');
 
     expect(readContainerConfig(FRONTDESK_FOLDER).a2aSessionMode).toBe('root-session');
     expect(readContainerConfig(FRONTDESK_FOLDER).resources).toEqual({ memoryMb: 768, cpus: 1, pidsLimit: 384 });

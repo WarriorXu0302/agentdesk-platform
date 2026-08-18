@@ -20,14 +20,14 @@
 
 ## 它替你解决了什么
 
-| 关注点 | 平台负责的部分 |
-|---|---|
-| 多人 | 每个用户**完全隔离**的 session,上下文不串味 |
-| 身份 | 每次后端调用都归属到**真实终端用户**,prompt-injected 的 agent 无法伪造 |
-| 派活 | frontdesk 分类分流到专项 worker;身份跨 hop 传递不漂移 |
-| 审计 | 中央 `gateway_audit` 表,每次后端调用一行(who / what / when / 结果) |
-| 容器 | 每 session 一个容器,per-group cgroup 资源上限 + 全局并发上限 |
-| 可观测 | Prometheus `/metrics` + OpenTelemetry trace(Phoenix + Grafana) |
+| 关注点 | 平台负责的部分                                                         |
+| ------ | ---------------------------------------------------------------------- |
+| 多人   | 每个用户**完全隔离**的 session,上下文不串味                            |
+| 身份   | 每次后端调用都归属到**真实终端用户**,prompt-injected 的 agent 无法伪造 |
+| 派活   | frontdesk 分类分流到专项 worker;身份跨 hop 传递不漂移                  |
+| 审计   | 中央 `gateway_audit` 表,每次后端调用一行(who / what / when / 结果)     |
+| 容器   | 每 session 一个容器,per-group cgroup 资源上限 + 全局并发上限           |
+| 可观测 | Prometheus `/metrics` + OpenTelemetry trace(Phoenix + Grafana)         |
 
 ## 架构总览
 
@@ -36,7 +36,7 @@
 ```text
 聊天用户 / 群聊
   -> 通道适配器 (feishu / cli)
-  -> frontdesk agent      (接待、分类、分流)
+  -> entry agent          (用户眼中的"我的助手";分类/委派内部发生 — ADR-0060)
   -> worker agents        (专项执行)
   -> 后端网关             (你的 HTTP 契约)
   -> 你的 ERP / CRM / 审批 / 权限系统

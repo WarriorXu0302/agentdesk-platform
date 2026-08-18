@@ -569,7 +569,7 @@ describe('router', () => {
 
     createAgentGroup({
       id: 'ag-frontdesk',
-      name: 'AgentDesk Frontdesk',
+      name: 'AgentDesk Assistant',
       folder: 'agentdesk-frontdesk',
       agent_provider: null,
       created_at: now(),
@@ -645,7 +645,7 @@ describe('router', () => {
 
     createAgentGroup({
       id: 'ag-frontdesk',
-      name: 'AgentDesk Frontdesk',
+      name: 'AgentDesk Assistant',
       folder: 'agentdesk-frontdesk',
       agent_provider: null,
       created_at: now(),

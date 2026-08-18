@@ -66,7 +66,7 @@ Feishu supports:
 
 ### Frontdesk Agent
 
-The frontdesk agent is the enterprise entrypoint.
+The entry agent (folder slug: `*-frontdesk`) is the enterprise entrypoint. To the USER it is simply their assistant — delegation is internal plumbing and is never announced (ADR-0060).
 
 Responsibilities:
 

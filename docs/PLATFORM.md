@@ -26,7 +26,7 @@
 主链路：
 
 ```
-飞书消息  →  frontdesk agent（前台分流）
+飞书消息  →  entry agent（用户眼中的"我的助手"；分流内部发生 — ADR-0060）
               →  worker agent（业务专家）
                     →  后端网关（你的后端）
                           →  ERP / 审批 / 权限系统
@@ -34,14 +34,14 @@
 
 跟普通"飞书机器人"的区别：
 
-| 关注点 | 普通机器人 | AgentDesk |
-|---|---|---|
-| 多人共用 | 一个 bot 一个 prompt | 不同员工**完全隔离**的 session |
-| 身份 | bot 账号代表所有用户 | 每次后端调用归属到**真实员工**，不可被 prompt-injection 伪造 |
-| 派活 | 单一 agent 全包 | frontdesk 分流 → 专项 worker，链路上身份不漂 |
-| 审计 | 没有 / 靠对话日志 | 中央 `gateway_audit` 表，每次调用一行（who / what / when / 结果） |
-| 容器 | 不存在 | 每个 session 独立容器，cgroup 资源限制，并发上限 |
-| 观测 | 无 | Prometheus `/metrics`：路由时延、容器退出分类、分类决策、后端调用错误 |
+| 关注点   | 普通机器人           | AgentDesk                                                             |
+| -------- | -------------------- | --------------------------------------------------------------------- |
+| 多人共用 | 一个 bot 一个 prompt | 不同员工**完全隔离**的 session                                        |
+| 身份     | bot 账号代表所有用户 | 每次后端调用归属到**真实员工**，不可被 prompt-injection 伪造          |
+| 派活     | 单一 agent 全包      | frontdesk 分流 → 专项 worker，链路上身份不漂                          |
+| 审计     | 没有 / 靠对话日志    | 中央 `gateway_audit` 表，每次调用一行（who / what / when / 结果）     |
+| 容器     | 不存在               | 每个 session 独立容器，cgroup 资源限制，并发上限                      |
+| 观测     | 无                   | Prometheus `/metrics`：路由时延、容器退出分类、分类决策、后端调用错误 |
 
 适合的部署形态：**1 个 host + Docker（或 Apple Container）+ 飞书 + 一个企业自己的后端**（ERP / CRM / 工单系统等）。规模目标：1000 员工量级。
 
@@ -111,6 +111,7 @@
 ```
 
 详细 schema：
+
 - [docs/db.md](db.md) — 三库总览 + 跨挂载不变式
 - [docs/db-central.md](db-central.md) — Central DB 表逐个解释
 - [docs/db-session.md](db-session.md) — 两文件 session 表 + seq 奇偶约定
@@ -210,13 +211,13 @@ sessions = (agent_group, messaging_group, owner_user, thread_id) → 一个容�
 
 **解法（5 层叠加）**：
 
-| 层 | 机制 | 作用 |
-|---|---|---|
-| 1 | host 写 inbound.db 时 stamp 真实 senderId | container 无法伪造来源 |
-| 2 | container 启动时 host 把 user 身份写 origin_user_id 列 | 跨 a2a hop 传递的根身份 |
-| 3 | poll-loop 在 turn 开始时 `setRequestIdentity` | 一个 turn 内身份不漂 |
-| 4 | tool handler 不读 agent args，读 RequestIdentity | LLM 自报的 userId 被忽略 |
-| 5 | 多用户混批 → batch-split | 一个 tick 多人消息会被拆到不同 turn |
+| 层  | 机制                                                   | 作用                                |
+| --- | ------------------------------------------------------ | ----------------------------------- |
+| 1   | host 写 inbound.db 时 stamp 真实 senderId              | container 无法伪造来源              |
+| 2   | container 启动时 host 把 user 身份写 origin_user_id 列 | 跨 a2a hop 传递的根身份             |
+| 3   | poll-loop 在 turn 开始时 `setRequestIdentity`          | 一个 turn 内身份不漂                |
+| 4   | tool handler 不读 agent args，读 RequestIdentity       | LLM 自报的 userId 被忽略            |
+| 5   | 多用户混批 → batch-split                               | 一个 tick 多人消息会被拆到不同 turn |
 
 后端网关收到的请求带 `requesterSource: 'session' \| 'agent-asserted'` —— 后者是更弱信号（无可信来源），后端可对其拒绝写操作。
 
@@ -227,6 +228,7 @@ sessions = (agent_group, messaging_group, owner_user, thread_id) → 一个容�
 **问题**：frontdesk 用 prompt 默默分类，没办法做 regression、没办法看路由分布。
 
 **解法**：每次派活前必须先调 `classify_intent` 工具，参数：
+
 - `recommendedWorker`（必须是真实 destination）
 - `confidence` 0-1
 - `candidates[]`（其他考虑过的）
@@ -236,6 +238,7 @@ sessions = (agent_group, messaging_group, owner_user, thread_id) → 一个容�
 工具返回 advisory（"confidence < 0.70 必须先 clarify"）+ classificationId。后续 outbound 自动 stamp 该 id。
 
 host 把 classification_log 表 + outcome_ref 闭环 + 4 类 bypass 指标都做了：
+
 - `no_classification_id`：没调工具直派
 - `classification_not_found`：id 不存在 / 跨 session
 - `action_mismatch`：声明 delegate 实际发 channel reply（不让用户回复抢占真派活的 outcome_ref slot）
@@ -244,13 +247,13 @@ host 把 classification_log 表 + outcome_ref 闭环 + 4 类 bypass 指标都做
 
 ### 4.3 容器生命周期和资源安全
 
-| 问题 | 解法 |
-|---|---|
-| 一个容器死循环吃光 host | per-group `resources.{memoryMb, cpus, pidsLimit}` → docker run 标志 |
-| 入站 burst 一次拉 N 个容器，host 撑不住 | `MAX_CONCURRENT_CONTAINERS=10`，超出立刻返回 false，host-sweep 60s 后重试 |
-| 闲置容器持续吃内存 | `AGENTDESK_IDLE_EXIT_MS=120000`，2 分钟空闲容器主动退（同用户连发还是用 hot 容器） |
-| 容器卡死无心跳 | host-sweep 心跳 mtime + 30 分钟绝对上限，过期 SIGKILL |
-| 容器异常退出，处理中消息丢失 | container_state.processing_ack 表，host 回收时把消息标记为 retry |
+| 问题                                    | 解法                                                                               |
+| --------------------------------------- | ---------------------------------------------------------------------------------- |
+| 一个容器死循环吃光 host                 | per-group `resources.{memoryMb, cpus, pidsLimit}` → docker run 标志                |
+| 入站 burst 一次拉 N 个容器，host 撑不住 | `MAX_CONCURRENT_CONTAINERS=10`，超出立刻返回 false，host-sweep 60s 后重试          |
+| 闲置容器持续吃内存                      | `AGENTDESK_IDLE_EXIT_MS=120000`，2 分钟空闲容器主动退（同用户连发还是用 hot 容器） |
+| 容器卡死无心跳                          | host-sweep 心跳 mtime + 30 分钟绝对上限，过期 SIGKILL                              |
+| 容器异常退出，处理中消息丢失            | container_state.processing_ack 表，host 回收时把消息标记为 retry                   |
 
 **深入**：[docs/architecture.md "Container Properties"](architecture.md) + `src/host-sweep.ts:decideStuckAction()` + `src/container-runner.ts`。
 
@@ -270,15 +273,15 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 
 ### 4.5 安全和审计
 
-| 通道 | 保护 |
-|---|---|
-| Feishu webhook | AES-256-CBC 解密 + SHA-256 时间戳签名（`src/channels/feishu/primitives.ts`） |
+| 通道                 | 保护                                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Feishu webhook       | AES-256-CBC 解密 + SHA-256 时间戳签名（`src/channels/feishu/primitives.ts`）                                         |
 | Container ↔ 后端网关 | 可选 HMAC-SHA256：`x-agentdesk-{timestamp,nonce,signature}`（header 前缀随 `BRAND_NAMESPACE` 变化，共享 signingKey） |
-| OneCLI gateway | 凭证不进容器，HTTP 代理动态注入，per-agent secret 隔离 |
-| 入站去重 | `inbound_dedup(channel, event_id)` 24h TTL |
-| 审计表 | `gateway_audit`：每次后端调用（成功/失败）一行 |
-| 审计表 | `classification_log`：每次分类决策一行 |
-| 审计表 | `enterprise_audit`：autowire 降级、policy override 等 |
+| OneCLI gateway       | 凭证不进容器，HTTP 代理动态注入，per-agent secret 隔离                                                               |
+| 入站去重             | `inbound_dedup(channel, event_id)` 24h TTL                                                                           |
+| 审计表               | `gateway_audit`：每次后端调用（成功/失败）一行                                                                       |
+| 审计表               | `classification_log`：每次分类决策一行                                                                               |
+| 审计表               | `enterprise_audit`：autowire 降级、policy override 等                                                                |
 
 **深入**：[docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md) 完整协议。
 
@@ -288,16 +291,17 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 
 ### 5.1 频道接入
 
-| Channel | 状态 |
-|---|---|
+| Channel  | 状态                                              |
+| -------- | ------------------------------------------------- |
 | `feishu` | 内置（webhook / long-connection / hybrid 三模式） |
-| `cli` | 内置（本地调试用） |
+| `cli`    | 内置（本地调试用）                                |
 
 要接其他平台（Slack / WhatsApp / Telegram）需自己写 adapter，参考 `src/channels/feishu.ts`。Channel 协议在 [docs/api-details.md](api-details.md)。
 
 ### 5.2 后端网关 MCP 工具
 
 `backendGateway.baseUrl` 配置后容器自动获得：
+
 - `gateway_describe` — 列后端能力 / 操作清单
 - `gateway_authorize` — 操作前置鉴权
 - `gateway_execute` — 执行业务操作
@@ -305,6 +309,7 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 - `gateway_memory_search` — 长期记忆检索 + 来源 provenance + 召回内容注入隔离（ADR-0033；后端未实现时返回 404，平台降级为 `OPERATION_NOT_FOUND`）
 
 请求 envelope（强制字段）：
+
 ```json
 {
   "contractVersion": 1,
@@ -327,14 +332,14 @@ archive / hard-delete 都有独立 archived_at 列，hard-delete 按归档时间
 
 `pnpm init:enterprise` 默认只建**一个空白模板 frontdesk**（`agentdesk-frontdesk`），不含任何业务 worker。需要 worker 时通过 `--workers` 传名字，例如：
 
-| folder（示例） | 业务定位 |
-|---|---|
-| `agentdesk-frontdesk` | 接待 / 分流 / 派活（默认创建） |
-| `agentdesk-access-worker` | 身份 / 权限 / SSO 映射 |
-| `agentdesk-sales-worker` | 销售相关后端操作 |
-| `agentdesk-finance-worker` | 财务 / 发票 / 审批 |
-| `agentdesk-approval-worker` | 通用审批流 |
-| `agentdesk-ops-worker` | 运维 / 通知 |
+| folder（示例）              | 业务定位                       |
+| --------------------------- | ------------------------------ |
+| `agentdesk-frontdesk`       | 接待 / 分流 / 派活（默认创建） |
+| `agentdesk-access-worker`   | 身份 / 权限 / SSO 映射         |
+| `agentdesk-sales-worker`    | 销售相关后端操作               |
+| `agentdesk-finance-worker`  | 财务 / 发票 / 审批             |
+| `agentdesk-approval-worker` | 通用审批流                     |
+| `agentdesk-ops-worker`      | 运维 / 通知                    |
 
 上表 worker 只是名字示例，不是默认拓扑。Worker 列表是配置（`--workers` CLI 参数），不是硬编码业务范围。每个 worker 独立 system prompt + container.json + 资源配额。
 
@@ -383,25 +388,25 @@ pnpm dev                          # 开发模式 / 或 pnpm build && pnpm start
 
 ### 6.2 环境变量速查
 
-| 变量 | 默认 | 作用 |
-|---|---|---|
-| `MAX_CONCURRENT_CONTAINERS` | 10 | 全局并发容器上限 |
-| `DELIVERY_TIMEOUT_MS` | 30000 | 单次渠道 adapter 投递调用超时；超时计为失败并按退避重试（ADR-0016） |
-| `DELIVERY_CONCURRENCY` | 4 | 投递轮询跨 session 并发度（session 内仍严格串行） |
-| `AGENTDESK_IDLE_EXIT_MS` | 0（关） | 容器空闲多久主动退 |
-| `AGENTDESK_SESSION_TTL_DAYS` | 0（关） | 多少天空闲 session 归档 |
-| `AGENTDESK_ARCHIVE_HARD_DELETE_DAYS` | 0（关） | 归档多少天后物理删除 |
-| `AGENTDESK_PROGRESS_STATUS_CHANNELS` | feishu | 哪些通道启用 reaction 进度提示 |
-| `ENTERPRISE_AUTO_WIRE_ALLOW_POLICY_DOWNGRADE` | true | autowire 是否允许降级 unknown_sender_policy |
-| `ENTERPRISE_AUTO_WIRE_P2P` | false | 飞书 P2P 自动接线 |
-| `ENTERPRISE_AUTO_WIRE_GROUPS` | false | 飞书群聊自动接线 |
-| `WEBHOOK_PORT` | 3000 | webhook + `/metrics` + `/healthz` + `/readyz` 暴露的端口 |
-| `WEBHOOK_MAX_BODY_BYTES` | 1048576（1 MiB） | ingress 请求体上限；超限返回 413 并计入 `webhook_rejected_total{reason="body_too_large"}`（ADR-0020） |
-| `WEBHOOK_REQUEST_TIMEOUT_MS` | 30000 | 单次请求完整生命周期超时（防慢速请求挂住连接） |
-| `WEBHOOK_HEADERS_TIMEOUT_MS` | 10000 | 请求头阶段超时（slow-loris 防护） |
-| `METRICS_AUTH_TOKEN` | 未设（`/metrics` 公开） | 设置后 `/metrics` 要求 `Authorization: Bearer <token>`，否则 401。生产应设置或用反向代理隔离 |
-| `AGENT_DROP_CAPS` | 未设（不丢任何 cap） | 逗号/空格分隔的 Linux capability 列表，每项发一个 `--cap-drop=<CAP>`（ADR-0029）。默认保留 docker 默认 cap 集 |
-| `AGENT_CONTAINER_NETWORK` | 未设（docker 默认 bridge，不限制出网） | 全局 agent 容器 egress 网络（ADR-0032）。设为运营者管理的 egress-proxy 网络名做 allowlist，或 `none`（纯 DB worker）。per-group `container.json` 的 `network` 优先。非法值被拒并回退默认。详见 `docs/security/container-egress.md` |
+| 变量                                          | 默认                                   | 作用                                                                                                                                                                                                                               |
+| --------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MAX_CONCURRENT_CONTAINERS`                   | 10                                     | 全局并发容器上限                                                                                                                                                                                                                   |
+| `DELIVERY_TIMEOUT_MS`                         | 30000                                  | 单次渠道 adapter 投递调用超时；超时计为失败并按退避重试（ADR-0016）                                                                                                                                                                |
+| `DELIVERY_CONCURRENCY`                        | 4                                      | 投递轮询跨 session 并发度（session 内仍严格串行）                                                                                                                                                                                  |
+| `AGENTDESK_IDLE_EXIT_MS`                      | 0（关）                                | 容器空闲多久主动退                                                                                                                                                                                                                 |
+| `AGENTDESK_SESSION_TTL_DAYS`                  | 0（关）                                | 多少天空闲 session 归档                                                                                                                                                                                                            |
+| `AGENTDESK_ARCHIVE_HARD_DELETE_DAYS`          | 0（关）                                | 归档多少天后物理删除                                                                                                                                                                                                               |
+| `AGENTDESK_PROGRESS_STATUS_CHANNELS`          | feishu                                 | 哪些通道启用 reaction 进度提示                                                                                                                                                                                                     |
+| `ENTERPRISE_AUTO_WIRE_ALLOW_POLICY_DOWNGRADE` | true                                   | autowire 是否允许降级 unknown_sender_policy                                                                                                                                                                                        |
+| `ENTERPRISE_AUTO_WIRE_P2P`                    | false                                  | 飞书 P2P 自动接线                                                                                                                                                                                                                  |
+| `ENTERPRISE_AUTO_WIRE_GROUPS`                 | false                                  | 飞书群聊自动接线                                                                                                                                                                                                                   |
+| `WEBHOOK_PORT`                                | 3000                                   | webhook + `/metrics` + `/healthz` + `/readyz` 暴露的端口                                                                                                                                                                           |
+| `WEBHOOK_MAX_BODY_BYTES`                      | 1048576（1 MiB）                       | ingress 请求体上限；超限返回 413 并计入 `webhook_rejected_total{reason="body_too_large"}`（ADR-0020）                                                                                                                              |
+| `WEBHOOK_REQUEST_TIMEOUT_MS`                  | 30000                                  | 单次请求完整生命周期超时（防慢速请求挂住连接）                                                                                                                                                                                     |
+| `WEBHOOK_HEADERS_TIMEOUT_MS`                  | 10000                                  | 请求头阶段超时（slow-loris 防护）                                                                                                                                                                                                  |
+| `METRICS_AUTH_TOKEN`                          | 未设（`/metrics` 公开）                | 设置后 `/metrics` 要求 `Authorization: Bearer <token>`，否则 401。生产应设置或用反向代理隔离                                                                                                                                       |
+| `AGENT_DROP_CAPS`                             | 未设（不丢任何 cap）                   | 逗号/空格分隔的 Linux capability 列表，每项发一个 `--cap-drop=<CAP>`（ADR-0029）。默认保留 docker 默认 cap 集                                                                                                                      |
+| `AGENT_CONTAINER_NETWORK`                     | 未设（docker 默认 bridge，不限制出网） | 全局 agent 容器 egress 网络（ADR-0032）。设为运营者管理的 egress-proxy 网络名做 allowlist，或 `none`（纯 DB worker）。per-group `container.json` 的 `network` 优先。非法值被拒并回退默认。详见 `docs/security/container-egress.md` |
 
 ### 6.3 资源配置
 
@@ -457,10 +462,10 @@ agentdesk_classification_log_failures_total{reason}      # 审计写失败
 
 host 在同一个 `WEBHOOK_PORT` 上暴露两个免鉴权探针端点（编排器 / k8s / compose healthcheck 用）：
 
-| 端点 | 语义 | 返回 |
-|---|---|---|
-| `GET /healthz` | liveness：进程事件循环存活 | 恒 `200 ok` |
-| `GET /readyz` | readiness：依赖可服务（中央 DB 可读 `SELECT 1` + 容器运行时 `<runtime> info` 可达） | 就绪 `200 ready`；不就绪 `503 not ready: <reason>`（如 `db_unreadable` / `container_runtime_unreachable`） |
+| 端点           | 语义                                                                                | 返回                                                                                                       |
+| -------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `GET /healthz` | liveness：进程事件循环存活                                                          | 恒 `200 ok`                                                                                                |
+| `GET /readyz`  | readiness：依赖可服务（中央 DB 可读 `SELECT 1` + 容器运行时 `<runtime> info` 可达） | 就绪 `200 ready`；不就绪 `503 not ready: <reason>`（如 `db_unreadable` / `container_runtime_unreachable`） |
 
 注意取舍：`/readyz` 的容器运行时探测是每次请求 `<runtime> info`（3s 超时），探针轮询频率不宜过高（建议 ≥10s）。`/healthz` `/readyz` 不需要 `METRICS_AUTH_TOKEN`（探活必须可达）；`/metrics` 受该 token 保护。
 
@@ -470,26 +475,26 @@ host 在同一个 `WEBHOOK_PORT` 上暴露两个免鉴权探针端点（编排�
 
 ## 7. 文档地图
 
-| 文档 | 何时去看 |
-|---|---|
-| [README.md](../README.md) | 第一次接触、快速跑起来 |
-| **PLATFORM.md（本文）** | 系统总览、需要在心里建立全景图 |
-| [docs/SPEC.md](SPEC.md) | 平台定位 + 不做什么的边界 |
-| [docs/architecture.md](architecture.md) | 详细的 message flow + identity model + design decisions |
-| [docs/db.md](db.md) | 三 DB 模型、跨挂载 invariants |
-| [docs/db-central.md](db-central.md) | Central DB 每张表 |
-| [docs/db-session.md](db-session.md) | inbound/outbound 表 + seq 奇偶 |
-| [docs/isolation-model.md](isolation-model.md) | session 隔离模式（shared / per-thread / per-user / per-user-per-thread / agent-shared / root-session）+ **org 多租户隔离层**（ADR-0052） |
-| [docs/enterprise-multi-user.md](enterprise-multi-user.md) | 多人共享 frontdesk 的拓扑、autowire 策略、默认值、**RBAC / org 治理与访问-撤销时效** |
-| [examples/multi-tenant/](../examples/multi-tenant/) · [scripts/org.ts](../scripts/org.ts) · [scripts/trace.ts](../scripts/trace.ts) | **多租户 / 治理运维**：可跑的 org 隔离演示 + RBAC/org 管理 CLI（建租户、分配组、授 org-admin、只读分诊）|
-| [docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md) | 后端网关协议（请求 envelope、HMAC、requesterSource、gateway_audit） |
-| [docs/ERP-INTEGRATION-GUIDE.md](ERP-INTEGRATION-GUIDE.md) | 后端开发者教程：怎么实现网关（含示例代码、HMAC、审批、幂等） |
-| [docs/feishu-channel.md](feishu-channel.md) | 飞书接入细节 |
-| [docs/api-details.md](api-details.md) | Channel adapter / inbound / outbound 内容格式 |
-| [docs/agent-runner-details.md](agent-runner-details.md) | 容器侧 poll-loop / formatter / MCP tool 接口 |
-| [docs/build-and-runtime.md](build-and-runtime.md) | Node host + Bun container 双 runtime 的 lockfile / image build |
-| [docs/RUNBOOK.md](RUNBOOK.md) | 运维 / SRE 手册：告警、诊断、故障处置 |
-| [docs/DEVELOPMENT.md](DEVELOPMENT.md) | 开发者上手指南：代码 layout、加新通道 / worker / 工具的 step-by-step |
+| 文档                                                                                                                                | 何时去看                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [README.md](../README.md)                                                                                                           | 第一次接触、快速跑起来                                                                                                                   |
+| **PLATFORM.md（本文）**                                                                                                             | 系统总览、需要在心里建立全景图                                                                                                           |
+| [docs/SPEC.md](SPEC.md)                                                                                                             | 平台定位 + 不做什么的边界                                                                                                                |
+| [docs/architecture.md](architecture.md)                                                                                             | 详细的 message flow + identity model + design decisions                                                                                  |
+| [docs/db.md](db.md)                                                                                                                 | 三 DB 模型、跨挂载 invariants                                                                                                            |
+| [docs/db-central.md](db-central.md)                                                                                                 | Central DB 每张表                                                                                                                        |
+| [docs/db-session.md](db-session.md)                                                                                                 | inbound/outbound 表 + seq 奇偶                                                                                                           |
+| [docs/isolation-model.md](isolation-model.md)                                                                                       | session 隔离模式（shared / per-thread / per-user / per-user-per-thread / agent-shared / root-session）+ **org 多租户隔离层**（ADR-0052） |
+| [docs/enterprise-multi-user.md](enterprise-multi-user.md)                                                                           | 多人共享 frontdesk 的拓扑、autowire 策略、默认值、**RBAC / org 治理与访问-撤销时效**                                                     |
+| [examples/multi-tenant/](../examples/multi-tenant/) · [scripts/org.ts](../scripts/org.ts) · [scripts/trace.ts](../scripts/trace.ts) | **多租户 / 治理运维**：可跑的 org 隔离演示 + RBAC/org 管理 CLI（建租户、分配组、授 org-admin、只读分诊）                                 |
+| [docs/enterprise-erp-gateway.md](enterprise-erp-gateway.md)                                                                         | 后端网关协议（请求 envelope、HMAC、requesterSource、gateway_audit）                                                                      |
+| [docs/ERP-INTEGRATION-GUIDE.md](ERP-INTEGRATION-GUIDE.md)                                                                           | 后端开发者教程：怎么实现网关（含示例代码、HMAC、审批、幂等）                                                                             |
+| [docs/feishu-channel.md](feishu-channel.md)                                                                                         | 飞书接入细节                                                                                                                             |
+| [docs/api-details.md](api-details.md)                                                                                               | Channel adapter / inbound / outbound 内容格式                                                                                            |
+| [docs/agent-runner-details.md](agent-runner-details.md)                                                                             | 容器侧 poll-loop / formatter / MCP tool 接口                                                                                             |
+| [docs/build-and-runtime.md](build-and-runtime.md)                                                                                   | Node host + Bun container 双 runtime 的 lockfile / image build                                                                           |
+| [docs/RUNBOOK.md](RUNBOOK.md)                                                                                                       | 运维 / SRE 手册：告警、诊断、故障处置                                                                                                    |
+| [docs/DEVELOPMENT.md](DEVELOPMENT.md)                                                                                               | 开发者上手指南：代码 layout、加新通道 / worker / 工具的 step-by-step                                                                     |
 
 ---
 
