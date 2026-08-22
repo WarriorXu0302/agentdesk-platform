@@ -598,14 +598,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
           : config.systemContext?.instructions,
       };
-      const runTurn = () =>
-        processQuery(
-          config.provider.query({ prompt, continuation, cwd: config.cwd, systemContext }),
-          turnRouting,
-          processingIds,
-          config.providerName,
-          prompt,
-        );
+      const runTurn = () => {
+        const query = config.provider.query({ prompt, continuation, cwd: config.cwd, systemContext });
+        // Make config.signal actually stop an IN-FLIGHT turn, not just skip
+        // the next tick. The loop-top check alone never fires while a
+        // provider stream is parked waiting for input, so an aborted loop
+        // (controlled shutdown, or a test tearing down) kept running with its
+        // poll interval live — writing into whatever session DB came next and
+        // holding the process open. Abort the stream so the generator exits
+        // and control returns to the loop top, where the existing check ends
+        // the run.
+        config.signal?.addEventListener('abort', () => query.abort(), { once: true });
+        return processQuery(query, turnRouting, processingIds, config.providerName, prompt);
+      };
       let result;
       try {
         result = await runTurn();
@@ -675,8 +680,18 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       clearRoutingGate();
     }
 
-    // Ensure completed even if processQuery ended without a result event
-    // (e.g. stream closed unexpectedly).
+    // Backstop for a stream that ended without a result event (e.g. closed
+    // unexpectedly). The primary ack happens at the result event, after the
+    // turn's output is durable — see the ordering invariant there.
+    //
+    // Except when we are being torn down: an aborted turn was cut short, so
+    // whatever it was going to produce does not exist. Acking here would be
+    // the ack-without-output this ADR forbids; leaving the claim lets the
+    // host re-drive it after the container is gone.
+    if (config.signal?.aborted) {
+      log(`Aborted mid-turn — leaving ${processingIds.length} claim(s) for the host to re-drive`);
+      return;
+    }
     markCompleted(processingIds);
     log(`Completed ${turnMessages.length} message(s) this turn (${ids.length} claimed at tick start)`);
   }
@@ -784,6 +799,21 @@ async function runQuery(
   providerName: string,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
+  /**
+   * Rows claimed for this stream that have NOT been acked yet (ADR-0062).
+   * Starts as the initial batch and grows with every follow-up pushed into
+   * the live query; drained at each result event, AFTER that turn's output
+   * is durable. Follow-ups used to be acked the instant they were pushed —
+   * before the model had produced anything for them — which is the same
+   * at-most-once hole this ADR closes at the result event, except the window
+   * was a whole model turn wide instead of two adjacent SQLite calls.
+   *
+   * Acking late is safe: `markProcessing` (not the ack) is what withholds a
+   * row from re-claim, and the host tolerates a long-lived 'processing'
+   * claim while the container keeps touching its heartbeat — which the
+   * initial batch already relies on for the whole turn.
+   */
+  const pendingAck = new Set<string>(initialBatchIds);
   // Last non-empty result text seen this turn — surfaced to processQuery for
   // the agent.turn `output.value` content attribute (ADR-0027). Only populated
   // when content capture is on, but cheap to track regardless.
@@ -931,7 +961,23 @@ async function runQuery(
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
-        markCompleted(keptIds);
+        // Do NOT ack here — the model has produced nothing for these rows
+        // yet. They ride to the next result event with everything else
+        // (ADR-0062); a crash before then leaves them un-acked and the host
+        // re-drives them, instead of recording them answered by silence.
+        for (const id of keptIds) pendingAck.add(id);
+        // Deferring the ack turns each follow-up into a live CLAIM, and the
+        // host's stuck-claim check is per-claim: it only spares a claim whose
+        // container touched the heartbeat AFTER that claim was taken
+        // (host-sweep enforceRunningContainerSla). A follow-up claimed
+        // mid-turn is by construction newer than the last heartbeat, so
+        // without this it would sit unprotected until the next provider
+        // event — and a long eventless stretch (a slow non-Bash tool, a long
+        // thinking phase) would let the sweep SIGKILL the container and
+        // re-drive the whole turn. Pushing work into a live query IS
+        // progress; say so, and the follow-up gets the same protection the
+        // initial batch has had all along.
+        touchHeartbeat();
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
         // terminates the container on unhandled-rejection. The initial-batch
@@ -960,19 +1006,40 @@ async function runQuery(
         // Claude session with no prior context.
         setContinuation(providerName, event.continuation);
       } else if (event.type === 'result') {
-        // A result — with or without text — means the turn is done. Mark
-        // the initial batch completed now so the host sweep doesn't see
-        // stale 'processing' claims while the query stays open for
-        // follow-up pushes. The agent may have responded via MCP
-        // (send_message) mid-turn, or the message may not need a response
-        // at all — either way the turn is finished.
-        markCompleted(initialBatchIds);
+        // ORDERING INVARIANT (do not reorder): the turn's output must be
+        // durable in outbound.db BEFORE the claim is acked. Both writes go
+        // to the same DB through the same synchronous single writer, so the
+        // order here IS the crash semantics:
+        //
+        //   dispatch → ack (this order): a crash in between leaves the reply
+        //     written and the claim un-acked, so the host re-drives the turn.
+        //     Worst case a duplicate — recoverable, and the gateway's
+        //     content-derived idempotency key (ADR-0048) stops a replayed
+        //     business write from committing twice.
+        //   ack → dispatch (what this used to do): a crash in between marks
+        //     the message COMPLETED with nothing sent. The user is answered
+        //     by permanent silence, and no sweep can find it — the claim is
+        //     completed, not stale. That is an at-most-once hole in an
+        //     otherwise at-least-once system, and the host's own
+        //     cost-ceiling / SLA killContainer can land exactly in it.
+        //
+        // Acking at result time (rather than at stream close) is still
+        // right: it stops the host sweep from seeing a stale 'processing'
+        // claim while the query stays open for follow-up pushes. Only the
+        // order within this block changed. Pinned by the crash-durability
+        // ordering test in integration.test.ts.
+        //
+        // A result — with or without text — means the turn is done: the
+        // agent may have answered via MCP (send_message) mid-turn, or the
+        // message may not need a response at all.
         if (event.text) {
           // Remember the final text so processQuery can stamp it as the
           // agent.turn output.value when content capture is on (ADR-0027).
           if (captureContent) lastResultText = event.text;
           dispatchResultText(event.text, routing);
         }
+        markCompleted([...pendingAck]);
+        pendingAck.clear();
       } else if (event.type === 'compacted') {
         // The SDK auto-compacted the conversation. After compaction the
         // model often drops the learned `<message to="…">` wrapping
@@ -1108,6 +1175,19 @@ async function runQuery(
   } finally {
     done = true;
     clearInterval(pollHandle);
+  }
+
+  // Stream ended without a final result event (closed early, provider quirk):
+  // nothing was produced for whatever is still outstanding, so acking here
+  // would be the very thing this ADR forbids — recording work as done with no
+  // output. Leave the rows claimed. The outer turn-tail acks the INITIAL
+  // batch (its output, if any, is already durable); any follow-up left over
+  // stays 'processing' and is re-driven by the host once this container exits
+  // (host-sweep's crashed-container cleanup), with the inbound retry counter
+  // and its dead-letter ceiling applying as usual. Unbounded-latency
+  // recovery, but recovery — versus permanent silence.
+  if (pendingAck.size > 0) {
+    log(`Stream ended with no result for ${pendingAck.size} claimed row(s) — leaving them for the host to re-drive`);
   }
 
   return { continuation: queryContinuation, resultText: lastResultText };
