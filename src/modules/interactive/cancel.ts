@@ -54,16 +54,36 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
     const pending = findCancelablePendingQuestions(userId);
     if (pending.length === 0) return false; // nothing of theirs → pass through to the agent
 
+    // Isolate each question. The list comes back in a fixed order, so an
+    // unisolated throw on one of them means the user's LATER pending questions
+    // can never be cancelled — the same one fails every time they try. The
+    // throw would also reach this interceptor's outer catch, which returns
+    // false: the word "cancel" would then route to the agent as ordinary chat
+    // and the user would get no acknowledgement at all, having asked to cancel
+    // and seen nothing happen.
+    let cancelled = 0;
     for (const pq of pending) {
       const session = getSession(pq.session_id);
       if (!session) continue;
-      await resolvePendingQuestion(session, pq, CANCEL_SENTINEL, userId, { cancelled: true });
+      try {
+        await resolvePendingQuestion(session, pq, CANCEL_SENTINEL, userId, { cancelled: true });
+        cancelled++;
+      } catch (err) {
+        log.error('Cancelling one pending question failed — continuing with the rest', {
+          questionId: pq.question_id,
+          sessionId: pq.session_id,
+          err,
+        });
+      }
     }
 
     // Acknowledge on the same channel the user typed from (best-effort).
     const adapter = getDeliveryAdapter();
-    if (adapter) {
-      const n = pending.length;
+    if (adapter && cancelled > 0) {
+      // Report what was actually cancelled, not what was attempted — some may
+      // have failed above, and telling the user a larger number is worse than
+      // telling them a smaller one.
+      const n = cancelled;
       adapter
         .deliver(
           event.channelType,
@@ -75,7 +95,11 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
         .catch(() => {});
     }
 
-    log.info('Out-of-band cancel resolved pending question(s)', { userId, count: pending.length });
+    log.info('Out-of-band cancel resolved pending question(s)', {
+      userId,
+      cancelled,
+      attempted: pending.length,
+    });
     return true; // consumed
   } catch (err) {
     log.warn('Cancel interceptor error — passing message through', { err });

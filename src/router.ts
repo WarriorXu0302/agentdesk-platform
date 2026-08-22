@@ -44,6 +44,7 @@ import {
   policyCheckFailedTotal,
   startTimer,
   routeAgentFailuresTotal,
+  messageInterceptorFailuresTotal,
 } from './metrics.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { maybeStartProgressStatus, markProgressStatusFailed } from './modules/progress-status/index.js';
@@ -156,6 +157,17 @@ const messageInterceptors: MessageInterceptorFn[] = [];
 
 export function setMessageInterceptor(fn: MessageInterceptorFn): void {
   messageInterceptors.push(fn);
+}
+
+/**
+ * Remove every registered interceptor.
+ *
+ * Test helper. Registration is module state with no removal path, so a test
+ * that registers one would otherwise leak it into every later test in the same
+ * worker — the leaked-state failure mode this repo has already been bitten by.
+ */
+export function clearMessageInterceptorsForTests(): void {
+  messageInterceptors.length = 0;
 }
 
 /**
@@ -294,7 +306,38 @@ async function routeInboundInner(event: InboundEvent): Promise<void> {
   // Pre-route interceptors — let modules consume messages before any routing
   // (free-text approval replies, out-of-band cancel). First to claim it wins.
   for (const interceptor of messageInterceptors) {
-    if (await interceptor(event)) return;
+    // A throwing interceptor must not swallow the message.
+    //
+    // Interceptors are registered by optional modules and run before any
+    // routing. Without this, a throw propagates out of routeInboundInner and
+    // the message is dropped for EVERY agent on that channel — not just for
+    // the module that failed — with one `.catch()` line at the top of the
+    // process as the only evidence.
+    //
+    // Not hypothetical: the channel-registration interceptor
+    // (modules/permissions) has no outer catch of its own — its two `try`s
+    // wrap `JSON.parse` only — and it calls `createNewAgentGroup`, which
+    // writes DB rows and creates directories. It also consumes the user's
+    // pending state BEFORE that call, so a throw there loses the reply too.
+    // (The cancel interceptor does self-protect; this is per-interceptor, not
+    // a property of the chain.)
+    //
+    // A throw is treated as "did not claim", which is the safe direction: the
+    // message continues to normal routing rather than vanishing, and any
+    // decision the interceptor would have made stays unmade — pending, not
+    // granted.
+    let claimed = false;
+    try {
+      claimed = await interceptor(event);
+    } catch (err) {
+      messageInterceptorFailuresTotal.inc();
+      log.error('A message interceptor threw — treating the message as unclaimed and continuing to route', {
+        channelType: event.channelType,
+        platformId: event.platformId,
+        err,
+      });
+    }
+    if (claimed) return;
   }
 
   // 0. Apply the adapter's thread policy. Non-threaded adapters (Telegram,

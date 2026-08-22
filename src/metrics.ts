@@ -237,6 +237,21 @@ export const containerSlotsMax = new client.Gauge({
  * means at least one agent wired to that group did not receive a message it
  * was wired to receive, so alert on any sustained rate rather than a threshold.
  */
+/**
+ * Message interceptors that threw and were treated as not having claimed.
+ *
+ * Unlabelled on purpose: interceptors are anonymous functions registered by
+ * modules, so any label would have to be invented at the call site and would
+ * be wrong the moment a module is renamed. Non-zero at all means an optional
+ * module is failing on the inbound path — go read the log line, which carries
+ * the channel and the error.
+ */
+export const messageInterceptorFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_message_interceptor_failures_total`,
+  help: 'Inbound message interceptors that threw and were treated as unclaimed',
+  registers: [registry],
+});
+
 export const routeAgentFailuresTotal = new client.Counter({
   name: `${METRIC_PREFIX}_route_agent_failures_total`,
   help: 'Per-agent routing failures that were isolated so the remaining agents still received the message',
