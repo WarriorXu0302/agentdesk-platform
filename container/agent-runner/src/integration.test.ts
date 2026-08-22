@@ -546,49 +546,92 @@ describe('crash-durability ordering (write order IS the crash semantics)', () =>
     expect(JSON.parse(out[0].content).text).toBe('all good');
   });
 
-  it('a follow-up pushed into a live query is NOT acked until its output exists', async () => {
+  it('a follow-up pushed into a live query is not acked before that push happened', async () => {
     // The bigger half of the same hole: follow-ups used to be acked the
     // instant they were pushed, before the model had produced anything for
     // them — a window a whole model turn wide, and permanent (a 'completed'
-    // ack is synced to messages_in and never re-driven). Reachable by any
-    // non-trigger row, including scheduled tasks.
+    // ack is synced to messages_in and never re-driven).
+    //
+    // Asserted on the recorded SQL sequence, driven by THIS test's own
+    // provider. An earlier version polled for a 'processing' snapshot and
+    // only passed because a leaked poll loop from another test happened to
+    // own the row — it failed 8/8 when run alone. The provider below holds
+    // the stream open and signals when it has actually received the push, so
+    // the sequence is produced here and nowhere else.
+    let pushed: (() => void) | undefined;
+    const sawPush = new Promise<void>((r) => {
+      pushed = r;
+    });
+    class HoldingProvider {
+      readonly supportsNativeSlashCommands = false;
+      isSessionInvalid(): boolean {
+        return false;
+      }
+      query() {
+        let ended = false;
+        return {
+          push() {
+            pushed?.();
+          },
+          pushSystemReminder() {},
+          end() {
+            ended = true;
+          },
+          abort() {
+            ended = true;
+          },
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield { type: 'activity' as const };
+              yield { type: 'init' as const, continuation: 'holding-1' };
+              // Hold the stream open so the follow-up takes the push path
+              // rather than starting a fresh turn.
+              while (!ended) await new Promise((r) => setTimeout(r, 10));
+            },
+          },
+        };
+      }
+    }
+
     insertMessage('m1', { sender: 'Alice', text: 'first' }, { platformId: 'chan-1', channelType: 'discord' });
-
-    const provider = new MockProvider({}, (prompt) =>
-      prompt.includes('second') ? '<message to="discord-test">both done</message>' : '',
-    );
     const controller = new AbortController();
-    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 4000);
+    const rec = recordOutboundWrites();
+    const loopPromise = runPollLoopWithTimeout(
+      new HoldingProvider() as unknown as MockProvider,
+      controller.signal,
+      5000,
+    );
 
-    // Let the first turn claim m1 and open the stream.
-    await waitFor(() => getPendingMessages().length === 0, 3000);
+    // Wait until m1 is claimed and the stream is open.
+    await waitFor(() => rec.sql.some((q) => q.includes("'processing'")), 3000);
 
-    // A follow-up arrives while the query is open. trigger=0 so the
-    // pending-user-trigger latch does not defer it — it takes the push path.
+    // A follow-up arrives mid-turn. trigger=0 keeps the pending-user-trigger
+    // latch from deferring it, so it takes the push path — the same path a
+    // scheduled task row (kind='task') takes.
     getInboundDb()
       .prepare(
-        `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content, trigger)
-         VALUES ('m2', 'chat', datetime('now'), 'pending', 'chan-1', 'discord', ?, 0)`,
+        'INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content, trigger) ' +
+          "VALUES ('m2', 'chat', datetime('now'), 'pending', 'chan-1', 'discord', ?, 0)",
       )
       .run(JSON.stringify({ sender: 'Alice', text: 'second' }));
 
-    // Wait for it to be claimed (markProcessing), which is what actually
-    // withholds it from re-claim — not the ack.
-    await waitFor(() => {
-      const row = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m2') as
-        { status: string } | undefined;
-      return row?.status === 'processing';
-    }, 3000);
-
-    // THE ASSERTION: pushed, claimed — but NOT acked, because no output for
-    // it exists yet. Killed here, the host re-drives it instead of recording
-    // it answered by silence.
-    const acked = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m2') as
-      { status: string } | undefined;
-    expect(acked?.status).toBe('processing');
-
+    await sawPush;
+    // Let any ack that the push path would have issued actually land.
+    await sleep(50);
     controller.abort();
+    rec.restore();
     await loopPromise.catch(() => {});
+
+    // THE ASSERTION: the push happened, and no 'completed' ack was written
+    // for it. Killed here, the host re-drives m2 instead of recording it
+    // answered by silence.
+    const completedAcks = rec.sql.filter((q) => q.includes('processing_ack') && q.includes("'completed'"));
+    expect(completedAcks).toHaveLength(0);
+    // ...and the row really was claimed, so it is withheld from re-claim by
+    // markProcessing rather than by an ack.
+    const claimed = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m2') as
+      { status: string } | undefined;
+    expect(claimed?.status).toBe('processing');
   });
 
   it('a turn killed before it finishes leaves the claim un-acked, so the work is re-drivable', async () => {

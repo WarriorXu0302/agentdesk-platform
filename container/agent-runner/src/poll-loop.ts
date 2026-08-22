@@ -598,14 +598,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           ? executionInstructions(config.systemContext?.instructions, enforcedDecision)
           : config.systemContext?.instructions,
       };
-      const runTurn = () =>
-        processQuery(
-          config.provider.query({ prompt, continuation, cwd: config.cwd, systemContext }),
-          turnRouting,
-          processingIds,
-          config.providerName,
-          prompt,
-        );
+      const runTurn = () => {
+        const query = config.provider.query({ prompt, continuation, cwd: config.cwd, systemContext });
+        // Make config.signal actually stop an IN-FLIGHT turn, not just skip
+        // the next tick. The loop-top check alone never fires while a
+        // provider stream is parked waiting for input, so an aborted loop
+        // (controlled shutdown, or a test tearing down) kept running with its
+        // poll interval live — writing into whatever session DB came next and
+        // holding the process open. Abort the stream so the generator exits
+        // and control returns to the loop top, where the existing check ends
+        // the run.
+        config.signal?.addEventListener('abort', () => query.abort(), { once: true });
+        return processQuery(query, turnRouting, processingIds, config.providerName, prompt);
+      };
       let result;
       try {
         result = await runTurn();
@@ -678,6 +683,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Backstop for a stream that ended without a result event (e.g. closed
     // unexpectedly). The primary ack happens at the result event, after the
     // turn's output is durable — see the ordering invariant there.
+    //
+    // Except when we are being torn down: an aborted turn was cut short, so
+    // whatever it was going to produce does not exist. Acking here would be
+    // the ack-without-output this ADR forbids; leaving the claim lets the
+    // host re-drive it after the container is gone.
+    if (config.signal?.aborted) {
+      log(`Aborted mid-turn — leaving ${processingIds.length} claim(s) for the host to re-drive`);
+      return;
+    }
     markCompleted(processingIds);
     log(`Completed ${turnMessages.length} message(s) this turn (${ids.length} claimed at tick start)`);
   }
@@ -952,6 +966,18 @@ async function runQuery(
         // (ADR-0062); a crash before then leaves them un-acked and the host
         // re-drives them, instead of recording them answered by silence.
         for (const id of keptIds) pendingAck.add(id);
+        // Deferring the ack turns each follow-up into a live CLAIM, and the
+        // host's stuck-claim check is per-claim: it only spares a claim whose
+        // container touched the heartbeat AFTER that claim was taken
+        // (host-sweep enforceRunningContainerSla). A follow-up claimed
+        // mid-turn is by construction newer than the last heartbeat, so
+        // without this it would sit unprotected until the next provider
+        // event — and a long eventless stretch (a slow non-Bash tool, a long
+        // thinking phase) would let the sweep SIGKILL the container and
+        // re-drive the whole turn. Pushing work into a live query IS
+        // progress; say so, and the follow-up gets the same protection the
+        // initial batch has had all along.
+        touchHeartbeat();
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
         // terminates the container on unhandled-rejection. The initial-batch
@@ -1151,12 +1177,17 @@ async function runQuery(
     clearInterval(pollHandle);
   }
 
-  // Stream ended without a final result event (closed early, provider quirk).
-  // Ack whatever is still outstanding — including follow-ups, which the outer
-  // turn-tail backstop does not know about (it only holds the initial claim).
+  // Stream ended without a final result event (closed early, provider quirk):
+  // nothing was produced for whatever is still outstanding, so acking here
+  // would be the very thing this ADR forbids — recording work as done with no
+  // output. Leave the rows claimed. The outer turn-tail acks the INITIAL
+  // batch (its output, if any, is already durable); any follow-up left over
+  // stays 'processing' and is re-driven by the host once this container exits
+  // (host-sweep's crashed-container cleanup), with the inbound retry counter
+  // and its dead-letter ceiling applying as usual. Unbounded-latency
+  // recovery, but recovery — versus permanent silence.
   if (pendingAck.size > 0) {
-    markCompleted([...pendingAck]);
-    pendingAck.clear();
+    log(`Stream ended with no result for ${pendingAck.size} claimed row(s) — leaving them for the host to re-drive`);
   }
 
   return { continuation: queryContinuation, resultText: lastResultText };
