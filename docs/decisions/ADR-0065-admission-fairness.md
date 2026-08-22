@@ -75,25 +75,29 @@ frontdesk 委派给 N 个 worker,而 worker 会话继承
     不保证他被降到 1 个。这是刻意的——降他等于中断正在进行的对话。
 
 - **Neutral / Trade-offs**
-  - 未记录桶的条目(理论上只在"入队路径没传 key"时出现)按**占用 0** 处理,
-    即永不被压后。宁可让一个身份不明的条目占便宜,也不要凭猜给它安一个桶。
+  - 未记录桶的条目按**占用 0** 处理,即永不被压后——宁可让一个身份不明的条目
+    占便宜,也不要凭猜给它安一个桶。复核后 `enqueueAdmission` 的 key 改为必填,
+    所以这条分支**经公共 API 已不可达**;它作为防御保留,并由
+    `selectNextIndex` 的纯函数测试直接覆盖(见文末)。
   - 组织(organization)不是桶的一层。多租户隔离是宿主侧的访问闸(ADR-0052),
     与调度公平是两回事;若将来要"按租户配额",那是另一个决策,不是把 org 塞进这里。
 
 ## Implementation Notes
 
-- `src/admission-queue.ts`:`sessionFairnessKey`、`fairnessKeyOf`、`pop(slotsHeldBy)`、
-  `AdmissionDeps.slotsHeldBy`
+- `src/admission-queue.ts`:`sessionFairnessKey`、`fairnessKeyOf`、
+  `selectNextIndex`(导出的纯排序规则)、`pop`、`requeueTail`、
+  `AdmissionDeps.slotsHeldBy`;`enqueueAdmission` 的 `fairnessKey` **必填**
 - `src/container-runner.ts`:容器条目带 `fairnessKey`;`countSlotsHeldBy`(纯函数,
   可测)与 `slotsHeldBy`(读活表)
-- 测试:`src/admission-queue.test.ts` +10、`src/container-runner.test.ts` +2
-- 验收(红先):
-  - 还原为纯 `pop()` → "扇出后来者插队"与"未知桶按 0 处理"两条变红。
-  - 把"未知桶=0"改成"未知桶=最大值" → 后一条变红。
+- 测试:`src/admission-queue.test.ts` +16、`src/container-runner.test.ts` +2
+- 验收(红先,逐条实测):
+  - 还原为纯 FIFO 选取 → "扇出后来者插队"变红。
+  - 删掉 `group:` 分支 → "同群同桶"变红。
+  - 把"缺 key=0"改成"缺 key=最大值" → `selectNextIndex` 对应用例变红。
+  - 删掉 `enqueueAdmission` 的第二个参数 → **`TS2554` 编译错误**
+    (复核前它是静默通过的,这正是把参数改必填的原因)。
   - "桶内 FIFO""同占用 FIFO""重桶最终排空"三条在纯 FIFO 下**本就应绿**
     ——它们是"没有竞争时不改变行为"的非回归守卫,绿了才对。
-  - `countSlotsHeldBy` 拆成接收条目的纯函数,而不是只在散文里声称计数正确
-    ——上一次(ADR-0064 的 once-only)就是这么补的课。
 
 ## References
 
@@ -102,3 +106,48 @@ frontdesk 委派给 N 个 worker,而 worker 会话继承
   本决策的效果与其加权版本的前提都在那里
 - `agent-route.ts`:worker 会话继承 `sourceSession.owner_user_id`,
   这是"扇出记在发起人头上"成立的原因
+
+## 合并前对抗性复核(2 条存活 / 11 条被反驳)
+
+两条都成立,而且都是同一类错:**断言不具区分力**。
+
+### 1. 整个生产接线零执行(medium)
+
+核查者给三个接线点插桩后跑全套:**1055 全绿,插桩文件从未生成**——
+`enqueueAdmission(session.id, sessionFairnessKey(session))`、
+容器条目上的 `fairnessKey`、`slotsHeldBy` 读活表,**三行没有一行被任何测试执行过**。
+原因是它们都在 `wakeContainer` / `spawnContainer` 体内,而每个测试套件都
+`vi.mock('./container-runner.js')`。
+
+最要命的是第一处:`fairnessKey` 当时是**可选参数**,删掉它连类型错都不是,
+lint 过、1055 全过,而公平性静默退回纯 FIFO。核查者用真队列跑出了后果:
+`[带 key] a1,b1,a2,a3` vs `[无 key] a1,a2,a3,b1`——特性完全消失。
+
+**修法用类型而不是测试**:`fairnessKey` 改为**必填**,内部重排队走新的
+`requeueTail`(复用首次入队记录的桶)。删参数现在是 `TS2554`。
+在一行没有测试能执行的代码上,编译错误是唯一有效的守卫。
+
+同时把选取规则抽成导出的纯函数 `selectNextIndex(entries, keyOf, slotsHeldBy)`,
+于是**每个分支都能从测试到达**——包括"缺 key"那条,它在公共 API 收紧后
+已经不可能被触发。**没有任何执行路径的防御分支,与坏掉的分支无法区分。**
+
+### 2. `group:` 分支未被固定(low)
+
+原测试只断言两个不同群的 key 不相等——而 `session:<id>` 兜底同样满足这个不等式,
+**所以它分不清该分支存在与否**。真正要固定的是**同群同桶**。已改为断言
+`toBe('group:mg-1')`(连字段读取一起钉住),并补了"同时有 owner 与群时优先 owner"。
+删掉 group 分支现在会变红。
+
+### 诚实残留
+
+`fairnessKey` 写入容器条目时**取错值**、以及 `slotsHeldBy` 函数体本身,
+**仍然没有测试**——它们在 `spawnContainer` 体内,而那段代码没有任何测试执行。
+核查者同时指出 **ADR-0064 的 `observeContainerLifetime` 调用点在同一段里,
+暴露面相同**。本仓库对这段的既有做法是"抽出纯规则来测",而纯规则确实都测了
+(`sessionFairnessKey` 的映射、`countSlotsHeldBy` 的计数、`selectNextIndex` 的排序);
+剩下的是那几行胶水。要真正覆盖需要一个能注册假容器条目的测试接缝,
+不在本 ADR 范围——但它是**已知未覆盖**,不是"已覆盖"。
+
+另外核查者报了一条与本改动无关的既有问题:**多个测试文件用固定的 `/tmp` 夹具路径**
+(如 `/tmp/nanoclaw-test-a2a-route`),同机并发跑两次测试套件会互相污染。
+他们自己就中招过一次(先前目录里出现过 4–41 个虚假失败)。另行处理。

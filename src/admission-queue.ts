@@ -72,10 +72,25 @@ export function sessionFairnessKey(session: Session): string {
   return `session:${session.id}`;
 }
 
-export function enqueueAdmission(sessionId: string, fairnessKey?: string): void {
+/**
+ * Enqueue a capacity-rejected session.
+ *
+ * `fairnessKey` is REQUIRED, and that is the point. Review demonstrated that
+ * with it optional, deleting the argument at the single production call site
+ * was not a type error, passed lint, passed all 1055 tests — and silently
+ * reverted admission to exact FIFO, i.e. removed the feature. No test could
+ * have caught it either: the call lives inside `wakeContainer`, which nothing
+ * exercises (every suite mocks container-runner). A required parameter turns
+ * that silent revert into a compile error, which is the only guard that works
+ * on a line no test executes.
+ *
+ * The internal requeue paths use `requeueTail`, which reuses the key recorded
+ * on the first enqueue.
+ */
+export function enqueueAdmission(sessionId: string, fairnessKey: string): void {
   if (queued.has(sessionId)) return;
   if (!firstQueuedAt.has(sessionId)) firstQueuedAt.set(sessionId, Date.now());
-  if (fairnessKey !== undefined && !fairnessKeyOf.has(sessionId)) fairnessKeyOf.set(sessionId, fairnessKey);
+  if (!fairnessKeyOf.has(sessionId)) fairnessKeyOf.set(sessionId, fairnessKey);
   queued.add(sessionId);
   queue.push(sessionId);
   admissionQueueDepth.set(queue.length);
@@ -87,6 +102,20 @@ export function enqueueAdmission(sessionId: string, fairnessKey?: string): void 
  * the force-move, the dedupe would silently leave it at the back and the
  * "keeps its turn" promise would never actually hold (red-team finding).
  */
+/**
+ * Put a session back at the TAIL, keeping the bucket it was first queued under.
+ *
+ * Separate from `enqueueAdmission` so that function can demand a key: the
+ * requeue paths have only an id, and re-deriving a bucket here would let a
+ * session's owner change its place mid-wait.
+ */
+function requeueTail(sessionId: string): void {
+  if (queued.has(sessionId)) return;
+  queued.add(sessionId);
+  queue.push(sessionId);
+  admissionQueueDepth.set(queue.length);
+}
+
 function requeueFront(sessionId: string): void {
   const at = queue.indexOf(sessionId);
   if (at !== -1) queue.splice(at, 1);
@@ -96,44 +125,51 @@ function requeueFront(sessionId: string): void {
 }
 
 /**
- * Take the next session to admit: the queued entry whose fairness bucket
- * currently holds the FEWEST slots, ties broken by queue position.
+ * Which queued entry to admit next: the one whose fairness bucket currently
+ * holds the FEWEST slots, ties broken by queue position.
+ *
+ * Exported as a pure function over (queue, keys, loads) so every branch is
+ * reachable from a test — including the missing-key branch, which the public
+ * API can no longer produce now that `enqueueAdmission` requires a key. A
+ * defensive branch nothing can execute is indistinguishable from a broken one.
  *
  * Plain FIFO was the previous rule, and under a fan-out it is a starvation
  * machine: one user whose frontdesk delegates to eight workers puts eight
  * entries in front of the next person to speak, so that person waits for eight
- * whole model turns to finish. Least-loaded-first interleaves them instead.
+ * whole model turns. Least-loaded-first interleaves them instead.
  *
- * Chosen over a token bucket deliberately: there is no rate to configure, no
- * refill period to tune, and no way to starve anyone — a bucket holding zero
- * slots always beats one holding any, and admitting a session immediately
- * raises its own bucket's count, so the buckets equalise instead of one
- * winning forever. The FIFO tiebreak keeps ordering exact within a bucket and
- * between equally-loaded buckets, so nothing about the old behaviour is lost
- * when there is no contention.
- *
- * O(queue) per admission, and the queue is bounded by the session count.
+ * Chosen over a token bucket deliberately: no rate to configure, no refill
+ * period to tune, and no way to starve anyone — a bucket holding zero slots
+ * always beats one holding any, and admitting a session immediately raises its
+ * own bucket's count, so buckets equalise instead of one winning forever. With
+ * equal load it degrades to exact FIFO, so nothing changes without contention.
  */
-function pop(slotsHeldBy?: (key: string) => number): string | undefined {
-  if (queue.length === 0) return undefined;
-
+export function selectNextIndex(
+  entries: readonly string[],
+  keyOf: (sessionId: string) => string | undefined,
+  slotsHeldBy: (key: string) => number,
+): number {
   let at = 0;
-  if (slotsHeldBy) {
-    let best = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < queue.length; i++) {
-      const key = fairnessKeyOf.get(queue[i]);
-      // No recorded key means the entry was queued by a path that did not
-      // supply one; treat it as unloaded so it is never pushed behind, rather
-      // than guessing a bucket for it.
-      const held = key === undefined ? 0 : slotsHeldBy(key);
-      if (held < best) {
-        best = held;
-        at = i;
-        if (best === 0) break; // cannot do better, and this is the FIRST such entry
-      }
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < entries.length; i++) {
+    const key = keyOf(entries[i]);
+    // Unreachable through the public API; treated as unloaded rather than
+    // guessing a bucket, so an entry of unknown provenance is never pushed
+    // back — the safe direction.
+    const held = key === undefined ? 0 : slotsHeldBy(key);
+    if (held < best) {
+      best = held;
+      at = i;
+      if (best === 0) break; // cannot do better, and this is the FIRST such entry
     }
   }
+  return at;
+}
 
+/** O(queue) per admission; the queue is bounded by the session count. */
+function pop(slotsHeldBy?: (key: string) => number): string | undefined {
+  if (queue.length === 0) return undefined;
+  const at = slotsHeldBy ? selectNextIndex(queue, (id) => fairnessKeyOf.get(id), slotsHeldBy) : 0;
   const [id] = queue.splice(at, 1);
   if (id !== undefined) {
     queued.delete(id);
@@ -190,7 +226,7 @@ function recordFailure(sessionId: string): void {
     // Repeat failure smells like a per-session problem (bad config, torn
     // dir): rotate to the back so it cannot starve everyone behind it.
     failCounts.set(sessionId, n);
-    enqueueAdmission(sessionId);
+    requeueTail(sessionId);
     return;
   }
   // Persistent failure: evict — the sweep re-wakes it on its own cadence,
