@@ -546,6 +546,51 @@ describe('crash-durability ordering (write order IS the crash semantics)', () =>
     expect(JSON.parse(out[0].content).text).toBe('all good');
   });
 
+  it('a follow-up pushed into a live query is NOT acked until its output exists', async () => {
+    // The bigger half of the same hole: follow-ups used to be acked the
+    // instant they were pushed, before the model had produced anything for
+    // them — a window a whole model turn wide, and permanent (a 'completed'
+    // ack is synced to messages_in and never re-driven). Reachable by any
+    // non-trigger row, including scheduled tasks.
+    insertMessage('m1', { sender: 'Alice', text: 'first' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider({}, (prompt) =>
+      prompt.includes('second') ? '<message to="discord-test">both done</message>' : '',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 4000);
+
+    // Let the first turn claim m1 and open the stream.
+    await waitFor(() => getPendingMessages().length === 0, 3000);
+
+    // A follow-up arrives while the query is open. trigger=0 so the
+    // pending-user-trigger latch does not defer it — it takes the push path.
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content, trigger)
+         VALUES ('m2', 'chat', datetime('now'), 'pending', 'chan-1', 'discord', ?, 0)`,
+      )
+      .run(JSON.stringify({ sender: 'Alice', text: 'second' }));
+
+    // Wait for it to be claimed (markProcessing), which is what actually
+    // withholds it from re-claim — not the ack.
+    await waitFor(() => {
+      const row = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m2') as
+        { status: string } | undefined;
+      return row?.status === 'processing';
+    }, 3000);
+
+    // THE ASSERTION: pushed, claimed — but NOT acked, because no output for
+    // it exists yet. Killed here, the host re-drives it instead of recording
+    // it answered by silence.
+    const acked = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m2') as
+      { status: string } | undefined;
+    expect(acked?.status).toBe('processing');
+
+    controller.abort();
+    await loopPromise.catch(() => {});
+  });
+
   it('a turn killed before it finishes leaves the claim un-acked, so the work is re-drivable', async () => {
     // The other half of the guarantee: crash BEFORE the reply exists must not
     // leave the message looking handled.
@@ -717,6 +762,12 @@ async function runPollLoopWithTimeout(provider: MockProvider, signal: AbortSigna
       provider,
       providerName: 'mock',
       cwd: '/tmp',
+      // Pass the signal through — without it, aborting only rejects the race
+      // while the loop (and its poll interval) keeps running in the
+      // background, holding the event loop open and writing into whatever
+      // test DB comes next. runPollLoop has honored config.signal all along;
+      // this helper simply never handed it over.
+      signal,
     }),
     new Promise<void>((_, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')));

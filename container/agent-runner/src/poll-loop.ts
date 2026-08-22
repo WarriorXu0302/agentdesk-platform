@@ -785,6 +785,21 @@ async function runQuery(
   providerName: string,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
+  /**
+   * Rows claimed for this stream that have NOT been acked yet (ADR-0062).
+   * Starts as the initial batch and grows with every follow-up pushed into
+   * the live query; drained at each result event, AFTER that turn's output
+   * is durable. Follow-ups used to be acked the instant they were pushed —
+   * before the model had produced anything for them — which is the same
+   * at-most-once hole this ADR closes at the result event, except the window
+   * was a whole model turn wide instead of two adjacent SQLite calls.
+   *
+   * Acking late is safe: `markProcessing` (not the ack) is what withholds a
+   * row from re-claim, and the host tolerates a long-lived 'processing'
+   * claim while the container keeps touching its heartbeat — which the
+   * initial batch already relies on for the whole turn.
+   */
+  const pendingAck = new Set<string>(initialBatchIds);
   // Last non-empty result text seen this turn — surfaced to processQuery for
   // the agent.turn `output.value` content attribute (ADR-0027). Only populated
   // when content capture is on, but cheap to track regardless.
@@ -932,7 +947,11 @@ async function runQuery(
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
-        markCompleted(keptIds);
+        // Do NOT ack here — the model has produced nothing for these rows
+        // yet. They ride to the next result event with everything else
+        // (ADR-0062); a crash before then leaves them un-acked and the host
+        // re-drives them, instead of recording them answered by silence.
+        for (const id of keptIds) pendingAck.add(id);
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
         // terminates the container on unhandled-rejection. The initial-batch
@@ -993,7 +1012,8 @@ async function runQuery(
           if (captureContent) lastResultText = event.text;
           dispatchResultText(event.text, routing);
         }
-        markCompleted(initialBatchIds);
+        markCompleted([...pendingAck]);
+        pendingAck.clear();
       } else if (event.type === 'compacted') {
         // The SDK auto-compacted the conversation. After compaction the
         // model often drops the learned `<message to="…">` wrapping
@@ -1129,6 +1149,14 @@ async function runQuery(
   } finally {
     done = true;
     clearInterval(pollHandle);
+  }
+
+  // Stream ended without a final result event (closed early, provider quirk).
+  // Ack whatever is still outstanding — including follow-ups, which the outer
+  // turn-tail backstop does not know about (it only holds the initial claim).
+  if (pendingAck.size > 0) {
+    markCompleted([...pendingAck]);
+    pendingAck.clear();
   }
 
   return { continuation: queryContinuation, resultText: lastResultText };
