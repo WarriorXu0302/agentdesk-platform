@@ -381,7 +381,6 @@ du -sh data/ data/v2.db data/v2-sessions-archive/ 2>/dev/null
 - 开 per-user 作用域留存:`AGENTDESK_SCOPE_TTL_DAYS=N`(ADR-0061)。清扫
   `data/v2-scopes/<ag>/<user>/`——个人记忆 + 逐字转录 + Claude 状态。**时钟按访问续期**:
   N 天没人用过的作用域才过期,活跃用户的记忆不会被删;**活跃会话指向的作用域无论多老一律跳过**。
-  存量数据(本特性之前建的、没有 `.last-access` 戳)按目录 mtime 判定,同样覆盖。
   每次过期落 `enterprise_audit` 的 `scope_retention_expired`。
   天数按"最长合理离岗期"设,别按活跃度设——长假回来的人不该发现助手失忆。
   首次见到的作用域会被**收养**(打戳,当次绝不删),戳的时间优先用该用户在

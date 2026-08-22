@@ -224,6 +224,33 @@ describe('scope retention (ADR-0061)', () => {
     expect(JSON.parse(rows[0].details).retainDays).toBe(30);
   });
 
+  it('a stuck delete audits ONCE, not once per tick', async () => {
+    // "Audit before effect" turns a permanently failing rmSync into one
+    // governance row per tick unless the pending-delete set dedupes it — and
+    // audit purging is opt-in/default-off, so nothing else bounds the growth.
+    process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
+    seedScope('ag-1', 'ou_stuck', { markerAgedDays: 90 });
+    const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw new Error('EACCES: immutable');
+    });
+    try {
+      sweepExpiredScopes(NOW);
+      sweepExpiredScopes(NOW);
+      sweepExpiredScopes(NOW);
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    const { getDb } = await import('./db/connection.js');
+    const rows = getDb()
+      .prepare("SELECT COUNT(*) AS n FROM enterprise_audit WHERE event_type = 'scope_retention_expired'")
+      .get() as { n: number };
+    expect(rows.n).toBe(1); // three ticks, one row
+
+    // Once the obstruction clears, the delete still goes through.
+    expect(sweepExpiredScopes(NOW).removed).toBe(1);
+  });
+
   it('sweeps across agent groups and tolerates non-directory clutter', () => {
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
     const a = seedScope('ag-1', 'ou_ghost', { markerAgedDays: 90 });

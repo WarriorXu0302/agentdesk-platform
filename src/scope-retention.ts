@@ -15,8 +15,13 @@
  * ABANDONMENT, not age: an absolute-age clock would delete exactly the
  * memories still in daily use, because those are the oldest ones.
  *
- * ADOPTION (the rule that makes this safe). A scope with no marker is NEVER
- * deleted on sight — it is ADOPTED: stamped once, then aged from that stamp.
+ * ADOPTION (the rule that makes this safe). A scope with no marker is never
+ * deleted on the strength of the FILESYSTEM's word — it is ADOPTED: stamped
+ * once, then aged from that stamp. (An adoption backed by session evidence
+ * older than the window does expire on that same tick; that is the point —
+ * the operator's policy takes effect immediately for people the DB can still
+ * vouch for. Only an adoption with no evidence behind it gets a full grace
+ * window.)
  * Deletion only ever measures against a marker this code wrote. The first
  * cut of this feature instead fell back to the scope directory's own mtime,
  * which was wrong in the most dangerous possible way: a POSIX directory's
@@ -46,6 +51,14 @@
  * person's data without a durable record of it, even if the host dies
  * mid-`rmSync`.
  *
+ * PARTIAL DELETES (honest): `.last-access` lives inside the tree being
+ * removed, so a partial `rmSync` failure can go either way. If the marker
+ * survives, the next tick retries the delete (auditing only once — see
+ * `auditedPendingDelete`). If it was removed first, the scope is re-adopted;
+ * with no session evidence left it gets a fresh window before the retry.
+ * Both are recoverable and neither destroys more than the delete already
+ * intended.
+ *
  * SCOPE (honest): this is expiry, NOT erasure. "Delete everything about this
  * person, now" is a different requirement — it spans audit rows the platform
  * is required to keep and backend-gateway memory the platform does not own —
@@ -59,6 +72,7 @@ import { recordEnterpriseAudit } from './db/enterprise-audit.js';
 import { getAllSessions } from './db/sessions.js';
 import { log } from './log.js';
 import { scopeRetentionTotal } from './metrics.js';
+import { sessionTtlDays } from './session-archive.js';
 import { SCOPE_ACCESS_MARKER, scopesBaseDir, touchScopeAccess, userScopeKey } from './state-scope.js';
 
 /**
@@ -102,11 +116,25 @@ interface ScopeIndex {
 function indexScopes(): ScopeIndex {
   const live = new Set<string>();
   const lastUse = new Map<string, number>();
+  // userScopeKey is a sha1; a busy deployment has many sessions per owner and
+  // this runs on every sweep tick, so hash each owner id once.
+  const keyMemo = new Map<string, string>();
+  const keyFor = (ownerUserId: string): string => {
+    let k = keyMemo.get(ownerUserId);
+    if (k === undefined) {
+      k = userScopeKey(ownerUserId);
+      keyMemo.set(ownerUserId, k);
+    }
+    return k;
+  };
   for (const session of getAllSessions()) {
     if (!session.owner_user_id) continue;
-    const key = `${session.agent_group_id}/${userScopeKey(session.owner_user_id)}`;
+    const key = `${session.agent_group_id}/${keyFor(session.owner_user_id)}`;
     if (session.status === 'active') live.add(key);
-    const stamp = Date.parse(session.last_active ?? session.created_at ?? '');
+    // Fall through to created_at on a missing OR unparseable last_active —
+    // `?? ` alone would let an empty string swallow the fallback.
+    let stamp = Date.parse(session.last_active ?? '');
+    if (!Number.isFinite(stamp)) stamp = Date.parse(session.created_at ?? '');
     if (Number.isFinite(stamp)) {
       const prev = lastUse.get(key);
       if (prev === undefined || stamp > prev) lastUse.set(key, stamp);
@@ -115,7 +143,18 @@ function indexScopes(): ScopeIndex {
   return { live, lastUse };
 }
 
+/**
+ * Scopes whose audit row is already written but whose delete has not
+ * succeeded yet. Without this, "audit before effect" turns a permanently
+ * failing rmSync (immutable flag, EACCES, a stuck mount) into one
+ * governance row per scope PER 60s TICK — and audit purging is opt-in and
+ * default-off, so nothing would bound it. One row per stuck scope per
+ * process; the retry itself still happens every tick.
+ */
+const auditedPendingDelete = new Set<string>();
+
 let loggedPolicy = false;
+let warnedSessionTtlDependency = false;
 
 export interface ScopeSweepResult {
   scanned: number;
@@ -152,6 +191,18 @@ export function sweepExpiredScopes(now: number = Date.now()): ScopeSweepResult {
     });
   }
   if (days === 0) return result;
+
+  // Hard dependency, easy to miss: session archiving is default-off, and while
+  // it is off every session row stays status='active' forever — so every scope
+  // that has any session is skipped as live and can never expire. Scope TTL
+  // alone would report a compliance posture the platform does not deliver.
+  if (!warnedSessionTtlDependency && sessionTtlDays() === 0) {
+    warnedSessionTtlDependency = true;
+    log.warn(
+      'AGENTDESK_SCOPE_TTL_DAYS is set but AGENTDESK_SESSION_TTL_DAYS is not — sessions never leave status=active, so scopes with any session are skipped as live and will not expire',
+      { scopeRetainDays: days },
+    );
+  }
 
   const root = path.join(DATA_DIR, 'v2-scopes');
   if (!fs.existsSync(root)) return result;
@@ -201,16 +252,23 @@ export function sweepExpiredScopes(now: number = Date.now()): ScopeSweepResult {
       if (accessed === null) {
         const evidence = lastUse.get(indexKey);
         accessed = evidence ?? now;
-        result.adopted++;
-        scopeRetentionTotal.labels('adopted').inc();
         if (!preview) {
-          touchScopeAccess(scopeDir, accessed);
-          log.info('Adopted pre-existing user state scope into retention (ADR-0061)', {
-            agentGroupId,
-            scopeKey,
-            stampedAt: new Date(accessed).toISOString(),
-            source: evidence !== undefined ? 'session-last-active' : 'now (no session evidence)',
-          });
+          // Count what actually happened, not what was attempted: a scope
+          // whose stamp can never land would otherwise report "adopted"
+          // forever, once per tick, while its clock stays frozen.
+          const stamped = touchScopeAccess(scopeDir, accessed);
+          if (stamped) {
+            result.adopted++;
+            scopeRetentionTotal.labels('adopted').inc();
+            log.info('Adopted pre-existing user state scope into retention (ADR-0061)', {
+              agentGroupId,
+              scopeKey,
+              stampedAt: new Date(accessed).toISOString(),
+              source: evidence !== undefined ? 'session-last-active' : 'now (no session evidence)',
+            });
+          } else {
+            scopeRetentionTotal.labels('adopt_failed').inc();
+          }
         }
         // Fall through — an evidence-backed stamp may already be past cutoff.
       }
@@ -232,19 +290,27 @@ export function sweepExpiredScopes(now: number = Date.now()): ScopeSweepResult {
       // governance event; the record must survive a crash mid-delete. A
       // failed audit write ABORTS the deletion — never destruction without a
       // durable record of it.
-      try {
-        recordEnterpriseAudit({
-          eventType: 'scope_retention_expired',
-          agentGroupId,
-          details: { scopeKey, retainDays: days, lastAccessAt: new Date(accessed).toISOString() },
-        });
-      } catch (err) {
-        log.warn('Scope retention: audit write failed — NOT deleting', { agentGroupId, scopeKey, err });
-        continue;
+      if (!auditedPendingDelete.has(indexKey)) {
+        try {
+          recordEnterpriseAudit({
+            eventType: 'scope_retention_expired',
+            agentGroupId,
+            details: { scopeKey, retainDays: days, lastAccessAt: new Date(accessed).toISOString() },
+          });
+          auditedPendingDelete.add(indexKey);
+        } catch (err) {
+          // Fail closed: no durable record of the destruction, no destruction.
+          // Counted so a broken audit table cannot make the policy silently
+          // stop running with every counter reading zero.
+          scopeRetentionTotal.labels('audit_failed').inc();
+          log.warn('Scope retention: audit write failed — NOT deleting', { agentGroupId, scopeKey, err });
+          continue;
+        }
       }
 
       try {
         fs.rmSync(scopeDir, { recursive: true, force: true });
+        auditedPendingDelete.delete(indexKey);
         result.removed++;
         scopeRetentionTotal.labels('expired').inc();
         log.info('Expired per-user state scope (ADR-0061)', {
@@ -273,4 +339,6 @@ export function sweepExpiredScopes(now: number = Date.now()): ScopeSweepResult {
 /** Test seam — the policy log fires once per process. */
 export function resetScopeRetentionPolicyLog(): void {
   loggedPolicy = false;
+  warnedSessionTtlDependency = false;
+  auditedPendingDelete.clear();
 }

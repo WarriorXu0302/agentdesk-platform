@@ -92,9 +92,11 @@ export const sessionCount = new client.Gauge({
 export const scopeRetentionTotal = new client.Counter({
   name: `${METRIC_PREFIX}_scope_retention_total`,
   help: 'Per-user state-scope retention outcomes (ADR-0061)',
-  // `outcome`: adopted (first stamp, never deleted on that tick) |
-  // skipped_live (an active session still resolves to it) | expired |
-  // delete_failed (audit row written, rmSync raised — may be partial).
+  // `outcome`: adopted (first stamp landed) | adopt_failed (stamp could not
+  // be written — the clock for that scope is frozen) | skipped_live (an
+  // active session still resolves to it) | expired | audit_failed (governance
+  // row could not be written, so the delete was ABORTED) | delete_failed
+  // (audit row written, rmSync raised — may be partial).
   labelNames: ['outcome'] as const,
   registers: [registry],
 });
