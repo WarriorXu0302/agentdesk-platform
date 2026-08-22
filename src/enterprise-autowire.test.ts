@@ -6,9 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // LITERAL path (it cannot reference TEST_DIR). Keep the two in sync.
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
-  return { ...actual, GROUPS_DIR: '/tmp/nanoclaw-test-autowire/groups', DATA_DIR: '/tmp/nanoclaw-test-autowire/data' };
+  return {
+    ...actual,
+    GROUPS_DIR: `/tmp/nanoclaw-test-autowire-${process.pid}/groups`,
+    DATA_DIR: `/tmp/nanoclaw-test-autowire-${process.pid}/data`,
+  };
 });
-const TEST_DIR = '/tmp/nanoclaw-test-autowire';
+const TEST_DIR = `/tmp/nanoclaw-test-autowire-${process.pid}`;
 
 import {
   closeDb,

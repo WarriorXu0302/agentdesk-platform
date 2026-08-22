@@ -46,8 +46,7 @@ function summarizeMessage(session: Session, messageOutId: string): string {
     const outDb = openOutboundDb(session.agent_group_id, session.id);
     try {
       const row = outDb.prepare('SELECT kind, content FROM messages_out WHERE id = ?').get(messageOutId) as
-        | { kind: string; content: string }
-        | undefined;
+        { kind: string; content: string } | undefined;
       if (!row) return '(outbound row missing)';
       let text = row.content;
       try {

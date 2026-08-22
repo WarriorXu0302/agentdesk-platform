@@ -23,12 +23,12 @@ vi.mock('../../config.js', async () => {
   const actual = await vi.importActual<typeof import('../../config.js')>('../../config.js');
   return {
     ...actual,
-    DATA_DIR: '/tmp/nanoclaw-create-agent-test/data',
-    GROUPS_DIR: '/tmp/nanoclaw-create-agent-test/groups',
+    DATA_DIR: `/tmp/nanoclaw-create-agent-test-${process.pid}/data`,
+    GROUPS_DIR: `/tmp/nanoclaw-create-agent-test-${process.pid}/groups`,
   };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-create-agent-test';
+const TEST_DIR = `/tmp/nanoclaw-create-agent-test-${process.pid}`;
 
 vi.mock('../../container-runner.js', () => ({
   wakeContainer: vi.fn().mockResolvedValue(undefined),

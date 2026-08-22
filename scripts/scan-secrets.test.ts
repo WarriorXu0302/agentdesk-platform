@@ -4,11 +4,7 @@ import { scanForSecrets } from './scan-secrets.js';
 
 describe('scanForSecrets (ADR-0029 pre-commit secret scan)', () => {
   it('passes silently on ordinary code with no secrets', () => {
-    const text = [
-      '+export function add(a: number, b: number): number {',
-      '+  return a + b;',
-      '+}',
-    ].join('\n');
+    const text = ['+export function add(a: number, b: number): number {', '+  return a + b;', '+}'].join('\n');
     expect(scanForSecrets(text)).toEqual([]);
   });
 
@@ -29,9 +25,7 @@ describe('scanForSecrets (ADR-0029 pre-commit secret scan)', () => {
   });
 
   it('flags a temporary AWS key id (ASIA prefix)', () => {
-    expect(
-      scanForSecrets('+key=ASIAIOSFODNN7EXAMPLE').some((f) => f.rule === 'aws-access-key-id'),
-    ).toBe(true);
+    expect(scanForSecrets('+key=ASIAIOSFODNN7EXAMPLE').some((f) => f.rule === 'aws-access-key-id')).toBe(true);
   });
 
   it('does NOT flag a random uppercase token that is not an AWS key shape', () => {
@@ -49,9 +43,7 @@ describe('scanForSecrets (ADR-0029 pre-commit secret scan)', () => {
   });
 
   it('catches a weak value embedded in a quoted/colon-delimited line', () => {
-    expect(scanForSecrets('  password: "secret"').some((f) => f.rule === 'known-weak-secret')).toBe(
-      true,
-    );
+    expect(scanForSecrets('  password: "secret"').some((f) => f.rule === 'known-weak-secret')).toBe(true);
   });
 
   it('only inspects added (+) lines of a unified diff, not removed/context lines', () => {
@@ -71,10 +63,10 @@ describe('scanForSecrets (ADR-0029 pre-commit secret scan)', () => {
   });
 
   it('reports multiple distinct findings together', () => {
-    const text = ['+-----BEGIN PRIVATE KEY-----', '+aws=AKIAIOSFODNN7EXAMPLE', '+pw=password'].join(
-      '\n',
-    );
-    const rules = scanForSecrets(text).map((f) => f.rule).sort();
+    const text = ['+-----BEGIN PRIVATE KEY-----', '+aws=AKIAIOSFODNN7EXAMPLE', '+pw=password'].join('\n');
+    const rules = scanForSecrets(text)
+      .map((f) => f.rule)
+      .sort();
     expect(rules).toEqual(['aws-access-key-id', 'known-weak-secret', 'private-key']);
   });
 });

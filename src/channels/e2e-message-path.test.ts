@@ -35,10 +35,10 @@ vi.mock('../container-runner.js', () => ({
 
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-e2e-path', DELIVERY_TIMEOUT_MS: 300 };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-e2e-path-${process.pid}`, DELIVERY_TIMEOUT_MS: 300 };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-e2e-path';
+const TEST_DIR = `/tmp/nanoclaw-test-e2e-path-${process.pid}`;
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from '../db/index.js';
 import { createMessagingGroupAgent } from '../db/messaging-groups.js';

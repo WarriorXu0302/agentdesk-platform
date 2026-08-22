@@ -42,14 +42,14 @@ vi.mock('./container-runner.js', () => ({
 // Override DATA_DIR for tests
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual('./config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-host' };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-host-${process.pid}` };
 });
 
 function now() {
   return new Date().toISOString();
 }
 
-const TEST_DIR = '/tmp/nanoclaw-test-host';
+const TEST_DIR = `/tmp/nanoclaw-test-host-${process.pid}`;
 
 beforeEach(() => {
   // Clean test directory
@@ -420,7 +420,12 @@ describe('session manager', () => {
     // the host process can reach.
     const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
     const inboxBase = path.join(sessionDir('ag-1', session.id), 'inbox');
-    const escapeTarget = path.join('/tmp', 'nanoclaw-traversal-canary');
+    // Per-process canary name: this test asserts the file was NOT created, so a
+    // leftover from a concurrently-running suite would fail it for the wrong
+    // reason. The attack payload below is built from the same name so the two
+    // cannot drift apart.
+    const canaryName = `nanoclaw-traversal-canary-${process.pid}`;
+    const escapeTarget = path.join('/tmp', canaryName);
     if (fs.existsSync(escapeTarget)) fs.rmSync(escapeTarget);
 
     writeSessionMessage('ag-1', session.id, {
@@ -432,7 +437,7 @@ describe('session manager', () => {
         attachments: [
           {
             type: 'document',
-            name: '../../../../../../../../tmp/nanoclaw-traversal-canary',
+            name: `../../../../../../../../tmp/${canaryName}`,
             data: Buffer.from('owned').toString('base64'),
           },
         ],

@@ -54,10 +54,10 @@ vi.mock('./user-dm.js', () => ({
 
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual('../../config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-sender-approval' };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-sender-approval-${process.pid}` };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-sender-approval';
+const TEST_DIR = `/tmp/nanoclaw-test-sender-approval-${process.pid}`;
 
 function now() {
   return new Date().toISOString();

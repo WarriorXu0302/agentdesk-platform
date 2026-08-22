@@ -30,7 +30,7 @@ import {
   handleUpdateTask,
 } from './actions.js';
 
-const TEST_DIR = '/tmp/nanoclaw-scheduling-actions-test';
+const TEST_DIR = `/tmp/nanoclaw-scheduling-actions-test-${process.pid}`;
 const DB_PATH = path.join(TEST_DIR, 'inbound.db');
 
 const session = { id: 's-1', agent_group_id: 'ag-1', status: 'active' } as Session;

@@ -24,7 +24,7 @@ import {
   requeueFailedInbound,
 } from './session-db.js';
 
-const TEST_DIR = '/tmp/nanoclaw-session-db-test';
+const TEST_DIR = `/tmp/nanoclaw-session-db-test-${process.pid}`;
 const DB_PATH = path.join(TEST_DIR, 'inbound.db');
 
 afterEach(() => {

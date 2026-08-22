@@ -56,7 +56,10 @@ function renderHtml(input: {
   const namespaceTableRows = input.namespaceRows
     .map((row) => {
       const countClass = row.status.includes('Active') && row.actualSpanCount === 0 ? 'badge-warn' : 'badge-muted';
-      const examples = row.exampleSpansFound.length > 0 ? row.exampleSpansFound.map(code).join(', ') : '<span class="muted">None found</span>';
+      const examples =
+        row.exampleSpansFound.length > 0
+          ? row.exampleSpansFound.map(code).join(', ')
+          : '<span class="muted">None found</span>';
       return `
         <tr>
           <td>${code(row.namespace + '.*')}</td>
@@ -70,7 +73,8 @@ function renderHtml(input: {
 
   const migrationTableRows = input.migrationRows
     .map((row) => {
-      const sourceLocations = row.sourceLocations.length > 0 ? row.sourceLocations.map(code).join(', ') : '<span class="muted">Absent</span>';
+      const sourceLocations =
+        row.sourceLocations.length > 0 ? row.sourceLocations.map(code).join(', ') : '<span class="muted">Absent</span>';
       return `
         <tr>
           <td>${code(row.currentName)}</td>

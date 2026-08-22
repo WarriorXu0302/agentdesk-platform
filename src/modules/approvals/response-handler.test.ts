@@ -17,10 +17,10 @@ vi.mock('../../container-runner.js', () => ({
 
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual<typeof import('../../config.js')>('../../config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-approval' };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-approval-${process.pid}` };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-approval';
+const TEST_DIR = `/tmp/nanoclaw-test-approval-${process.pid}`;
 
 import { closeDb, createAgentGroup, createMessagingGroup, initTestDb, runMigrations } from '../../db/index.js';
 import { getDb } from '../../db/connection.js';

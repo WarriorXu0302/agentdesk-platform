@@ -51,7 +51,11 @@ test('observability span schema contract', () => {
   const grammarSection = sectionBetween(doc, '## §2. Naming Grammar', '## §3. Top-Level Namespace Catalog');
   assert.match(grammarSection, /snake_case/i, '§2 must require snake_case');
 
-  const namespaceSection = sectionBetween(doc, '## §3. Top-Level Namespace Catalog', '## §4. Standard Sub-Operations Within Common Namespaces');
+  const namespaceSection = sectionBetween(
+    doc,
+    '## §3. Top-Level Namespace Catalog',
+    '## §4. Standard Sub-Operations Within Common Namespaces',
+  );
   const namespaceRows = [...namespaceSection.matchAll(/^\| `([a-z_]+\.\*)` \|/gm)];
   assert.equal(namespaceRows.length, 20, `§3 must contain exactly 20 namespace rows; got ${namespaceRows.length}`);
 
