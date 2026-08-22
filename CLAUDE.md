@@ -59,6 +59,8 @@ logic into the platform.
 - `docs/architecture.md`
 - `docs/configuration-reference.md` — authoritative per-group `container.json` fields
 - `docs/isolation-model.md`
+- `docs/capacity.md` — 一台宿主承载多少人:实测的宿主开销、吞吐公式、
+  该看哪些指标、扩容顺序,以及明确的未做项
 
 ## Session Continuation Guide
 
@@ -120,6 +122,29 @@ context in **≤3 hops**.
   exact origin channel/platform/thread, cannot reclassify, and cannot change
   the selected agent destination. Clear any persisted gate before a new turn
   so crash residue cannot constrain a replay. Worker A2A turns do not reroute.
+- **The outbound contract is the one decode point on the delivery path**
+  (ADR-0063) — `messages_out.content` is agent-authored bytes from the
+  untrusted side. `parseOutboundContent` (`src/outbound-contract.ts`) runs once
+  in `deliverMessage`; everything downstream may assume a plain object with no
+  prototype-mutating keys, inside the size and depth bounds. Read fields with
+  the strict readers, never `content.x as T` — a cast is not a check, and
+  `RegExp.test` stringifies, so a pattern check placed before a type check
+  waves numbers through. A contract violation is PERMANENT: dead-letter on the
+  first attempt, never retry. (`llm-usage` rows short-circuit before this point
+  and `host-sweep` parses them separately, narrowly typed — that is the one
+  documented exception.)
+- **An approval card must show everything that will be applied** (ADR-0063) —
+  the card is the only gate in front of group-level `container.json` writes, so
+  it renders the exact object `apply.ts` will write, agent text is fenced, and
+  characters that could escape the fence or make the display differ from the
+  stored value (backtick, backslash, `\p{Cc}`, `\p{Cf}` bidi) are rejected
+  rather than escaped. Anything agent-derived that reaches the card counts —
+  including the agent group NAME, which `create_agent` persists verbatim.
+- **Per-session fan-out must isolate per-session failure** — both the delivery
+  drain and the host sweep iterate every session, and one session's throw must
+  never end the pass. `getActiveSessions()` has no ORDER BY, so SQLite serves
+  the same order every tick: an unisolated failure starves the same sessions
+  behind it forever, not occasionally.
 
 ### Decision logging is non-optional
 
