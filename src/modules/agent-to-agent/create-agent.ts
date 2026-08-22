@@ -18,6 +18,16 @@ import type { AgentGroup, Session } from '../../types.js';
 import { createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
 import { writeDestinations } from './write-destinations.js';
 
+/**
+ * Display names that cannot forge an operator-facing surface: no control or
+ * format characters (bidi overrides make displayed text differ from stored
+ * text), no line/paragraph separators, no backtick (closes a markdown fence),
+ * no backslash (the Feishu card renderer expands the two-character sequence
+ * backslash-n into a real newline AFTER validation). Non-Latin scripts are
+ * unaffected — the rule is about Unicode classes, not ASCII.
+ */
+const DISPLAY_NAME_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`\\]{1,64}$/u;
+
 function notifyAgent(session: Session, text: string): void {
   writeSessionMessage(session.agent_group_id, session.id, {
     id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -43,6 +53,21 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
   if (!sourceGroup) {
     notifyAgent(session, `create_agent failed: source agent group not found.`);
     log.warn('create_agent failed: missing source group', { sessionAgentGroup: session.agent_group_id, name });
+    return;
+  }
+
+  // The DISPLAY name is persisted verbatim (only `folder` below is normalized),
+  // and it is later interpolated into operator-facing surfaces — including the
+  // self-mod approval card, where a name carrying newlines or a fence-closing
+  // backtick can forge the prose an admin reads next to Approve. This action is
+  // container-callable, so the name is untrusted input like any other field on
+  // a messages_out row (ADR-0063).
+  if (typeof name !== 'string' || !DISPLAY_NAME_RE.test(name)) {
+    notifyAgent(
+      session,
+      'create_agent failed: name must be 1-64 characters with no line breaks, backticks, backslashes, or invisible formatting characters.',
+    );
+    log.warn('create_agent rejected an unsafe display name', { sessionAgentGroup: session.agent_group_id });
     return;
   }
 

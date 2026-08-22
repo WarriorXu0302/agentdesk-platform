@@ -31,6 +31,16 @@
  *      convincing "system" text next to the Approve button. Agent-authored
  *      content is therefore fenced, and characters that could break out of
  *      the fence are rejected rather than escaped.
+ *
+ *      "Agent-authored" includes the agent GROUP NAME, which review caught
+ *      being interpolated into the card's opening line raw. `create_agent` is
+ *      itself a delivery action, and it persists the container-supplied name
+ *      verbatim (only `folder` gets normalized) — so a container can mint a
+ *      group whose NAME is forged card prose and then request self-mod from
+ *      it. `create-agent.ts` now refuses such names at the source; this file
+ *      still scrubs at the point of display, because a name that predates that
+ *      check must not be able to forge a card either, and a stored name is not
+ *      a good reason to refuse an otherwise valid request.
  */
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
@@ -58,6 +68,17 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
  *     Over-restricting those would break real invocations and buy nothing.
  *   - **Control characters (`\p{Cc}`) and line/paragraph separators** — a raw
  *     newline splits the disclosure into separately forgeable lines.
+ *   - **Backslash** — this one was missed on the first pass and found in
+ *     review. Rejecting real control characters is not enough, because the
+ *     card renderer REWRITES the string after we validate it:
+ *     `normalizeCardText` folds the two-character sequence backslash-n into a
+ *     real LF (it exists so a model that emits an escape instead of a newline
+ *     still renders readably). So a value containing the literal characters
+ *     `\` and `n` passes a control-character check and then becomes a newline
+ *     on the approver's screen. Banning the backslash outright is the robust
+ *     fix: it does not depend on tracking which escapes that helper currently
+ *     expands, and no legitimate MCP command, argument, or environment value
+ *     in a Linux container needs one.
  *   - **Format characters (`\p{Cf}`)** — this is the subtle one. Bidi
  *     overrides (U+202E and friends) make displayed text run in a different
  *     order than the stored text, so a name can RENDER as one thing on the
@@ -67,7 +88,7 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
  * Everything outside those classes is allowed, so non-Latin scripts work
  * normally — an ASCII-only rule would break every non-English deployment.
  */
-const SAFE_TEXT_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`]*$/u;
+const SAFE_TEXT_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`\\]*$/u;
 
 const MAX_ARGS = 32;
 const MAX_ENV_ENTRIES = 32;
@@ -86,6 +107,20 @@ const FENCE = '```';
  */
 function disclose(payload: unknown): string {
   return `${FENCE}\n${JSON.stringify(payload, null, 2)}\n${FENCE}`;
+}
+
+/**
+ * Render a stored display name that originated outside this module.
+ *
+ * Scrubs rather than rejects: the name is already persisted, and refusing an
+ * otherwise-valid self-mod request because of a historical name would punish
+ * the wrong party. Everything SAFE_TEXT_RE excludes is dropped, so the header
+ * line stays one line of inert text.
+ */
+function scrubDisplayName(name: string): string {
+  const cleaned = [...name].filter((ch) => SAFE_TEXT_RE.test(ch)).join('');
+  const trimmed = cleaned.trim().slice(0, 64);
+  return trimmed || 'unnamed agent';
 }
 
 export async function handleInstallPackages(content: Record<string, unknown>, session: Session): Promise<void> {
@@ -121,7 +156,7 @@ export async function handleInstallPackages(content: Record<string, unknown>, se
     payload: { apt, npm, reason: reasonR.value },
     title: 'Install Packages Request',
     question:
-      `Agent "${agentGroup.name}" wants to install packages and rebuild its container image.\n` +
+      `Agent "${scrubDisplayName(agentGroup.name)}" wants to install packages and rebuild its container image.\n` +
       `This applies to the agent GROUP — every user of this agent gets the new image.\n\n` +
       `Exactly this will be added to container.json:\n` +
       disclose({ apt, npm }) +
@@ -151,6 +186,10 @@ export async function handleAddMcpServer(content: Record<string, unknown>, sessi
     maxEntries: MAX_ENV_ENTRIES,
     maxLength: MAX_FIELD_LEN,
     keyPattern: ENV_KEY_RE,
+    // The hole review found: the first cut checked env KEYS and left the VALUES
+    // unchecked, so the one agent-controlled string that reached the card
+    // unvalidated was the one most likely to carry a payload.
+    valuePattern: SAFE_TEXT_RE,
   });
   if (!envR.ok) return reject(session, 'add_mcp_server', envR.reason);
 
@@ -167,7 +206,7 @@ export async function handleAddMcpServer(content: Record<string, unknown>, sessi
     payload: { name: nameR.value, ...entry },
     title: 'Add MCP Request',
     question:
-      `Agent "${agentGroup.name}" wants to wire a new MCP server into its runtime.\n` +
+      `Agent "${scrubDisplayName(agentGroup.name)}" wants to wire a new MCP server into its runtime.\n` +
       `This applies to the agent GROUP — it will run in every user's container for this ` +
       `agent, with the arguments and environment shown below.\n\n` +
       `Exactly this will be written to container.json under mcpServers."${nameR.value}":\n` +

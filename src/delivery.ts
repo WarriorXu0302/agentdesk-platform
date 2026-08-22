@@ -387,7 +387,14 @@ async function drainSession(session: Session): Promise<void> {
           // while head-of-line-blocking the rest of this session's queue.
           // Dead-letter it on the first attempt instead of burning the budget.
           const permanent = err instanceof OutboundContractError;
-          if (permanent) outboundContractViolationsTotal.labels(msg.kind || 'unknown').inc();
+          // Clamp the label: `kind` is written by the container, so using it raw
+          // would let the untrusted side mint an unbounded number of Prometheus
+          // series — in the one change whose whole subject is not trusting that
+          // side. The exact value is already in the structured log below, so
+          // nothing diagnostic is lost by bucketing the unknowns.
+          if (permanent) {
+            outboundContractViolationsTotal.labels(KNOWN_OUTBOUND_KINDS.has(msg.kind) ? msg.kind : 'other').inc();
+          }
           deliveryFailuresTotal
             .labels(permanent ? 'contract' : err instanceof DeliveryTimeoutError ? 'timeout' : 'error')
             .inc();
@@ -1160,6 +1167,13 @@ export type DeliveryActionHandler = (
   session: Session,
   inDb: Database.Database,
 ) => Promise<void>;
+
+/**
+ * Kinds the host itself understands. Used ONLY to bound metric label
+ * cardinality — never to accept or reject a row, so adding a kind here is not
+ * a security decision and forgetting one only buckets it as `other`.
+ */
+const KNOWN_OUTBOUND_KINDS = new Set(['chat', 'chat-sdk', 'system', 'roster', 'agent', 'llm-usage']);
 
 const actionHandlers = new Map<string, DeliveryActionHandler>();
 

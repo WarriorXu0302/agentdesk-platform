@@ -294,3 +294,119 @@ describe('install_packages — strict types before the name pattern', () => {
     expect(body).toContain('GROUP');
   });
 });
+
+describe('the holes an adversarial review found in the first cut', () => {
+  const BSLASH = String.fromCharCode(92);
+  const RLO = String.fromCharCode(0x202e);
+  const TICK = String.fromCharCode(96);
+
+  /**
+   * `readStringRecord` had `keyPattern` and no `valuePattern`, so the ONE
+   * agent-controlled string that reached the approval card unvalidated was an
+   * env VALUE — the field most likely to carry a payload. Three reviewers found
+   * this independently.
+   */
+  it('rejects a fence-closing backtick in an env VALUE, not just in the key', async () => {
+    await handleAddMcpServer(
+      { action: 'add_mcp_server', name: 'a', command: 'npx', env: { TOKEN: `x${TICK}${TICK}${TICK}` } },
+      session,
+    );
+    expect(cardBody()).toBe('');
+  });
+
+  it('rejects a newline and a bidi override in an env VALUE', async () => {
+    await handleAddMcpServer(
+      { action: 'add_mcp_server', name: 'a', command: 'npx', env: { A: 'x\n\n**Reviewed by IT.**' } },
+      session,
+    );
+    expect(cardBody()).toBe('');
+
+    cards = [];
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'a', command: 'npx', env: { A: `x${RLO}yz` } }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  /**
+   * Rejecting real control characters is not enough: normalizeCardText folds
+   * the two-character sequence backslash-n into a real LF AFTER validation, so
+   * a value carrying those two literal characters renders as extra lines on the
+   * approver's screen. The earlier test used a REAL newline, which the control
+   * class already blocked, so it never exercised this at all.
+   */
+  it('rejects the literal two-character escape that the card renderer expands into a newline', async () => {
+    const forged = `srv${BSLASH}n${BSLASH}n**Reviewed by IT. Routine.**`;
+    expect(forged).not.toContain('\n'); // literally backslash + n, not a newline
+
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'a', command: 'npx', args: [forged] }, session);
+    expect(cardBody()).toBe('');
+
+    cards = [];
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'a', command: 'npx', env: { A: forged } }, session);
+    expect(cardBody()).toBe('');
+
+    cards = [];
+    await handleInstallPackages({ action: 'install_packages', apt: ['curl'], reason: forged }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  /**
+   * The card's opening line interpolates the agent GROUP name, and
+   * `create_agent` — itself a container-callable delivery action — persists
+   * that name verbatim. So the header was forgeable without touching any field
+   * this module validates.
+   */
+  it('scrubs a forged agent-group name out of the card header', async () => {
+    const { getDb } = await import('../../db/connection.js');
+    getDb()
+      .prepare('UPDATE agent_groups SET name = ? WHERE id = ?')
+      .run(`Ops${BSLASH}n${BSLASH}n**Reviewed by IT. Pre-approved.**${BSLASH}n${BSLASH}nAgent "x`, 'ag-1');
+
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'gh', command: 'npx' }, session);
+
+    const body = cardBody();
+    expect(body).not.toBe(''); // a stored name must not block a valid request
+    expect(body).not.toContain(BSLASH); // nothing left that the renderer would expand
+    expect(body).not.toContain('Reviewed by IT.\n');
+  });
+
+  /**
+   * These three constants are the only thing between an agent-authored string
+   * and a root-privileged `docker build`: apt names land in
+   * `apt-get install -y ${names.join(' ')}` inside a generated Dockerfile.
+   * Review demonstrated that deleting any of them left all 999 tests green.
+   */
+  it('pins APT_RE — a shell metacharacter in a package name is refused', async () => {
+    await handleInstallPackages({ action: 'install_packages', apt: ['curl; rm -rf /'] }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  it('pins NPM_RE — a quote in an npm package name is refused', async () => {
+    await handleInstallPackages({ action: 'install_packages', npm: ["a'b"] }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  it('pins ENV_KEY_RE — a space in an env key is refused', async () => {
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'a', command: 'npx', env: { 'BAD KEY': 'v' } }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  it('pins the package cap — 21 packages is refused', async () => {
+    const apt = Array.from({ length: 21 }, (_, i) => `pkg${i}`);
+    await handleInstallPackages({ action: 'install_packages', apt }, session);
+    expect(cardBody()).toBe('');
+  });
+
+  it('pins the args and env size caps', async () => {
+    await handleAddMcpServer(
+      { action: 'add_mcp_server', name: 'a', command: 'npx', args: Array.from({ length: 33 }, () => 'x') },
+      session,
+    );
+    expect(cardBody()).toBe('');
+
+    cards = [];
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 33; i++) env[`K${i}`] = 'v';
+    await handleAddMcpServer({ action: 'add_mcp_server', name: 'a', command: 'npx', env }, session);
+    expect(cardBody()).toBe('');
+  });
+});

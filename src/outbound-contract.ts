@@ -30,13 +30,26 @@
 export const MAX_OUTBOUND_CONTENT_BYTES = 4 * 1024 * 1024;
 
 /**
- * Keys that mutate an object's prototype chain when used as an assignment
- * target. The concrete hazard here is NOT global `Object.prototype` pollution
- * — `obj[k] = v` for these keys touches only that object — it is that the
- * write SILENTLY DOES NOTHING an observer can see: `JSON.stringify` skips the
- * prototype, so a config write appears to succeed and the operator is told it
- * succeeded, while nothing was persisted. A boundary that can be made to lie
- * about its own effect is worse than one that rejects.
+ * Prototype-adjacent keys, rejected — but for different reasons, and the
+ * distinction matters because the first version of this comment applied
+ * `__proto__`'s reasoning to all three and was simply wrong about two of them.
+ *
+ * `__proto__` is the dangerous one. `obj['__proto__'] = v` invokes the setter
+ * and changes that object's [[Prototype]] instead of adding an own property.
+ * Not global pollution — only that object — but the write SILENTLY DOES
+ * NOTHING an observer can see: `JSON.stringify` skips the prototype, so a
+ * config write appears to succeed and the operator is told it succeeded while
+ * nothing was persisted. A boundary that can be made to lie about its own
+ * effect is worse than one that rejects. (Verified: `Object.keys` empty,
+ * serialized output `{"mcpServers":{}}`.)
+ *
+ * `constructor` and `prototype` do NOT behave that way — as plain string keys
+ * they become ordinary own properties and serialize normally (also verified).
+ * They are rejected anyway, and the honest reason is narrower: a payload that
+ * names them is never a legitimate business field here, and letting them
+ * through means every downstream consumer that walks the object with `in`,
+ * `for...in`, or a bare property read has to reason about shadowing. Refusing
+ * three names costs nothing; auditing every consumer costs a lot.
  */
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -158,7 +171,7 @@ export function readStringArray(
 export function readStringRecord(
   content: Record<string, unknown>,
   key: string,
-  opts: { maxEntries?: number; maxLength?: number; keyPattern?: RegExp } = {},
+  opts: { maxEntries?: number; maxLength?: number; keyPattern?: RegExp; valuePattern?: RegExp } = {},
 ): FieldResult<Record<string, string>> {
   const raw = content[key];
   if (raw === undefined || raw === null) return { ok: true, value: {} };
@@ -177,6 +190,13 @@ export function readStringRecord(
     if (typeof v !== 'string') return { ok: false, reason: `"${key}.${k}" must be a string, got ${describe(v)}` };
     if (opts.maxLength !== undefined && v.length > opts.maxLength) {
       return { ok: false, reason: `"${key}.${k}" exceeds ${opts.maxLength} characters` };
+    }
+    // The first cut of this reader had `keyPattern` and NO `valuePattern`, so a
+    // caller that believed it was charset-checking a record was only checking
+    // half of it. Three independent reviewers found the same hole through the
+    // self-mod approval card, where the unchecked half was the env VALUE.
+    if (opts.valuePattern && !opts.valuePattern.test(v)) {
+      return { ok: false, reason: `"${key}.${k}" has a disallowed value: ${JSON.stringify(v.slice(0, 64))}` };
     }
     out[k] = v;
   }

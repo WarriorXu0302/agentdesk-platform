@@ -17,8 +17,17 @@
  * instead of having the row silently rejected downstream.
  *
  * The rules below MIRROR src/modules/self-mod/request.ts (ADR-0063). The host
- * is authoritative; if these drift, the host wins and the agent sees a delayed
- * rejection instead of an immediate one.
+ * decides; these only decide how FAST the agent learns.
+ *
+ * Drift is not symmetric, and the first version of this comment got the
+ * consequence backwards. If this side is STRICTER, the cost is only a
+ * needlessly early rejection. If this side is LOOSER, a payload sails through
+ * the tool call and is rejected later by the host — still safe, but the agent
+ * is told at the wrong time. Neither direction is a security hole, because the
+ * host revalidates everything; both are a usability bug, and the looser
+ * direction is the one that hides a real host-side gap behind a passing tool
+ * call. (That is exactly what happened: this side checked env VALUES while the
+ * host did not, so the host's hole stayed invisible until review.)
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
@@ -49,12 +58,14 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 /**
  * Text that cannot alter how the host's approval card reads: no backtick (it
  * would close the card's disclosure fence early), no control characters or
- * line separators (they would split the disclosure into forgeable lines), and
- * no format characters (bidi overrides make displayed text differ from stored
- * text). Non-Latin scripts are unaffected — the rule is about Unicode classes,
- * not ASCII.
+ * line separators (they would split the disclosure into forgeable lines), no
+ * format characters (bidi overrides make displayed text differ from stored
+ * text), and no backslash — the card renderer folds the two-character sequence
+ * backslash-n into a real newline AFTER the host validates, so banning the
+ * character is what makes the check survive that rewrite. Non-Latin scripts are
+ * unaffected: the rule is about Unicode classes, not ASCII.
  */
-const SAFE_TEXT_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`]*$/u;
+const SAFE_TEXT_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`\\]*$/u;
 const MAX_ARGS = 32;
 const MAX_ENV_ENTRIES = 32;
 const MAX_FIELD_LEN = 512;

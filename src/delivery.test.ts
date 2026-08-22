@@ -480,6 +480,13 @@ describe('drainInflightDeliveries — graceful shutdown drain (ADR-0020)', () =>
 });
 
 describe('outbound contract violations dead-letter on the first attempt (ADR-0063)', () => {
+  /** Label sets currently present on the contract-violation counter. */
+  async function violationSeries(): Promise<string[]> {
+    const { outboundContractViolationsTotal } = await import('./metrics.js');
+    const v = await outboundContractViolationsTotal.get();
+    return v.values.map((x) => `kind="${String((x.labels as { kind?: string }).kind ?? '')}"`);
+  }
+
   /**
    * A malformed payload is malformed deterministically: the row's bytes never
    * change, so the ten retries the normal path grants it are ten guaranteed
@@ -540,7 +547,52 @@ describe('outbound contract violations dead-letter on the first attempt (ADR-006
     insertRawOutbound('ag-1', session.id, 'bad-2', `{"text":"hi","${proto}":{"polluted":true}}`);
     await deliverSessionMessages(session);
 
-    expect(readDeliveredRow('ag-1', session.id, 'bad-2')?.attempts).toBe(1);
+    const row = readDeliveredRow('ag-1', session.id, 'bad-2');
+    expect(row?.attempts).toBe(1);
+    // `attempts === 1` alone does NOT discriminate: an ordinary first failure
+    // records attempts=1 too. `status` does not discriminate either —
+    // markDeliveryFailed hardcodes 'failed' on both paths. Only a null
+    // next_retry_at separates dead-lettered from scheduled-for-retry, which is
+    // what makes this assertion the one that can fail if the permanent branch
+    // is ever narrowed away from the forbidden-key class.
+    expect(row?.status).toBe('failed');
+    expect(row?.next_retry_at).toBeNull();
+  });
+
+  /**
+   * `messages_out.kind` is written by the container. Labelling a counter with
+   * it raw would let the untrusted side mint unbounded Prometheus series — in
+   * the one change whose subject is not trusting that side.
+   */
+  it('buckets an unrecognised kind instead of minting a label for it', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    setDeliveryAdapter({
+      async deliver() {
+        return 'sent';
+      },
+    });
+
+    const before = await violationSeries();
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    for (let i = 0; i < 5; i++) {
+      db.prepare(
+        `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+         VALUES (?, datetime('now'), ?, 'telegram:123', 'telegram', '[]')`,
+      ).run(`k-${i}`, `attacker-kind-${i}`);
+    }
+    db.close();
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+
+    const after = await violationSeries();
+    expect(after.some((l) => l.includes('attacker-kind'))).toBe(false);
+    expect(after.some((l) => l.includes('kind="other"'))).toBe(true);
+    // Five hostile kinds, at most one new series.
+    expect(after.length - before.length).toBeLessThanOrEqual(1);
   });
 
   it('leaves a well-formed payload on the normal path', async () => {
