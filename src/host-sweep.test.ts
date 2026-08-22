@@ -26,6 +26,7 @@ import {
   decideStuckAction,
   parseSqliteUtc,
   recentTokenUsage,
+  sweepEachSession,
 } from './host-sweep.js';
 import type { Session } from './types.js';
 
@@ -482,5 +483,51 @@ describe('deleteStalePendingQuestions — orphaned-question reaper (ADR-0042 fol
     question('recent-1', new Date().toISOString());
     expect(deleteStalePendingQuestions(7 * 24 * 60 * 60_000)).toBe(0);
     expect(getPendingQuestion('recent-1')).toBeDefined();
+  });
+});
+
+describe('sweepEachSession isolates one session failure from the rest', () => {
+  function sess(id: string): Session {
+    return { id, agent_group_id: 'ag-1', status: 'active' } as Session;
+  }
+
+  /**
+   * The bug this closes was not "an occasional missed pass". `getActiveSessions`
+   * is an unordered SELECT, which SQLite serves in rowid order — the SAME order
+   * every tick — so one session with a torn or locked DB starved exactly the
+   * same set behind it, on every tick, forever, under one generic log line.
+   */
+  it('sweeps every session even when one in the middle throws', async () => {
+    const seen: string[] = [];
+    const result = await sweepEachSession([sess('a'), sess('b'), sess('c')], async (s) => {
+      if (s.id === 'b') throw new Error('torn session db');
+      seen.push(s.id);
+    });
+
+    expect(seen).toEqual(['a', 'c']); // 'c' is the one the old loop dropped
+    expect(result).toEqual({ swept: 2, failed: 1 });
+  });
+
+  it('keeps going when every session fails, and reports it', async () => {
+    const result = await sweepEachSession([sess('a'), sess('b')], async () => {
+      throw new Error('dockerd down');
+    });
+    expect(result).toEqual({ swept: 0, failed: 2 });
+  });
+
+  it('counts each failure so the starvation is visible on /metrics', async () => {
+    const { sweepSessionFailuresTotal } = await import('./metrics.js');
+    sweepSessionFailuresTotal.reset();
+
+    await sweepEachSession([sess('a'), sess('b'), sess('c')], async (s) => {
+      if (s.id !== 'a') throw new Error('nope');
+    });
+
+    const v = await sweepSessionFailuresTotal.get();
+    expect(v.values[0]?.value).toBe(2);
+  });
+
+  it('is a no-op on an empty session list', async () => {
+    expect(await sweepEachSession([], async () => {})).toEqual({ swept: 0, failed: 0 });
   });
 });

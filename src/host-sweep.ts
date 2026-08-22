@@ -59,6 +59,7 @@ import {
   runawaySessionStopsTotal,
   sessionCount,
   sessionLifecycleTotal,
+  sweepSessionFailuresTotal,
 } from './metrics.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { sweepExpiredScopes } from './scope-retention.js';
@@ -216,15 +217,62 @@ export function stopHostSweep(): void {
   running = false;
 }
 
+/**
+ * Sweep every session, isolating each one's failure from the rest.
+ *
+ * The loop used to sit bare inside the tick's single try/catch, so the FIRST
+ * session that threw ended the pass and every session after it was skipped —
+ * and `getActiveSessions()` is an unordered `SELECT` over the table, which
+ * SQLite serves in rowid order, i.e. the SAME order every tick. So a single
+ * session with a torn or locked session DB did not cause an occasional missed
+ * pass; it deterministically starved the same set of sessions behind it on
+ * every tick, forever, while the log showed one generic "Host sweep error".
+ *
+ * `sweepSession` has a `finally` that closes its DBs but no `catch`, and
+ * several of the things it calls can throw on a bad session (the central-DB
+ * lookup, the processing-ack sync, the due count, the SLA pass, the dynamic
+ * import of the recurrence module). Isolating here rather than adding a catch
+ * inside `sweepSession` keeps the per-session function honest about failing
+ * and puts the containment where the fan-out is.
+ *
+ * The platform already held this rule on its OTHER per-session fan-out: the
+ * delivery drain isolates each session with the comment "one session's drain
+ * error must not abort the remaining queue for this tick"
+ * (`drainSessionsBounded`). The sweep was simply the loop that never got it.
+ *
+ * Takes the per-session function as a parameter so the isolation can be tested
+ * without a session DB, the same DI shape the admission queue uses (ADR-0059).
+ */
+export async function sweepEachSession(
+  sessions: Session[],
+  sweepOne: (session: Session) => Promise<void>,
+): Promise<{ swept: number; failed: number }> {
+  let swept = 0;
+  let failed = 0;
+  for (const session of sessions) {
+    try {
+      await sweepOne(session);
+      swept++;
+    } catch (err) {
+      failed++;
+      sweepSessionFailuresTotal.inc();
+      log.error('Sweep failed for one session — continuing with the rest', {
+        sessionId: session.id,
+        agentGroupId: session.agent_group_id,
+        err,
+      });
+    }
+  }
+  return { swept, failed };
+}
+
 async function sweep(): Promise<void> {
   if (!running) return;
 
   try {
     const sessions = getActiveSessions();
     sampleSessionCount(sessions);
-    for (const session of sessions) {
-      await sweepSession(session);
-    }
+    await sweepEachSession(sessions, sweepSession);
   } catch (err) {
     log.error('Host sweep error', { err });
   }
