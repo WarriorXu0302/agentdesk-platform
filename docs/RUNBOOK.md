@@ -384,6 +384,15 @@ du -sh data/ data/v2.db data/v2-sessions-archive/ 2>/dev/null
   存量数据(本特性之前建的、没有 `.last-access` 戳)按目录 mtime 判定,同样覆盖。
   每次过期落 `enterprise_audit` 的 `scope_retention_expired`。
   天数按"最长合理离岗期"设,别按活跃度设——长假回来的人不该发现助手失忆。
+  首次见到的作用域会被**收养**(打戳,当次绝不删),戳的时间优先用该用户在
+  `sessions.last_active` 里的真实最后使用时间。
+  **⚠️ 开之前先做两件事**:
+  (1) **备份 `data/v2-scopes/`** —— `scripts/backup.sh` **只覆盖 SQLite 文件,不含作用域树**,
+  TTL 设错了没有恢复路径;
+  (2) **先跑预演**:`AGENTDESK_SCOPE_TTL_DRY_RUN=true` 配上你打算用的天数,看日志里
+  `DRY RUN — would expire user state scope` 的名单确认无误,再关掉预演。
+  预演不产生任何写入(连收养戳都不写)。
+  监控:`agentdesk_scope_retention_total{outcome=adopted|skipped_live|expired|delete_failed}`。
   注意:这是**过期**不是**擦除**;"删掉某人全部数据"的请求牵涉必须保留的审计行与后端网关里的记忆,
   需单独处理。
 - 或直接扩卷。

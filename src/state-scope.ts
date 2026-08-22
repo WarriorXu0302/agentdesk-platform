@@ -76,15 +76,28 @@ export const SCOPE_ACCESS_MARKER = '.last-access';
 
 /**
  * Stamp a user scope as accessed. Called on every spawn that mounts it, so
- * the clock measures ABANDONMENT rather than absolute age. Best-effort — a
- * failed stamp must never block a spawn, and retention's mtime fallback keeps
- * the scope safe from premature expiry regardless.
+ * the retention clock (ADR-0061) measures ABANDONMENT rather than absolute
+ * age. `atMs` back-dates the stamp — retention uses it to ADOPT a
+ * pre-existing scope at its true last-use time instead of at "now".
+ *
+ * Best-effort: a failed stamp must never block a spawn. It is logged at WARN,
+ * not debug — a stamp that silently stops landing freezes the retention clock
+ * for that person, and the only thing standing between a frozen clock and
+ * deletion is their session staying active.
  */
-export function touchScopeAccess(scopeBaseDir: string): void {
+export function touchScopeAccess(scopeBaseDir: string, atMs?: number): void {
+  const marker = path.join(scopeBaseDir, SCOPE_ACCESS_MARKER);
   try {
-    fs.writeFileSync(path.join(scopeBaseDir, SCOPE_ACCESS_MARKER), '');
+    fs.writeFileSync(marker, '');
+    if (atMs !== undefined) {
+      const when = new Date(atMs);
+      fs.utimesSync(marker, when, when);
+    }
   } catch (err) {
-    log.debug('Scope access stamp failed (non-fatal)', { dir: scopeBaseDir, err });
+    log.warn('Scope access stamp failed — retention clock for this scope is frozen', {
+      dir: scopeBaseDir,
+      err,
+    });
   }
 }
 

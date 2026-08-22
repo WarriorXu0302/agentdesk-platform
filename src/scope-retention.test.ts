@@ -16,7 +16,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-scope-retention';
 const SCOPES = `${TEST_DIR}/data/v2-scopes`;
 
 const { sweepExpiredScopes, resetScopeRetentionPolicyLog } = await import('./scope-retention.js');
-const { userScopeKey, touchScopeAccess } = await import('./state-scope.js');
+const { SCOPE_ACCESS_MARKER, userScopeKey, touchScopeAccess } = await import('./state-scope.js');
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');
 const { createAgentGroup } = await import('./db/agent-groups.js');
 const { createSession } = await import('./db/sessions.js');
@@ -25,70 +25,83 @@ import type { Session } from './types.js';
 const DAY = 24 * 60 * 60_000;
 const NOW = Date.UTC(2026, 7, 20);
 
-function now(): string {
-  return new Date(NOW).toISOString();
+function iso(agedDays = 0): string {
+  return new Date(NOW - agedDays * DAY).toISOString();
 }
 
-/** Materialize a scope with content, and set its last-access age in days. */
-function seedScope(agentGroupId: string, userId: string, agedDays: number, opts: { marker?: boolean } = {}): string {
+/**
+ * Materialize a scope with real content. NOTE: this deliberately does NOT
+ * back-date the scope ROOT directory — the first cut of this feature read the
+ * root's mtime as "last access", and a fixture that fakes that property is
+ * exactly what let the bug ship. Age is expressed only through the marker
+ * (the thing the code actually reads) or through session evidence.
+ */
+function seedScope(agentGroupId: string, userId: string, opts: { markerAgedDays?: number } = {}): string {
   const dir = path.join(SCOPES, agentGroupId, userScopeKey(userId));
   fs.mkdirSync(path.join(dir, 'workspace', 'conversations'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'workspace', 'CLAUDE.local.md'), 'private memory');
-  const when = new Date(NOW - agedDays * DAY);
-  if (opts.marker !== false) {
-    touchScopeAccess(dir);
-    fs.utimesSync(path.join(dir, '.last-access'), when, when);
+  if (opts.markerAgedDays !== undefined) {
+    touchScopeAccess(dir, NOW - opts.markerAgedDays * DAY);
   }
-  fs.utimesSync(dir, when, when);
   return dir;
 }
 
-function seedOwnedSession(id: string, agentGroupId: string, ownerUserId: string): void {
+function seedSession(args: {
+  id: string;
+  agentGroupId: string;
+  ownerUserId: string;
+  status?: Session['status'];
+  lastActiveAgedDays?: number;
+}): void {
   createSession({
-    id,
-    agent_group_id: agentGroupId,
+    id: args.id,
+    agent_group_id: args.agentGroupId,
     messaging_group_id: null,
     thread_id: null,
-    owner_user_id: ownerUserId,
-    root_session_id: id,
+    owner_user_id: args.ownerUserId,
+    root_session_id: args.id,
     agent_provider: null,
-    status: 'active',
+    status: args.status ?? 'active',
     container_status: 'stopped',
-    last_active: null,
+    last_active: args.lastActiveAgedDays !== undefined ? iso(args.lastActiveAgedDays) : null,
     archived_at: null,
-    created_at: now(),
+    created_at: iso(500),
   } as Session);
+}
+
+function hasMarker(dir: string): boolean {
+  return fs.existsSync(path.join(dir, SCOPE_ACCESS_MARKER));
 }
 
 beforeEach(() => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(SCOPES, { recursive: true });
   runMigrations(initTestDb());
-  createAgentGroup({ id: 'ag-1', name: 'A', folder: 'a', agent_provider: null, created_at: now() });
+  createAgentGroup({ id: 'ag-1', name: 'A', folder: 'a', agent_provider: null, created_at: iso(500) });
   resetScopeRetentionPolicyLog();
   delete process.env.AGENTDESK_SCOPE_TTL_DAYS;
+  delete process.env.AGENTDESK_SCOPE_TTL_DRY_RUN;
 });
 
 afterEach(() => {
   closeDb();
   delete process.env.AGENTDESK_SCOPE_TTL_DAYS;
+  delete process.env.AGENTDESK_SCOPE_TTL_DRY_RUN;
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
 describe('scope retention (ADR-0061)', () => {
   it('is OFF by default — an ancient abandoned scope survives', () => {
-    const dir = seedScope('ag-1', 'ou_ghost', 400);
+    const dir = seedScope('ag-1', 'ou_ghost', { markerAgedDays: 400 });
 
-    const r = sweepExpiredScopes(NOW);
-
-    expect(r.removed).toBe(0);
+    expect(sweepExpiredScopes(NOW).removed).toBe(0);
     expect(fs.existsSync(dir)).toBe(true);
   });
 
-  it('expires a scope whose last access predates the window', () => {
+  it('expires a scope whose marker predates the window, keeps a fresh one', () => {
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '90';
-    const stale = seedScope('ag-1', 'ou_ghost', 120);
-    const fresh = seedScope('ag-1', 'ou_active', 3);
+    const stale = seedScope('ag-1', 'ou_ghost', { markerAgedDays: 120 });
+    const fresh = seedScope('ag-1', 'ou_active', { markerAgedDays: 3 });
 
     const r = sweepExpiredScopes(NOW);
 
@@ -97,36 +110,82 @@ describe('scope retention (ADR-0061)', () => {
     expect(fs.existsSync(fresh)).toBe(true);
   });
 
-  it('ACCESS refreshes the clock — an old scope used yesterday is not expired', () => {
-    // The trap this avoids: an absolute-age clock deletes exactly the
-    // memories still in daily use, because those are the oldest ones.
+  it('ACCESS refreshes the clock — a long-lived scope used today is not expired', () => {
+    // The trap: an absolute-age clock deletes exactly the memories still in
+    // daily use, because those are the oldest ones.
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '90';
-    const dir = seedScope('ag-1', 'ou_veteran', 400); // created long ago
-    touchScopeAccess(dir); // ...but used just now
+    const dir = seedScope('ag-1', 'ou_veteran', { markerAgedDays: 400 });
+    touchScopeAccess(dir); // ...used just now
 
-    const r = sweepExpiredScopes(NOW);
-
-    expect(r.removed).toBe(0);
+    expect(sweepExpiredScopes(NOW).removed).toBe(0);
     expect(fs.existsSync(dir)).toBe(true);
   });
 
-  it('covers data that predates the feature (no marker → directory mtime)', () => {
-    // The trap this avoids: a retention knob that only governs data written
-    // after it was switched on reports compliance it does not deliver.
-    process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
-    const legacy = seedScope('ag-1', 'ou_legacy', 200, { marker: false });
-    expect(fs.existsSync(path.join(legacy, '.last-access'))).toBe(false);
+  describe('adoption (blocker regression)', () => {
+    it('NEVER deletes an unmarked scope on sight — it adopts it', () => {
+      // Regression: the first cut fell back to the scope ROOT's mtime, which
+      // on POSIX only tracks CREATION (later writes land deeper), so every
+      // pre-feature scope read as maximally old and the longest-tenured users
+      // were deleted first. Adoption removes the class outright.
+      process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
+      const dir = seedScope('ag-1', 'ou_legacy'); // no marker at all
+      // Make the fixture hostile to the old implementation: the root dir is
+      // genuinely old, and nothing has refreshed it.
+      const old = new Date(NOW - 400 * DAY);
+      fs.utimesSync(dir, old, old);
 
-    const r = sweepExpiredScopes(NOW);
+      const r = sweepExpiredScopes(NOW);
 
-    expect(r.removed).toBe(1);
-    expect(fs.existsSync(legacy)).toBe(false);
+      expect(r.adopted).toBe(1);
+      expect(r.removed).toBe(0);
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(hasMarker(dir)).toBe(true);
+    });
+
+    it('adopts at the owner’s real last-use time when a session still knows it', () => {
+      process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
+      const dir = seedScope('ag-1', 'ou_gone');
+      // Archived session: still evidence of when they last used this agent.
+      seedSession({
+        id: 's-old',
+        agentGroupId: 'ag-1',
+        ownerUserId: 'ou_gone',
+        status: 'archived',
+        lastActiveAgedDays: 200,
+      });
+
+      const r = sweepExpiredScopes(NOW);
+
+      // Evidence says 200 days idle > 30-day window: adopted AND expired on
+      // the same tick — the operator's policy takes effect immediately.
+      expect(r.adopted).toBe(1);
+      expect(r.removed).toBe(1);
+      expect(fs.existsSync(dir)).toBe(false);
+    });
+
+    it('adopts at NOW when no session evidence remains — one grace window, never instant deletion', () => {
+      process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
+      const dir = seedScope('ag-1', 'ou_orphan'); // no marker, no sessions
+
+      const first = sweepExpiredScopes(NOW);
+      expect(first.adopted).toBe(1);
+      expect(first.removed).toBe(0);
+      expect(fs.existsSync(dir)).toBe(true);
+
+      // Still inside the window a week later...
+      expect(sweepExpiredScopes(NOW + 7 * DAY).removed).toBe(0);
+      expect(fs.existsSync(dir)).toBe(true);
+
+      // ...and expired once the adopted stamp itself ages out.
+      expect(sweepExpiredScopes(NOW + 31 * DAY).removed).toBe(1);
+      expect(fs.existsSync(dir)).toBe(false);
+    });
   });
 
   it('NEVER expires a scope an active session still resolves to, however old', () => {
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
-    const dir = seedScope('ag-1', 'ou_live', 500);
-    seedOwnedSession('sess-live', 'ag-1', 'ou_live');
+    const dir = seedScope('ag-1', 'ou_live', { markerAgedDays: 500 });
+    seedSession({ id: 'sess-live', agentGroupId: 'ag-1', ownerUserId: 'ou_live', lastActiveAgedDays: 500 });
 
     const r = sweepExpiredScopes(NOW);
 
@@ -135,9 +194,24 @@ describe('scope retention (ADR-0061)', () => {
     expect(fs.existsSync(dir)).toBe(true);
   });
 
-  it('records an audit row for every expiry', async () => {
+  it('dry run reports what would go and deletes nothing', () => {
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
-    seedScope('ag-1', 'ou_ghost', 90);
+    process.env.AGENTDESK_SCOPE_TTL_DRY_RUN = 'true';
+    const dir = seedScope('ag-1', 'ou_ghost', { markerAgedDays: 90 });
+    const unmarked = seedScope('ag-1', 'ou_legacy');
+
+    const r = sweepExpiredScopes(NOW);
+
+    expect(r.wouldRemove).toBe(1);
+    expect(r.removed).toBe(0);
+    expect(fs.existsSync(dir)).toBe(true);
+    // A preview must not mutate anything — including adoption stamps.
+    expect(hasMarker(unmarked)).toBe(false);
+  });
+
+  it('writes the audit row BEFORE deleting', async () => {
+    process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
+    seedScope('ag-1', 'ou_ghost', { markerAgedDays: 90 });
 
     sweepExpiredScopes(NOW);
 
@@ -150,10 +224,11 @@ describe('scope retention (ADR-0061)', () => {
     expect(JSON.parse(rows[0].details).retainDays).toBe(30);
   });
 
-  it('sweeps across agent groups and tolerates an unreadable one', () => {
+  it('sweeps across agent groups and tolerates non-directory clutter', () => {
     process.env.AGENTDESK_SCOPE_TTL_DAYS = '30';
-    const a = seedScope('ag-1', 'ou_ghost', 90);
-    const b = seedScope('ag-2', 'ou_ghost', 90); // orphaned group: no DB row, ages out the same way
+    const a = seedScope('ag-1', 'ou_ghost', { markerAgedDays: 90 });
+    // Orphaned group (no DB row): ages out through the same path.
+    const b = seedScope('ag-2', 'ou_ghost', { markerAgedDays: 90 });
     fs.writeFileSync(path.join(SCOPES, 'stray-file'), 'not a directory');
 
     const r = sweepExpiredScopes(NOW);
