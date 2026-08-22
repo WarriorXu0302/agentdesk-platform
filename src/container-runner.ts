@@ -762,7 +762,9 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
   // Remove symlinks not in the desired set
   for (const entry of fs.readdirSync(skillsDir)) {
     const entryPath = path.join(skillsDir, entry);
-    let isSymlink = false;
+    // Declared without an initializer: the catch below `continue`s, so a
+    // seed value could never be read (eslint no-useless-assignment).
+    let isSymlink: boolean;
     try {
       isSymlink = fs.lstatSync(entryPath).isSymbolicLink();
     } catch {
