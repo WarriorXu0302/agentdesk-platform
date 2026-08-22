@@ -10,6 +10,7 @@
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import path from 'path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('./container-runner.js', () => ({
@@ -593,6 +594,36 @@ describe('outbound contract violations dead-letter on the first attempt (ADR-006
     expect(after.some((l) => l.includes('kind="other"'))).toBe(true);
     // Five hostile kinds, at most one new series.
     expect(after.length - before.length).toBeLessThanOrEqual(1);
+  });
+
+  /**
+   * The negative result that kept `files` a cast, kept as a test so the next
+   * person does not re-derive it: a non-string entry is SKIPPED, not crashed,
+   * because `isSafeAttachmentName` type-checks before it does anything else.
+   * The message still goes out with its valid attachment. Tightening this into
+   * a rejection would trade graceful degradation for a dead-lettered reply.
+   */
+  it('skips a non-string entry in files and still delivers the message', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const sent: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_c, _p, _t, _k, content) {
+        sent.push(content);
+        return 'sent';
+      },
+    });
+
+    const outboxDir = path.join(TEST_DIR, 'v2-sessions', 'ag-1', session.id, 'outbox', 'files-1');
+    fs.mkdirSync(outboxDir, { recursive: true });
+    fs.writeFileSync(path.join(outboxDir, 'ok.txt'), 'attachment');
+
+    insertRawOutbound('ag-1', session.id, 'files-1', JSON.stringify({ text: 'here', files: ['ok.txt', 123] }));
+    await deliverSessionMessages(session);
+
+    expect(readDeliveredRow('ag-1', session.id, 'files-1')?.status).toBe('delivered');
+    expect(sent.some((c) => c.includes('here'))).toBe(true);
   });
 
   it('leaves a well-formed payload on the normal path', async () => {
