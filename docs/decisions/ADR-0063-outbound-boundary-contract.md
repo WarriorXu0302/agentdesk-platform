@@ -126,26 +126,7 @@
     仍需处理器自己判。
 
 - **Neutral / Trade-offs**
-  - **14 个 action 里只迁移了 2 个**(`install_packages`、`add_mcp_server`),
-    外加交付层里 `questionId` 一处(它是 `pending_questions` 的主键,
-    类型错会写入一个任何回调都匹配不上的键)。**剩下 12 个未迁移**,
-    其中真正还在用类型断言的是 **scheduling 的 5 个 + `create_agent`,共 6 个**
-    (17 处 cast);其余 6 个本来就有 typeof 守卫或闭集强制函数。
-    未迁移的处理器现在拿到的至少是结构合法的对象,但字段级保真度未变。
-    这是**已知的未完成部分**,不是"已覆盖"。
-    (初版写"11 个处理器 / 其余 9 个未迁移",两个数字都错,复核纠正。)
-  - **`delivery.ts` 自身也还留着四处 cast**,它们在分发层而不在处理器里,
-    一并点名以免被"处理器已覆盖"的说法盖过去:`content.title`、`content.options`
-    (:697-698,已有 `Array.isArray` 兜底)、`content.action`(:1280,取不到只会
-    落到"未知 action"分支)、以及 **`content.files as string[]`(:746),
-    它直接喂给 `readOutboxFiles`**——这一处的字段级保真度最值得下一轮先看。
-  - 拒绝了 per-action schema 注册表。若迁移的处理器超过 3-4 个,
-    重审这个决定。
-  - `env` 的值会**原样**显示在审批卡片里。这是刻意的:管理员必须看到
-    将被应用的东西才能同意。代价是 agent 若把密钥放进 `env`,该密钥会出现在
-    审批 DM 的聊天记录里。取舍理由:agent 本来就已经知道那个值,
-    而"批准一个看不见的值"不构成同意。若某部署认为聊天记录留存不可接受,
-    应改为禁止 agent 提供 `env`,而不是把它藏起来。
+  - ~~**14 个 action 里只迁移了 2 个**~~ **已补完(见文末"迁移收尾")。**
 
 ## Implementation Notes
 
@@ -243,3 +224,47 @@ markDelivered),不是消息丢失。
 这是软拒绝,agent 会被告知确切原因,且容器侧镜像在工具调用当场就报错——
 代价是一次往返,不是一条消息。若这在实际使用中太吵,正确的解法是把 `reason`
 移出围栏单独渲染,而不是放宽字符集。
+
+## 迁移收尾(2026-08-23,同日后续 PR)
+
+初版把"只迁移了 2 个 action"列为已知未完成。现在做完了:
+
+- **已迁到严格读取器的 action:8 个**——`install_packages`、`add_mcp_server`
+  (本 ADR),加上 scheduling 的 5 个与 `create_agent`。
+- **其余 6 个本来就读得住**,复核逐个确认过:`roster.invite` 用 `typeof` 守卫,
+  `classify_intent` / `escalate` / `routing_feedback` / `gateway_audit` 走闭集
+  强制函数,`provider_error` 不读 `content`。
+- 所以 **14 个 action 现在全部按类型读**,没有剩余的裸 cast。
+
+scheduling 那批的 cast 不是装饰:非字符串 `taskId` 会落一个后续 cancel/pause/resume
+**再也寻址不到**的行(任务既不会执行也无法取消,且无人报错);非字符串 `processAfter`
+被 SQLite `datetime()` 比较强制转换成"永不触发"或"立即触发";
+`platformId`/`channelType` 决定被唤醒的消息投到哪。`update_task` 是部分更新语义
+(缺省=不动,显式 null=清空),此前**类型不对的字段被静默跳过而调用仍报成功**;
+现在整条更新拒绝——半应用的更新等于 agent 以为自己改了而实际没改。
+
+`create_agent` 的 `instructions` 会被直接写成 `groups/<folder>/instructions.md`
+(新 agent 的角色提示词),即容器可以在宿主磁盘上写文件——现在有类型与 64 KiB 上限。
+
+### 一处"看着像洞、实测不是"的:`content.files`
+
+初版 ADR 把 `content.files as string[]` 点名为"下一轮先看的字段级缺口",
+理由是它直接喂给读文件的 `readOutboxFiles`。**动手改完才发现理由是错的**:
+`isSafeAttachmentName`(`attachment-safety.ts`)第一行就是
+`typeof name !== 'string'`,所以非字符串元素被跳过,既不会被强制转换也不会拼进路径。
+实测方法是给测试**真的建出** outbox 目录(否则 `readOutboxFiles` 提前返回,
+根本走不到那段代码——我第一版测试就是这样,红得莫名其妙),然后投递
+`files: ['ok.txt', 123]`:未迁移的代码**正常投递**,带上那个合法附件。
+
+于是这处**保持 cast 不变**,并把理由写进代码注释。收紧它会把优雅降级换成更差的结果:
+一个坏文件名会让**整条用户可见的回复**被死信,而不是只丢掉一个附件。
+
+### 仍未覆盖的一层:通道适配器
+
+迁移过程中点出的新残留——**出站内容在分发之后还会被通道适配器再读一遍**,那一层仍是 cast:
+`src/channels/chat-sdk-bridge.ts` 约 10 处(`messageId` / `text` / `markdown` /
+`emoji` / `questionId` / `title` / `question` / `options` / `card` / `fallbackText`)、
+`src/channels/feishu/primitives.ts` 2 处(`fallbackText`)、
+`src/modules/permissions/index.ts` 1 处(`author`)。
+其中 `messageId` 被送进 `adapter.editMessage` / `addReaction`,是最值得先看的。
+这是下一层,不在本 ADR 范围。

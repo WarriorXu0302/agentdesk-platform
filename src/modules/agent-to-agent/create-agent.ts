@@ -13,6 +13,7 @@ import { getSession } from '../../db/sessions.js';
 import { wakeContainer } from '../../container-runner.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
+import { readString } from '../../outbound-contract.js';
 import { writeSessionMessage } from '../../session-manager.js';
 import type { AgentGroup, Session } from '../../types.js';
 import { createDestination, getDestinationByName, normalizeName } from './db/agent-destinations.js';
@@ -27,6 +28,9 @@ import { writeDestinations } from './write-destinations.js';
  * unaffected — the rule is about Unicode classes, not ASCII.
  */
 const DISPLAY_NAME_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`\\]{1,64}$/u;
+
+/** Cap on the role prompt an agent may write for the agent it spawns. */
+const MAX_INSTRUCTIONS_LEN = 64 * 1024;
 
 function notifyAgent(session: Session, text: string): void {
   writeSessionMessage(session.agent_group_id, session.id, {
@@ -45,14 +49,16 @@ function notifyAgent(session: Session, text: string): void {
 }
 
 export async function handleCreateAgent(content: Record<string, unknown>, session: Session): Promise<void> {
-  const requestId = content.requestId as string;
-  const name = content.name as string;
-  const instructions = content.instructions as string | null;
+  const nameR = readString(content, 'name', { required: true, maxLength: 64, pattern: DISPLAY_NAME_RE });
+  // `instructions` is written straight to groups/<folder>/instructions.md and
+  // becomes the new agent's role prompt, so it is a file the container gets to
+  // author. Bounded and type-checked rather than cast (ADR-0063).
+  const instructionsR = readString(content, 'instructions', { maxLength: MAX_INSTRUCTIONS_LEN });
 
   const sourceGroup = getAgentGroup(session.agent_group_id);
   if (!sourceGroup) {
     notifyAgent(session, `create_agent failed: source agent group not found.`);
-    log.warn('create_agent failed: missing source group', { sessionAgentGroup: session.agent_group_id, name });
+    log.warn('create_agent failed: missing source group', { sessionAgentGroup: session.agent_group_id });
     return;
   }
 
@@ -62,14 +68,27 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
   // backtick can forge the prose an admin reads next to Approve. This action is
   // container-callable, so the name is untrusted input like any other field on
   // a messages_out row (ADR-0063).
-  if (typeof name !== 'string' || !DISPLAY_NAME_RE.test(name)) {
+  if (!nameR.ok) {
     notifyAgent(
       session,
       'create_agent failed: name must be 1-64 characters with no line breaks, backticks, backslashes, or invisible formatting characters.',
     );
-    log.warn('create_agent rejected an unsafe display name', { sessionAgentGroup: session.agent_group_id });
+    log.warn('create_agent rejected an unsafe display name', {
+      sessionAgentGroup: session.agent_group_id,
+      reason: nameR.reason,
+    });
     return;
   }
+  if (!instructionsR.ok) {
+    notifyAgent(session, `create_agent failed: ${instructionsR.reason}.`);
+    log.warn('create_agent rejected unsafe instructions', {
+      sessionAgentGroup: session.agent_group_id,
+      reason: instructionsR.reason,
+    });
+    return;
+  }
+  const name = nameR.value;
+  const instructions = instructionsR.value || null;
 
   const localName = normalizeName(name);
 
@@ -153,6 +172,4 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     `Agent "${localName}" created. You can now message it with <message to="${localName}">...</message>.`,
   );
   log.info('Agent group created', { agentGroupId, name, localName, folder, parent: sourceGroup.id });
-  // Note: requestId is unused — this is fire-and-forget, not request/response.
-  void requestId;
 }

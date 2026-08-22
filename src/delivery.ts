@@ -694,7 +694,8 @@ async function deliverMessage(
       // non-string here would persist a coerced key that no response can ever
       // match. Read it strictly rather than casting (ADR-0063).
       const questionId = readString(content, 'questionId', { required: true, maxLength: 256 });
-      const title = content.title as string | undefined;
+      const titleR = readString(content, 'title', { required: true, maxLength: 1024 });
+      const title = titleR.ok ? titleR.value : undefined;
       const rawOptions = content.options as unknown;
       if (!questionId.ok) {
         log.error('ask_question has a malformed questionId — not persisting', { reason: questionId.reason });
@@ -741,6 +742,18 @@ async function deliverMessage(
     // Read file attachments from outbox if the content declares files.
     // File I/O lives in session-manager.ts (symmetric with inbound
     // extractAttachmentFiles) — delivery just hands buffers to the adapter.
+    // `files` stays a cast, deliberately. It LOOKS like the same hazard as the
+    // other fields — it names paths the host reads off disk — but
+    // `isSafeAttachmentName` (attachment-safety.ts) opens with
+    // `typeof name !== 'string'`, so a non-string entry is skipped, never
+    // coerced and never joined into a path. Measured, not assumed: seeding a
+    // real outbox directory and delivering `files: ['ok.txt', 123]` on the
+    // unmigrated code delivers the message with the valid attachment; there is
+    // no crash to prevent.
+    //
+    // Tightening it here would REPLACE graceful degradation with a worse
+    // outcome: one malformed name would dead-letter an entire user-facing
+    // reply instead of dropping one attachment from it.
     const files =
       Array.isArray(content.files) && content.files.length > 0
         ? readOutboxFiles(session.agent_group_id, session.id, msg.id, content.files as string[])
@@ -1277,7 +1290,16 @@ async function handleSystemAction(
   session: Session,
   inDb: Database.Database,
 ): Promise<void> {
-  const action = content.action as string;
+  // A non-string action can only ever miss the registry, but reading it
+  // strictly means the "Unknown system action" log carries a real value
+  // instead of a coerced one, and a caller cannot pass an object here that
+  // stringifies into a registered name.
+  const actionR = readString(content, 'action', { required: true, maxLength: 128 });
+  if (!actionR.ok) {
+    log.warn('System action refused at the outbound boundary', { sessionId: session.id, reason: actionR.reason });
+    return;
+  }
+  const action = actionR.value;
   log.info('System action from agent', { sessionId: session.id, action });
 
   const registered = actionHandlers.get(action);
