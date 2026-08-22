@@ -478,3 +478,139 @@ describe('drainInflightDeliveries — graceful shutdown drain (ADR-0020)', () =>
     await inFlight; // let the underlying delivery time out so the test cleans up
   });
 });
+
+describe('outbound contract violations dead-letter on the first attempt (ADR-0063)', () => {
+  /** Label sets currently present on the contract-violation counter. */
+  async function violationSeries(): Promise<string[]> {
+    const { outboundContractViolationsTotal } = await import('./metrics.js');
+    const v = await outboundContractViolationsTotal.get();
+    return v.values.map((x) => `kind="${String((x.labels as { kind?: string }).kind ?? '')}"`);
+  }
+
+  /**
+   * A malformed payload is malformed deterministically: the row's bytes never
+   * change, so the ten retries the normal path grants it are ten guaranteed
+   * failures that also hold up every later row in the same session queue —
+   * the drain is sequential. Failing it once is the whole point.
+   */
+  function insertRawOutbound(agentGroupId: string, sessionId: string, msgId: string, raw: string): void {
+    const db = new Database(outboundDbPath(agentGroupId, sessionId));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?)`,
+    ).run(msgId, raw);
+    db.close();
+  }
+
+  it('never sends the payload and never retries it', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    const sent: string[] = [];
+    setDeliveryAdapter({
+      async deliver(_c, _p, _t, _k, content) {
+        sent.push(content);
+        return 'sent';
+      },
+    });
+
+    insertRawOutbound('ag-1', session.id, 'bad-1', '"i am a string, not an object"');
+
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+
+    // The rejected payload never reached a channel. The one adapter call that
+    // DOES happen is the host telling the waiting user their reply was lost —
+    // a chat row silently vanishing is the worse outcome, so this is wanted.
+    expect(sent.some((c) => c.includes('i am a string'))).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("couldn't deliver");
+
+    // Three polls, exactly one attempt, no retry scheduled.
+    const row = readDeliveredRow('ag-1', session.id, 'bad-1');
+    expect(row?.status).toBe('failed');
+    expect(row?.attempts).toBe(1);
+    expect(row?.next_retry_at).toBeNull();
+  });
+
+  it('dead-letters a payload carrying a prototype-mutating key', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    setDeliveryAdapter({
+      async deliver() {
+        return 'sent';
+      },
+    });
+
+    const proto = ['__pro', 'to__'].join('');
+    insertRawOutbound('ag-1', session.id, 'bad-2', `{"text":"hi","${proto}":{"polluted":true}}`);
+    await deliverSessionMessages(session);
+
+    const row = readDeliveredRow('ag-1', session.id, 'bad-2');
+    expect(row?.attempts).toBe(1);
+    // `attempts === 1` alone does NOT discriminate: an ordinary first failure
+    // records attempts=1 too. `status` does not discriminate either —
+    // markDeliveryFailed hardcodes 'failed' on both paths. Only a null
+    // next_retry_at separates dead-lettered from scheduled-for-retry, which is
+    // what makes this assertion the one that can fail if the permanent branch
+    // is ever narrowed away from the forbidden-key class.
+    expect(row?.status).toBe('failed');
+    expect(row?.next_retry_at).toBeNull();
+  });
+
+  /**
+   * `messages_out.kind` is written by the container. Labelling a counter with
+   * it raw would let the untrusted side mint unbounded Prometheus series — in
+   * the one change whose subject is not trusting that side.
+   */
+  it('buckets an unrecognised kind instead of minting a label for it', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    setDeliveryAdapter({
+      async deliver() {
+        return 'sent';
+      },
+    });
+
+    const before = await violationSeries();
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    for (let i = 0; i < 5; i++) {
+      db.prepare(
+        `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+         VALUES (?, datetime('now'), ?, 'telegram:123', 'telegram', '[]')`,
+      ).run(`k-${i}`, `attacker-kind-${i}`);
+    }
+    db.close();
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+    await deliverSessionMessages(session);
+
+    const after = await violationSeries();
+    expect(after.some((l) => l.includes('attacker-kind'))).toBe(false);
+    expect(after.some((l) => l.includes('kind="other"'))).toBe(true);
+    // Five hostile kinds, at most one new series.
+    expect(after.length - before.length).toBeLessThanOrEqual(1);
+  });
+
+  it('leaves a well-formed payload on the normal path', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+
+    let adapterCalls = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        adapterCalls++;
+        return 'sent';
+      },
+    });
+
+    insertOutbound('ag-1', session.id, 'good-1');
+    await deliverSessionMessages(session);
+
+    expect(adapterCalls).toBe(1);
+    expect(readDeliveredRow('ag-1', session.id, 'good-1')?.status).toBe('delivered');
+  });
+});

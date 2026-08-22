@@ -202,6 +202,9 @@ export const deliveryFailuresTotal = new client.Counter({
   //                 at-least-once duplicate window.
   //   - `error`   : adapter threw, destination permission check failed,
   //                 or a2a routing failed.
+  //   - `contract`: the container wrote a payload the outbound contract
+  //                 forbids (ADR-0063). Dead-lettered on the FIRST attempt —
+  //                 these never contribute more than 1 to this counter each.
   labelNames: ['reason'] as const,
   registers: [registry],
 });
@@ -209,6 +212,22 @@ export const deliveryFailuresTotal = new client.Counter({
 export const deliveryRetriesTotal = new client.Counter({
   name: `${METRIC_PREFIX}_delivery_retries_total`,
   help: 'Outbound delivery retries scheduled with persisted backoff',
+  registers: [registry],
+});
+
+/**
+ * Payloads rejected at the container→host trust boundary (ADR-0063).
+ *
+ * A non-zero rate here is a signal worth alerting on: the container is the
+ * untrusted side, so a violation is either a runner bug that will silently
+ * drop the agent's work, or an agent doing something the contract exists to
+ * stop. Labelled by `messages_out.kind` so a broken system action is
+ * distinguishable from a broken chat reply.
+ */
+export const outboundContractViolationsTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_outbound_contract_violations_total`,
+  help: 'Outbound payloads rejected at the container trust boundary, by message kind',
+  labelNames: ['kind'] as const,
   registers: [registry],
 });
 
