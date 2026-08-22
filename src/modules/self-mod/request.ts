@@ -2,20 +2,91 @@
  * Delivery-action handlers for agent-initiated self-modification requests.
  *
  * Two actions the container can write into messages_out (via the self-mod
- * MCP tools): install_packages, add_mcp_server. Each one validates input
- * and queues an approval request. The admin's approval triggers the
- * matching approval handler in ./apply.ts, which also performs the
- * required follow-up (rebuild+restart for install_packages, restart-only
- * for add_mcp_server).
+ * MCP tools): install_packages, add_mcp_server. Each validates input and
+ * queues an approval request. The admin's approval triggers the matching
+ * approval handler in ./apply.ts, which also performs the required follow-up
+ * (rebuild+restart for install_packages, restart-only for add_mcp_server).
  *
- * Host-side sanitization for install_packages is defense-in-depth — the MCP
- * tool validates first. Both layers matter: the DB row carries the payload
- * verbatim through to shell exec on apply.
+ * ## Why the validation here is the real validation
+ *
+ * The MCP tool in the container validates first, but the container is the
+ * UNTRUSTED side of the three-DB boundary — that check constrains a
+ * cooperating agent, not a compromised one. Everything reaching this file is
+ * agent-authored bytes out of `messages_out.content`, and it lands in the
+ * agent group's `container.json`, which is GROUP-level: shared by every
+ * user's container for that agent. The blast radius of one accepted payload
+ * is every colleague using that agent, and the only gate in front of it is
+ * one human clicking Approve.
+ *
+ * That makes the approval card a security control, and it imposes two rules
+ * this file exists to hold (ADR-0063):
+ *
+ *   1. **The card must show everything that will be applied.** The old card
+ *      rendered `name (command)` and silently omitted `args` and `env` — the
+ *      two fields that actually decide what executes. An admin cannot consent
+ *      to what they were never shown.
+ *   2. **Agent text must not be able to forge the card.** The card body is
+ *      Feishu markdown and the renderer expands escape sequences into real
+ *      newlines, so an unescaped agent string can inject whole lines of
+ *      convincing "system" text next to the Approve button. Agent-authored
+ *      content is therefore fenced, and characters that could break out of
+ *      the fence are rejected rather than escaped.
  */
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
+import { readString, readStringArray, readStringRecord } from '../../outbound-contract.js';
 import type { Session } from '../../types.js';
 import { notifyAgent, requestApproval } from '../approvals/index.js';
+
+const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
+const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const MAX_PACKAGES = 20;
+
+const MCP_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * Text that cannot alter how the approval card reads.
+ *
+ * Excluded, and why each one:
+ *
+ *   - **Backtick** — the disclosure below is a markdown fence, and a value
+ *     carrying three backticks closes it early, letting the remainder render
+ *     as card prose the admin reads as system text. Nothing to do with exec
+ *     safety; MCP servers are spawned without a shell, so ordinary
+ *     metacharacters like pipes and dollar signs are inert and stay allowed.
+ *     Over-restricting those would break real invocations and buy nothing.
+ *   - **Control characters (`\p{Cc}`) and line/paragraph separators** — a raw
+ *     newline splits the disclosure into separately forgeable lines.
+ *   - **Format characters (`\p{Cf}`)** — this is the subtle one. Bidi
+ *     overrides (U+202E and friends) make displayed text run in a different
+ *     order than the stored text, so a name can RENDER as one thing on the
+ *     approver's screen and be APPLIED as another. An approval card that can
+ *     display something other than what it approves is not a gate.
+ *
+ * Everything outside those classes is allowed, so non-Latin scripts work
+ * normally — an ASCII-only rule would break every non-English deployment.
+ */
+const SAFE_TEXT_RE = /^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}`]*$/u;
+
+const MAX_ARGS = 32;
+const MAX_ENV_ENTRIES = 32;
+const MAX_FIELD_LEN = 512;
+
+/** Markdown fence used to quote agent-authored content in the approval card. */
+const FENCE = '```';
+
+/**
+ * Render agent-authored content the admin must inspect.
+ *
+ * A fenced block, so the payload reads as one visually distinct quoted region
+ * rather than as card prose. Validation above guarantees no backtick and no
+ * control character can appear inside, so the fence cannot be escaped from —
+ * this function is the second half of that contract, not a substitute for it.
+ */
+function disclose(payload: unknown): string {
+  return `${FENCE}\n${JSON.stringify(payload, null, 2)}\n${FENCE}`;
+}
 
 export async function handleInstallPackages(content: Record<string, unknown>, session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
@@ -24,42 +95,37 @@ export async function handleInstallPackages(content: Record<string, unknown>, se
     return;
   }
 
-  const apt = (content.apt as string[]) || [];
-  const npm = (content.npm as string[]) || [];
-  const reason = (content.reason as string) || '';
+  // Strict reads, not casts. APT_RE.test(123) PASSES — RegExp.test stringifies
+  // its argument — so the previous `content.apt as string[]` let a number
+  // through the name check and on into a package list destined for a shell.
+  const aptR = readStringArray(content, 'apt', { maxItems: MAX_PACKAGES, maxLength: 128, pattern: APT_RE });
+  if (!aptR.ok) return reject(session, 'install_packages', aptR.reason);
+  const npmR = readStringArray(content, 'npm', { maxItems: MAX_PACKAGES, maxLength: 128, pattern: NPM_RE });
+  if (!npmR.ok) return reject(session, 'install_packages', npmR.reason);
+  const reasonR = readString(content, 'reason', { maxLength: 1024, pattern: SAFE_TEXT_RE });
+  if (!reasonR.ok) return reject(session, 'install_packages', reasonR.reason);
 
-  const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
-  const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-  const MAX_PACKAGES = 20;
+  const apt = aptR.value;
+  const npm = npmR.value;
   if (apt.length + npm.length === 0) {
-    notifyAgent(session, 'install_packages failed: at least one apt or npm package is required.');
-    return;
+    return reject(session, 'install_packages', 'at least one apt or npm package is required');
   }
   if (apt.length + npm.length > MAX_PACKAGES) {
-    notifyAgent(session, `install_packages failed: max ${MAX_PACKAGES} packages per request.`);
-    return;
-  }
-  const invalidApt = apt.find((p) => !APT_RE.test(p));
-  if (invalidApt) {
-    notifyAgent(session, `install_packages failed: invalid apt package name "${invalidApt}".`);
-    log.warn('install_packages: invalid apt package rejected', { pkg: invalidApt });
-    return;
-  }
-  const invalidNpm = npm.find((p) => !NPM_RE.test(p));
-  if (invalidNpm) {
-    notifyAgent(session, `install_packages failed: invalid npm package name "${invalidNpm}".`);
-    log.warn('install_packages: invalid npm package rejected', { pkg: invalidNpm });
-    return;
+    return reject(session, 'install_packages', `max ${MAX_PACKAGES} packages per request`);
   }
 
-  const packageList = [...apt.map((p) => `apt: ${p}`), ...npm.map((p) => `npm: ${p}`)].join(', ');
   await requestApproval({
     session,
     agentName: agentGroup.name,
     action: 'install_packages',
-    payload: { apt, npm, reason },
+    payload: { apt, npm, reason: reasonR.value },
     title: 'Install Packages Request',
-    question: `Agent "${agentGroup.name}" is attempting to install a package + rebuild container:\n${packageList}${reason ? `\nReason: ${reason}` : ''}`,
+    question:
+      `Agent "${agentGroup.name}" wants to install packages and rebuild its container image.\n` +
+      `This applies to the agent GROUP — every user of this agent gets the new image.\n\n` +
+      `Exactly this will be added to container.json:\n` +
+      disclose({ apt, npm }) +
+      (reasonR.value ? `\n\nReason given by the agent:\n${disclose(reasonR.value)}` : ''),
   });
 }
 
@@ -69,23 +135,55 @@ export async function handleAddMcpServer(content: Record<string, unknown>, sessi
     notifyAgent(session, 'add_mcp_server failed: agent group not found.');
     return;
   }
-  const serverName = content.name as string;
-  const command = content.command as string;
-  if (!serverName || !command) {
-    notifyAgent(session, 'add_mcp_server failed: name and command are required.');
-    return;
-  }
+
+  const nameR = readString(content, 'name', { required: true, maxLength: 64, pattern: MCP_NAME_RE });
+  if (!nameR.ok) return reject(session, 'add_mcp_server', nameR.reason);
+  const commandR = readString(content, 'command', { required: true, maxLength: 256, pattern: SAFE_TEXT_RE });
+  if (!commandR.ok) return reject(session, 'add_mcp_server', commandR.reason);
+  if (commandR.value.length === 0) return reject(session, 'add_mcp_server', '"command" must not be empty');
+  const argsR = readStringArray(content, 'args', {
+    maxItems: MAX_ARGS,
+    maxLength: MAX_FIELD_LEN,
+    pattern: SAFE_TEXT_RE,
+  });
+  if (!argsR.ok) return reject(session, 'add_mcp_server', argsR.reason);
+  const envR = readStringRecord(content, 'env', {
+    maxEntries: MAX_ENV_ENTRIES,
+    maxLength: MAX_FIELD_LEN,
+    keyPattern: ENV_KEY_RE,
+  });
+  if (!envR.ok) return reject(session, 'add_mcp_server', envR.reason);
+
+  // The disclosed object is the SAME shape apply.ts writes into
+  // cfg.mcpServers[name]. Keep them in lockstep: the moment the card shows a
+  // projection of the payload instead of the payload itself, it stops being
+  // consent to what actually happens.
+  const entry = { command: commandR.value, args: argsR.value, env: envR.value };
+
   await requestApproval({
     session,
     agentName: agentGroup.name,
     action: 'add_mcp_server',
-    payload: {
-      name: serverName,
-      command,
-      args: (content.args as string[]) || [],
-      env: (content.env as Record<string, string>) || {},
-    },
+    payload: { name: nameR.value, ...entry },
     title: 'Add MCP Request',
-    question: `Agent "${agentGroup.name}" is attempting to add a new MCP server:\n${serverName} (${command})`,
+    question:
+      `Agent "${agentGroup.name}" wants to wire a new MCP server into its runtime.\n` +
+      `This applies to the agent GROUP — it will run in every user's container for this ` +
+      `agent, with the arguments and environment shown below.\n\n` +
+      `Exactly this will be written to container.json under mcpServers."${nameR.value}":\n` +
+      disclose(entry),
   });
+}
+
+/**
+ * Tell the agent precisely what it got wrong.
+ *
+ * A rejected self-mod request used to surface either as a generic failure or,
+ * for a type the handler did not anticipate, as a thrown TypeError that
+ * dead-lettered the row with nothing said to anyone. An agent can only correct
+ * a request it is told the shape of.
+ */
+function reject(session: Session, action: string, reason: string): void {
+  notifyAgent(session, `${action} failed: ${reason}.`);
+  log.warn('Self-mod request rejected at the outbound boundary', { action, reason, sessionId: session.id });
 }

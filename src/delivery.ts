@@ -29,11 +29,13 @@ import {
   DELIVERY_TIMEOUT_MS,
 } from './config.js';
 import { log } from './log.js';
+import { OutboundContractError, parseOutboundContent, readString } from './outbound-contract.js';
 import {
   classificationBypassTotal,
   deliveryFailuresTotal,
   deliveryPermanentFailuresTotal,
   deliveryRetriesTotal,
+  outboundContractViolationsTotal,
 } from './metrics.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import {
@@ -380,16 +382,24 @@ async function drainSession(session: Session): Promise<void> {
           // Attempt counts are persisted in the delivered table (ADR-0016)
           // so retry state survives host restarts.
           const attempts = getDeliveryAttempts(inDb, msg.id) + 1;
-          deliveryFailuresTotal.labels(err instanceof DeliveryTimeoutError ? 'timeout' : 'error').inc();
-          if (attempts >= DELIVERY_MAX_ATTEMPTS) {
+          // A contract violation is PERMANENT by construction: the row's bytes
+          // will not change, so every retry is guaranteed to fail identically
+          // while head-of-line-blocking the rest of this session's queue.
+          // Dead-letter it on the first attempt instead of burning the budget.
+          const permanent = err instanceof OutboundContractError;
+          if (permanent) outboundContractViolationsTotal.labels(msg.kind || 'unknown').inc();
+          deliveryFailuresTotal
+            .labels(permanent ? 'contract' : err instanceof DeliveryTimeoutError ? 'timeout' : 'error')
+            .inc();
+          if (permanent || attempts >= DELIVERY_MAX_ATTEMPTS) {
             markDeliveryFailed(inDb, msg.id, attempts, null);
             deliveryPermanentFailuresTotal.inc();
-            log.error('Message delivery failed permanently, automatic retries exhausted', {
-              messageId: msg.id,
-              sessionId: session.id,
-              attempts,
-              err,
-            });
+            log.error(
+              permanent
+                ? 'Outbound payload violates the container contract — dead-lettered without retrying'
+                : 'Message delivery failed permanently, automatic retries exhausted',
+              { messageId: msg.id, sessionId: session.id, kind: msg.kind, attempts, err },
+            );
             handledOutbound = true;
             if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
               await markProgressStatusFailed(session.id, deliveryAdapter);
@@ -518,7 +528,12 @@ async function deliverMessage(
       return;
     }
 
-    const content = JSON.parse(msg.content);
+    // THE trust boundary (ADR-0063). Everything below this line treats
+    // `content` as a plain object with no prototype-poisoning keys, within a
+    // size and depth bound — because this call, and only this call, checked.
+    const decoded = parseOutboundContent(msg.content);
+    if (!decoded.ok) throw new OutboundContractError(decoded.reason);
+    const content = decoded.content;
 
     // System actions — handle internally (schedule_task, cancel_task, etc.)
     if (msg.kind === 'system') {
@@ -667,15 +682,22 @@ async function deliverMessage(
     // exist and we skip persistence — the card still delivers to the user,
     // but the response path has nowhere to land and will log unclaimed.
     if (content.type === 'ask_question' && content.questionId && hasTable(getDb(), 'pending_questions')) {
+      // `questionId` becomes the PRIMARY KEY of the pending_questions row and
+      // is later matched against the id echoed back by the card click, so a
+      // non-string here would persist a coerced key that no response can ever
+      // match. Read it strictly rather than casting (ADR-0063).
+      const questionId = readString(content, 'questionId', { required: true, maxLength: 256 });
       const title = content.title as string | undefined;
       const rawOptions = content.options as unknown;
-      if (!title || !Array.isArray(rawOptions)) {
+      if (!questionId.ok) {
+        log.error('ask_question has a malformed questionId — not persisting', { reason: questionId.reason });
+      } else if (!title || !Array.isArray(rawOptions)) {
         log.error('ask_question missing required title/options — not persisting', {
-          questionId: content.questionId,
+          questionId: questionId.value,
         });
       } else {
         const inserted = createPendingQuestion({
-          question_id: content.questionId,
+          question_id: questionId.value,
           session_id: session.id,
           message_out_id: msg.id,
           platform_id: msg.platform_id,
@@ -686,7 +708,7 @@ async function deliverMessage(
           created_at: new Date().toISOString(),
         });
         if (inserted) {
-          log.info('Pending question created', { questionId: content.questionId, sessionId: session.id });
+          log.info('Pending question created', { questionId: questionId.value, sessionId: session.id });
         }
       }
     }
