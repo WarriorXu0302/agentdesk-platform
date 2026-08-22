@@ -220,6 +220,21 @@ export const containerSlotsMax = new client.Gauge({
   registers: [registry],
 });
 
+/**
+ * Sessions whose sweep pass threw.
+ *
+ * Worth alerting on even at a low rate: a session that fails here is not
+ * getting its container woken, its stuck claims reset, or its recurrences
+ * fanned out — it is simply not being serviced, and nothing else in the system
+ * notices. Before the per-session isolation this was invisible, because one
+ * failure ended the whole tick under a single generic error line.
+ */
+export const sweepSessionFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_sweep_session_failures_total`,
+  help: 'Sessions whose host-sweep pass threw and was skipped',
+  registers: [registry],
+});
+
 export const containerExitsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_container_exits_total`,
   help: 'Container exit events by outcome',
