@@ -17,6 +17,7 @@ import {
   redactContainerConfigForContainer,
   redactedConfigPathFor,
   resolveContainerNetwork,
+  countSlotsHeldBy,
   observeContainerLifetime,
   resolveProviderName,
   resolveRoutingPromptMount,
@@ -692,5 +693,19 @@ describe('observeContainerLifetime (ADR-0064)', () => {
     // into one unremarkable number.
     expect(byOutcome.crash).toBe(2);
     expect(byOutcome.idle).toBe(600);
+  });
+});
+
+describe('countSlotsHeldBy (ADR-0065)', () => {
+  const entries = [{ fairnessKey: 'user:A' }, { fairnessKey: 'user:A' }, { fairnessKey: 'group:mg-1' }];
+
+  it('counts only the matching bucket', () => {
+    expect(countSlotsHeldBy(entries, 'user:A')).toBe(2);
+    expect(countSlotsHeldBy(entries, 'group:mg-1')).toBe(1);
+  });
+
+  it('reports zero for a bucket holding nothing — the value that lets a newcomer jump the queue', () => {
+    expect(countSlotsHeldBy(entries, 'user:B')).toBe(0);
+    expect(countSlotsHeldBy([], 'user:A')).toBe(0);
   });
 });
