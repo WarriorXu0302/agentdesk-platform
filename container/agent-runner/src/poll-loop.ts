@@ -675,8 +675,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       clearRoutingGate();
     }
 
-    // Ensure completed even if processQuery ended without a result event
-    // (e.g. stream closed unexpectedly).
+    // Backstop for a stream that ended without a result event (e.g. closed
+    // unexpectedly). The primary ack happens at the result event, after the
+    // turn's output is durable — see the ordering invariant there.
     markCompleted(processingIds);
     log(`Completed ${turnMessages.length} message(s) this turn (${ids.length} claimed at tick start)`);
   }
@@ -960,19 +961,39 @@ async function runQuery(
         // Claude session with no prior context.
         setContinuation(providerName, event.continuation);
       } else if (event.type === 'result') {
-        // A result — with or without text — means the turn is done. Mark
-        // the initial batch completed now so the host sweep doesn't see
-        // stale 'processing' claims while the query stays open for
-        // follow-up pushes. The agent may have responded via MCP
-        // (send_message) mid-turn, or the message may not need a response
-        // at all — either way the turn is finished.
-        markCompleted(initialBatchIds);
+        // ORDERING INVARIANT (do not reorder): the turn's output must be
+        // durable in outbound.db BEFORE the claim is acked. Both writes go
+        // to the same DB through the same synchronous single writer, so the
+        // order here IS the crash semantics:
+        //
+        //   dispatch → ack (this order): a crash in between leaves the reply
+        //     written and the claim un-acked, so the host re-drives the turn.
+        //     Worst case a duplicate — recoverable, and the gateway's
+        //     content-derived idempotency key (ADR-0048) stops a replayed
+        //     business write from committing twice.
+        //   ack → dispatch (what this used to do): a crash in between marks
+        //     the message COMPLETED with nothing sent. The user is answered
+        //     by permanent silence, and no sweep can find it — the claim is
+        //     completed, not stale. That is an at-most-once hole in an
+        //     otherwise at-least-once system, and the host's own
+        //     cost-ceiling / SLA killContainer can land exactly in it.
+        //
+        // Acking at result time (rather than at stream close) is still
+        // right: it stops the host sweep from seeing a stale 'processing'
+        // claim while the query stays open for follow-up pushes. Only the
+        // order within this block changed. Pinned by the crash-durability
+        // ordering test in integration.test.ts.
+        //
+        // A result — with or without text — means the turn is done: the
+        // agent may have answered via MCP (send_message) mid-turn, or the
+        // message may not need a response at all.
         if (event.text) {
           // Remember the final text so processQuery can stamp it as the
           // agent.turn output.value when content capture is on (ADR-0027).
           if (captureContent) lastResultText = event.text;
           dispatchResultText(event.text, routing);
         }
+        markCompleted(initialBatchIds);
       } else if (event.type === 'compacted') {
         // The SDK auto-compacted the conversation. After compaction the
         // model often drops the learned `<message to="…">` wrapping

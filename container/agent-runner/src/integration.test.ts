@@ -483,6 +483,103 @@ class CompactingProvider {
 }
 
 // Helper: run poll loop until aborted or timeout
+describe('crash-durability ordering (write order IS the crash semantics)', () => {
+  /**
+   * Record the ORDER in which statements actually execute against
+   * outbound.db. The window between the two writes is microseconds — far too
+   * small to observe by polling — so the invariant has to be asserted on the
+   * execution sequence itself. Wraps `run` (not `prepare`) so what is
+   * recorded is execution, not statement construction.
+   */
+  function recordOutboundWrites(): { sql: string[]; restore: () => void } {
+    const db = getOutboundDb() as unknown as { prepare: (sql: string) => unknown };
+    const sql: string[] = [];
+    const origPrepare = db.prepare.bind(db);
+    db.prepare = (text: string) => {
+      const stmt = origPrepare(text) as { run: (...a: unknown[]) => unknown };
+      const origRun = stmt.run.bind(stmt);
+      stmt.run = (...args: unknown[]) => {
+        sql.push(text.replace(/\s+/g, ' ').trim());
+        return origRun(...args);
+      };
+      return stmt;
+    };
+    return {
+      sql,
+      restore: () => {
+        db.prepare = origPrepare;
+      },
+    };
+  }
+
+  it('writes the reply to outbound.db BEFORE acking the turn — a crash in between duplicates, never silences', async () => {
+    // Pins the ordering invariant documented at poll-loop.ts's markCompleted.
+    // Inverted (ack first, then write), a container killed in the window
+    // records the turn as done with nothing sent: the user's message is
+    // answered by permanent silence and no sweep can tell. The chosen order
+    // errs the other way — at-least-once, and ADR-0048's content-derived
+    // idempotency key stops a replayed business write from committing twice.
+    insertMessage('m1', { sender: 'Alice', text: 'status?' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider({}, () => '<message to="discord-test">all good</message>');
+    const controller = new AbortController();
+    const rec = recordOutboundWrites();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 3000);
+
+    try {
+      await waitFor(() => rec.sql.some((q) => q.includes('processing_ack') && q.includes('completed')), 3000);
+    } finally {
+      controller.abort();
+      rec.restore();
+    }
+    await loopPromise.catch(() => {});
+
+    const reply = rec.sql.findIndex((q) => q.startsWith('INSERT INTO messages_out'));
+    const ack = rec.sql.findIndex((q) => q.includes('processing_ack') && q.includes('completed'));
+    expect(reply).toBeGreaterThanOrEqual(0);
+    expect(ack).toBeGreaterThanOrEqual(0);
+    expect(reply).toBeLessThan(ack); // THE INVARIANT
+
+    // And the reply really is on disk, not merely attempted.
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('all good');
+  });
+
+  it('a turn killed before it finishes leaves the claim un-acked, so the work is re-drivable', async () => {
+    // The other half of the guarantee: crash BEFORE the reply exists must not
+    // leave the message looking handled.
+    insertMessage('m1', { sender: 'Alice', text: 'slow one' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    // Provider that never produces a result — the container dies mid-think.
+    const stalled = {
+      supportsNativeSlashCommands: false,
+      isSessionInvalid: () => false,
+      query: () => ({
+        push() {},
+        pushSystemReminder() {},
+        end() {},
+        abort() {},
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'activity' as const };
+            await new Promise((r) => setTimeout(r, 10_000));
+          },
+        },
+      }),
+    };
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(stalled as unknown as MockProvider, controller.signal, 600);
+    await loopPromise.catch(() => {});
+    controller.abort();
+
+    const ack = getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get('m1') as
+      { status: string } | undefined;
+    expect(ack?.status).not.toBe('completed');
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+});
+
 describe('reply anchor integrity (a2a return path)', () => {
   it('a reply to a peer anchors on THIS turn’s trigger, not the newest row from that peer', async () => {
     // The host routes a2a replies by dereferencing in_reply_to → origin
