@@ -18,11 +18,18 @@
 保真度各异的读法。断言不是检查——`content.apt as string[]` 对一个数字载荷照样
 编译通过,而运行时 TypeScript 已经不在场了。
 
-准确的分布(初版 ADR 写的"11 个处理器各自 cast"是错的,复核纠正):
-共 **14 个已注册 action**;其中用类型断言取字段的是 **scheduling 的 5 个 +
-`create_agent` + `roster.invite`**,而 `classify_intent` / `escalate` /
-`routing_feedback` / `gateway_audit` 已各自用闭集强制函数(`toStatus` / `toAction` /
-`coerceUrgency` / `coerceFeedbackKind`)读,`provider_error` 根本不读 `content`。
+准确的分布(初版写的"11 个处理器各自 cast"是错的;下面的数字由复核用运行时探针
+逐个注册 action 数出来,并对 git 对象而非工作树 grep 过):
+
+共 **14 个已注册 action**。用类型断言取字段的只有 **scheduling 的 5 个**
+(`actions.ts` 14 处)和 **`create_agent`**(3 处),合计 **6 个 action**。
+其余各自本来就读得住:`roster.invite` 用 `typeof content.member === 'string'` 守卫;
+`classify_intent` / `escalate` / `routing_feedback` / `gateway_audit` 走闭集强制函数
+(`toAction` / `coerceUrgency` / `coerceFeedbackKind` / `toStatus`);
+`provider_error` 根本不读 `content`。
+
+(我第一次数的时候把 `roster-invite.ts` 也算成了 cast——那是按目录统计的副作用,
+`src/` 目录下的 cast 其实主要来自 `delivery.ts` 自己。复核纠正了这一点。)
 
 审计 `self-mod` 模块(唯一带执行后果的 action 对)时,这个缺口的具体形状暴露出来:
 
@@ -122,11 +129,16 @@
   - **14 个 action 里只迁移了 2 个**(`install_packages`、`add_mcp_server`),
     外加交付层里 `questionId` 一处(它是 `pending_questions` 的主键,
     类型错会写入一个任何回调都匹配不上的键)。**剩下 12 个未迁移**,
-    其中真正还在用类型断言的是 **scheduling 的 5 个 + `create_agent` +
-    `roster.invite`,共 7 个**;另外 4 个已用闭集强制函数读,`provider_error`
-    不读 `content`。所有未迁移的处理器现在拿到的至少是结构合法的对象,
-    但字段级保真度未变。这是**已知的未完成部分**,不是"已覆盖"。
+    其中真正还在用类型断言的是 **scheduling 的 5 个 + `create_agent`,共 6 个**
+    (17 处 cast);其余 6 个本来就有 typeof 守卫或闭集强制函数。
+    未迁移的处理器现在拿到的至少是结构合法的对象,但字段级保真度未变。
+    这是**已知的未完成部分**,不是"已覆盖"。
     (初版写"11 个处理器 / 其余 9 个未迁移",两个数字都错,复核纠正。)
+  - **`delivery.ts` 自身也还留着四处 cast**,它们在分发层而不在处理器里,
+    一并点名以免被"处理器已覆盖"的说法盖过去:`content.title`、`content.options`
+    (:697-698,已有 `Array.isArray` 兜底)、`content.action`(:1280,取不到只会
+    落到"未知 action"分支)、以及 **`content.files as string[]`(:746),
+    它直接喂给 `readOutboxFiles`**——这一处的字段级保真度最值得下一轮先看。
   - 拒绝了 per-action schema 注册表。若迁移的处理器超过 3-4 个,
     重审这个决定。
   - `env` 的值会**原样**显示在审批卡片里。这是刻意的:管理员必须看到
