@@ -209,22 +209,43 @@ export function getActiveContainerCount(): number {
 containerSlotsMax.set(MAX_CONCURRENT_CONTAINERS);
 
 /**
- * Record how long a container held its slot.
+ * Take a concurrency slot.
  *
- * Takes the ENTRY rather than a session id so the once-only property is a
- * property of the argument and can be tested without spawning anything:
- * `close` and `error` can both fire for a single failed spawn, and each
- * handler deletes the entry immediately after calling this, so the second call
- * is handed `undefined` and observes nothing. Returns whether it observed, so
- * a test can assert that rather than inferring it from a counter.
+ * Registration and the slot gauge move together on purpose: they were two
+ * statements at one site and two more at each of the two exit sites, and a
+ * gauge that is updated at three of four sites reads as a slow leak.
+ *
+ * Generic over the entry so the bookkeeping can be tested with a bare
+ * `{ spawnedAt }` — the real entry holds a ChildProcess, which is precisely
+ * why this code had no tests: it lives inside `spawnContainer`, and every
+ * suite mocks this module (ADR-0064, ADR-0065 both recorded the gap).
  */
-export function observeContainerLifetime(
-  entry: { spawnedAt: number } | undefined,
+export function registerContainer<E>(registry: Map<string, E>, sessionId: string, entry: E): void {
+  registry.set(sessionId, entry);
+  containerSlotsInUse.set(registry.size);
+}
+
+/**
+ * Give the slot back, recording how long it was held.
+ *
+ * Once-only by construction rather than by a flag: `close` and `error` can
+ * BOTH fire for a single failed spawn, and this deletes the entry, so the
+ * second call finds nothing and observes nothing. Returns whether it observed,
+ * so a test can assert that directly instead of inferring it from a histogram
+ * count — a double observation would halve the mean slot-hold time, which is
+ * the denominator of the throughput ceiling in docs/capacity.md.
+ */
+export function releaseContainer<E extends { spawnedAt: number }>(
+  registry: Map<string, E>,
+  sessionId: string,
   outcome: string,
   nowMs: number = Date.now(),
 ): boolean {
+  const entry = registry.get(sessionId);
   if (!entry) return false;
   containerLifetimeSeconds.labels(outcome).observe((nowMs - entry.spawnedAt) / 1000);
+  registry.delete(sessionId);
+  containerSlotsInUse.set(registry.size);
   return true;
 }
 
@@ -445,14 +466,13 @@ async function spawnContainer(session: Session): Promise<void> {
 
       const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-      activeContainers.set(session.id, {
+      registerContainer(activeContainers, session.id, {
         process: container,
         containerName,
         agentGroupId: agentGroup.id,
         spawnedAt: Date.now(),
         fairnessKey: sessionFairnessKey(session),
       });
-      containerSlotsInUse.set(activeContainers.size);
 
       // Slot-handoff gate (ADR-0059 red-team round): drain at most once per
       // container ('error' AND 'close' can both fire for one failed spawn),
@@ -489,9 +509,7 @@ async function spawnContainer(session: Session): Promise<void> {
       container.on('close', (code) => {
         const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
         recentlyKilled.delete(session.id);
-        observeContainerLifetime(activeContainers.get(session.id), outcome);
-        activeContainers.delete(session.id);
-        containerSlotsInUse.set(activeContainers.size);
+        releaseContainer(activeContainers, session.id, outcome);
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
         cleanupSigningProxyForSession(session.id, signingProxy);
@@ -505,9 +523,7 @@ async function spawnContainer(session: Session): Promise<void> {
 
       container.on('error', (err) => {
         recentlyKilled.delete(session.id);
-        observeContainerLifetime(activeContainers.get(session.id), 'crash');
-        activeContainers.delete(session.id);
-        containerSlotsInUse.set(activeContainers.size);
+        releaseContainer(activeContainers, session.id, 'crash');
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
         cleanupSigningProxyForSession(session.id, signingProxy);
