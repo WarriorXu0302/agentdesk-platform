@@ -259,12 +259,25 @@ scheduling 那批的 cast 不是装饰:非字符串 `taskId` 会落一个后续 
 于是这处**保持 cast 不变**,并把理由写进代码注释。收紧它会把优雅降级换成更差的结果:
 一个坏文件名会让**整条用户可见的回复**被死信,而不是只丢掉一个附件。
 
-### 仍未覆盖的一层:通道适配器
+### 仍未覆盖的一层:通道适配器(已复测,风险比初判低)
 
 迁移过程中点出的新残留——**出站内容在分发之后还会被通道适配器再读一遍**,那一层仍是 cast:
 `src/channels/chat-sdk-bridge.ts` 约 10 处(`messageId` / `text` / `markdown` /
 `emoji` / `questionId` / `title` / `question` / `options` / `card` / `fallbackText`)、
 `src/channels/feishu/primitives.ts` 2 处(`fallbackText`)、
 `src/modules/permissions/index.ts` 1 处(`author`)。
-其中 `messageId` 被送进 `adapter.editMessage` / `addReaction`,是最值得先看的。
-这是下一层,不在本 ADR 范围。
+
+**排查这一层时冒出过一个更严重的怀疑:契约是不是在这里被整个绕过了?实测:没有。**
+(初版 ADR 并没有断言绕过——它只写了"仍是 cast";这段记录的是那个怀疑被证否的过程,
+免得下一个人再走一遍。)`src/index.ts:209` 确实对内容做了
+**第二次裸 `JSON.parse`** 才交给适配器,但它解析的是**契约刚刚校验通过的同一串字节**:
+无 think 标签时 `outboundContent = msg.content`(原字节),有 think 标签时是
+`JSON.stringify({ ...content, text: cleaned })`(从已校验对象重新序列化,只换了一个字符串值)。
+两条路径解回来的都是契约干净的对象,所以**体积/深度/禁用键的保证事实上仍然成立**,
+第二次解析只是冗余,不是缺口。
+
+于是这一层剩下的**只有字段级类型混淆**,而后果都停在适配器调用上
+(`content.messageId as string` 传给 `adapter.editMessage` / `addReaction`:
+类型不对就是一次编辑/表态失败,不是越权、不是路径逃逸、不是消息丢失)。
+按这个量级,它排在其他工作之后——写在这里是为了**它已经被量过**,
+而不是留一句"下一轮先看"让人重新调查一遍。
