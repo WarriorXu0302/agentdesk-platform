@@ -72,7 +72,13 @@ import {
   sessionDir,
   writeSessionRouting,
 } from './session-manager.js';
-import { admissionQueueSize, drainAdmissionSlot, enqueueAdmission, type AdmissionDeps } from './admission-queue.js';
+import {
+  admissionQueueSize,
+  drainAdmissionSlot,
+  enqueueAdmission,
+  sessionFairnessKey,
+  type AdmissionDeps,
+} from './admission-queue.js';
 import { getSession } from './db/sessions.js';
 import { countDueMessages } from './db/session-db.js';
 import { writeRosterSlots } from './roster-dm.js';
@@ -87,7 +93,14 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 // entry before deleting makes the lifetime observation naturally once-only.
 const activeContainers = new Map<
   string,
-  { process: ChildProcess; containerName: string; agentGroupId: string; spawnedAt: number }
+  {
+    process: ChildProcess;
+    containerName: string;
+    agentGroupId: string;
+    spawnedAt: number;
+    /** Which fairness bucket this container's slot is charged to (ADR-0065). */
+    fairnessKey: string;
+  }
 >();
 
 // Warn-once registry for the role×routing coherence warn in buildMounts
@@ -101,6 +114,7 @@ const warnedWorkerRoutingGroups = new Set<string>();
 const admissionDeps: AdmissionDeps = {
   getSession,
   isRunning: (session) => isContainerRunning(session.id),
+  slotsHeldBy,
   hasDueWork(session) {
     if (!fs.existsSync(inboundDbPath(session.agent_group_id, session.id))) return false;
     const inDb = openInboundDb(session.agent_group_id, session.id);
@@ -214,6 +228,34 @@ export function observeContainerLifetime(
   return true;
 }
 
+/**
+ * How many concurrency slots a fairness bucket holds among the given
+ * containers (ADR-0065).
+ *
+ * Takes the entries rather than reading the module map, so the counting rule
+ * is testable without spawning anything — the same reason
+ * `observeContainerLifetime` takes an entry.
+ */
+export function countSlotsHeldBy(entries: Iterable<{ fairnessKey: string }>, fairnessKey: string): number {
+  let n = 0;
+  for (const entry of entries) {
+    if (entry.fairnessKey === fairnessKey) n++;
+  }
+  return n;
+}
+
+/**
+ * Slots held by a bucket right now.
+ *
+ * Counted off the LIVE container map rather than the DB, so it reflects what
+ * is actually occupying the cap this instant — including containers whose
+ * session rows have since changed. Linear in the number of running containers,
+ * which is bounded by MAX_CONCURRENT_CONTAINERS: a handful.
+ */
+export function slotsHeldBy(fairnessKey: string): number {
+  return countSlotsHeldBy(activeContainers.values(), fairnessKey);
+}
+
 export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
@@ -305,7 +347,7 @@ export function wakeContainer(session: Session): Promise<boolean> {
         // Event-driven slot handoff (concurrency stage 0): queue the session
         // so the next freed slot admits it immediately instead of waiting up
         // to a full sweep tick (60s). The sweep stays as the fallback path.
-        enqueueAdmission(session.id);
+        enqueueAdmission(session.id, sessionFairnessKey(session));
         log.warn('Wake rejected — concurrent container cap reached; queued for the next freed slot', {
           sessionId: session.id,
           agentGroupId: session.agent_group_id,
@@ -408,6 +450,7 @@ async function spawnContainer(session: Session): Promise<void> {
         containerName,
         agentGroupId: agentGroup.id,
         spawnedAt: Date.now(),
+        fairnessKey: sessionFairnessKey(session),
       });
       containerSlotsInUse.set(activeContainers.size);
 
