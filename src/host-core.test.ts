@@ -496,6 +496,82 @@ describe('router', () => {
     });
   });
 
+  /**
+   * A fan-out over independent agents must not let one of them end the pass.
+   *
+   * `getMessagingGroupAgents` is `ORDER BY priority DESC`, i.e. the SAME order
+   * every message, so an unisolated throw does not cause an occasional miss —
+   * the same agents behind the bad one lose every single message, permanently,
+   * while the caller's `.catch()` logs one line about the agent that threw and
+   * nothing at all about the ones that were skipped. Same defect and same shape
+   * as the host-sweep starvation fixed in #52.
+   *
+   * The failure injected here is the realistic one: a torn session root. Making
+   * the agent group's session directory a FILE means `initSessionFolder`'s
+   * `mkdirSync` throws ENOTDIR for that agent and only that agent.
+   */
+  it('keeps routing to the remaining agents when one agent throws', async () => {
+    const { routeInbound } = await import('./router.js');
+    const { routeAgentFailuresTotal } = await import('./metrics.js');
+    routeAgentFailuresTotal.reset();
+
+    createAgentGroup({
+      id: 'ag-broken',
+      name: 'Broken Agent',
+      folder: 'broken-agent',
+      agent_provider: null,
+      created_at: now(),
+    });
+    createMessagingGroupAgent({
+      id: 'mga-broken',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-broken',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 10, // ahead of ag-1, so it fails FIRST
+      created_at: now(),
+    });
+
+    // Torn session root: a file where the per-agent directory must be.
+    const brokenRoot = path.join(TEST_DIR, 'v2-sessions', 'ag-broken');
+    fs.mkdirSync(path.dirname(brokenRoot), { recursive: true });
+    fs.writeFileSync(brokenRoot, 'not a directory');
+
+    await routeInbound({
+      channelType: 'discord',
+      platformId: 'chan-123',
+      threadId: null,
+      message: {
+        id: 'msg-isolation-1',
+        kind: 'chat',
+        content: JSON.stringify({ sender: 'User', text: 'reaches the healthy agent' }),
+        timestamp: now(),
+      },
+    });
+
+    // The healthy agent, which sorts AFTER the broken one, still got it.
+    // Look the session up by AGENT GROUP, not by messaging group: the broken
+    // agent also has a sessions row (the row is written before the directory
+    // that fails), so a by-group lookup can hand back the wrong one.
+    const { getSessionsByAgentGroup } = await import('./db/sessions.js');
+    const healthy = getSessionsByAgentGroup('ag-1');
+    expect(healthy).toHaveLength(1);
+    const db = new Database(inboundDbPath('ag-1', healthy[0].id));
+    const rows = db.prepare('SELECT content FROM messages_in').all() as Array<{ content: string }>;
+    db.close();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].content).text).toBe('reaches the healthy agent');
+
+    // ...and the skip was counted against the agent that actually failed.
+    const counted = (await routeAgentFailuresTotal.get()).values.find(
+      (v) => (v.labels as { agent_group_id?: string }).agent_group_id === 'ag-broken',
+    );
+    expect(counted?.value).toBe(1);
+  });
+
   it('should route a message end-to-end', async () => {
     const { routeInbound } = await import('./router.js');
     const { wakeContainer } = await import('./container-runner.js');

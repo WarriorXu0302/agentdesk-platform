@@ -229,6 +229,21 @@ export const containerSlotsMax = new client.Gauge({
  * notices. Before the per-session isolation this was invisible, because one
  * failure ended the whole tick under a single generic error line.
  */
+/**
+ * Agents skipped because routing to an EARLIER agent in the same group threw.
+ *
+ * Sibling of `sweep_session_failures_total`, and the same defect class: a
+ * fan-out over independent entities where one failure ends the pass. Non-zero
+ * means at least one agent wired to that group did not receive a message it
+ * was wired to receive, so alert on any sustained rate rather than a threshold.
+ */
+export const routeAgentFailuresTotal = new client.Counter({
+  name: `${METRIC_PREFIX}_route_agent_failures_total`,
+  help: 'Per-agent routing failures that were isolated so the remaining agents still received the message',
+  labelNames: ['agent_group_id'] as const,
+  registers: [registry],
+});
+
 export const sweepSessionFailuresTotal = new client.Counter({
   name: `${METRIC_PREFIX}_sweep_session_failures_total`,
   help: 'Sessions whose host-sweep pass threw and was skipped',

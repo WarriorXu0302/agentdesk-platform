@@ -43,6 +43,7 @@ import {
   messagesRoutedTotal,
   policyCheckFailedTotal,
   startTimer,
+  routeAgentFailuresTotal,
 } from './metrics.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { maybeStartProgressStatus, markProgressStatusFailed } from './modules/progress-status/index.js';
@@ -415,8 +416,34 @@ async function routeInboundInner(event: InboundEvent): Promise<void> {
   let subscribed = false;
 
   for (const agent of agents) {
+    // Isolate each agent. Everything below can throw for ONE agent — a torn or
+    // unwritable session dir, a locked session DB, an attachment write — and
+    // without this the first such agent ends the whole pass, so every agent
+    // after it silently never receives a message it is wired to receive. The
+    // list is `ORDER BY priority DESC`, i.e. the SAME order every time, so that
+    // is not an occasional miss: the same agents lose every time, permanently,
+    // while the caller's `.catch()` logs one line about the agent that threw
+    // and nothing about the ones that were skipped.
+    //
+    // Same defect and same fix as the host sweep (PR #52). The delivery drain
+    // has held this rule all along; these two fan-outs were the ones that
+    // never got it.
+    try {
+      await routeOneAgent(agent);
+    } catch (err) {
+      routeAgentFailuresTotal.inc({ agent_group_id: agent.agent_group_id });
+      log.error('Routing to one agent failed — continuing with the remaining agents in this group', {
+        agentGroupId: agent.agent_group_id,
+        messagingGroupId: mg.id,
+        channelType: event.channelType,
+        err,
+      });
+    }
+  }
+
+  async function routeOneAgent(agent: MessagingGroupAgent): Promise<void> {
     const agentGroup = getAgentGroup(agent.agent_group_id);
-    if (!agentGroup) continue;
+    if (!agentGroup) return;
 
     const effectiveSessionMode = resolveEffectiveSessionMode(
       agent.session_mode,
