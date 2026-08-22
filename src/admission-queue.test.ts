@@ -7,6 +7,7 @@ import {
   enqueueAdmission,
   type AdmissionDeps,
 } from './admission-queue.js';
+import { admissionWaitSeconds } from './metrics.js';
 import type { Session } from './types.js';
 
 function sess(id: string, status: Session['status'] = 'active'): Session {
@@ -34,7 +35,15 @@ async function settle(): Promise<void> {
 
 afterEach(() => {
   clearAdmissionQueue();
+  admissionWaitSeconds.reset();
 });
+
+/** Observation count and total for the wait histogram. */
+async function waitStats(): Promise<{ count: number; sum: number }> {
+  const v = await admissionWaitSeconds.get();
+  const pick = (suffix: string) => v.values.find((x) => x.metricName?.endsWith(suffix))?.value ?? 0;
+  return { count: pick('_count'), sum: pick('_sum') };
+}
 
 describe('admission queue (ADR-0059)', () => {
   it('dedupes: the same session enqueues at most once until popped', () => {
@@ -161,5 +170,98 @@ describe('admission queue (ADR-0059)', () => {
     const deps = makeDeps();
     expect(() => drainAdmissionSlot(deps)).not.toThrow();
     expect(deps.woken).toEqual([]);
+  });
+});
+
+describe('admission wait is measured honestly (capacity observability)', () => {
+  it('observes exactly one wait per admitted session', async () => {
+    const deps = makeDeps();
+    enqueueAdmission('s-1');
+    enqueueAdmission('s-2');
+
+    drainAdmissionSlot(deps);
+    await settle();
+    expect((await waitStats()).count).toBe(1);
+
+    drainAdmissionSlot(deps);
+    await settle();
+    expect((await waitStats()).count).toBe(2);
+  });
+
+  /**
+   * The clock must run from the FIRST enqueue.
+   *
+   * The requeue that can actually reset it is the SECOND failure, which rotates
+   * the session to the BACK via `enqueueAdmission` — the first failure uses
+   * `requeueFront`, which never touches the timestamp map, so it is safe by
+   * construction. An earlier version of this test drove only one failure and
+   * therefore passed even with the guard removed; it is written against the
+   * back-rotation path for that reason.
+   */
+  it('does not restart the clock when a failed admission rotates the session to the back', async () => {
+    let attempt = 0;
+    const deps = makeDeps({
+      // fail, fail (→ back via enqueueAdmission), then succeed
+      wake: () => Promise.resolve(attempt++ >= 2),
+    });
+    enqueueAdmission('s-slow');
+
+    // The wait accrues BEFORE the requeues. Sleeping after them instead would
+    // make the assertion pass whether or not the clock was reset — the whole
+    // point is that this elapsed time must SURVIVE the rotations.
+    await new Promise((r) => setTimeout(r, 80));
+
+    drainAdmissionSlot(deps); // failure 1 → requeueFront
+    await settle();
+    drainAdmissionSlot(deps); // failure 2 → enqueueAdmission (back)
+    await settle();
+    expect((await waitStats()).count).toBe(0); // failures are not waits
+
+    drainAdmissionSlot(deps); // succeeds, immediately after the rotation
+    await settle();
+    const stats = await waitStats();
+    expect(stats.count).toBe(1);
+    // Had the back-rotation reset the clock, this would be ~0.
+    expect(stats.sum).toBeGreaterThanOrEqual(0.06);
+  });
+
+  it('does not observe — or leak — a session that never took a slot', async () => {
+    // Stale entry: skipped, never admitted, so it has no queue wait to report.
+    const deps = makeDeps({ hasDueWork: () => false });
+    enqueueAdmission('s-stale');
+    drainAdmissionSlot(deps);
+    await settle();
+    expect((await waitStats()).count).toBe(0);
+
+    // Re-enqueuing the same id afterwards must start a FRESH clock — proof the
+    // skip cleared its timestamp rather than leaving it behind.
+    await new Promise((r) => setTimeout(r, 60));
+    enqueueAdmission('s-stale');
+    drainAdmissionSlot(makeDeps());
+    await settle();
+    const stats = await waitStats();
+    expect(stats.count).toBe(1);
+    expect(stats.sum).toBeLessThan(0.05); // fresh clock, not the 60ms-old one
+  });
+
+  it('does not observe a session evicted after repeated failures', async () => {
+    const deps = makeDeps({ wake: () => Promise.resolve(false) });
+    enqueueAdmission('s-doomed');
+    for (let i = 0; i < 4; i++) {
+      drainAdmissionSlot(deps);
+      await settle();
+    }
+    expect((await waitStats()).count).toBe(0);
+    expect(admissionQueueSize()).toBe(0);
+
+    // And the eviction cleared its timestamp: a later enqueue of the same id
+    // starts a fresh clock instead of inheriting the abandoned one.
+    await new Promise((r) => setTimeout(r, 60));
+    enqueueAdmission('s-doomed');
+    drainAdmissionSlot(makeDeps());
+    await settle();
+    const stats = await waitStats();
+    expect(stats.count).toBe(1);
+    expect(stats.sum).toBeLessThan(0.05);
   });
 });

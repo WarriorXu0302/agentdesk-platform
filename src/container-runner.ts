@@ -37,7 +37,14 @@ import { revokeAllProxyTokens, revokeProxyTokensForSession } from './db/gateway-
 import { gatewaySigningProxyEnabled, mintSessionProxyToken } from './gateway-signing-proxy.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
-import { agentBaseImagePresent, containerExitsTotal, wakeRejectedTotal } from './metrics.js';
+import {
+  agentBaseImagePresent,
+  containerExitsTotal,
+  containerLifetimeSeconds,
+  containerSlotsInUse,
+  containerSlotsMax,
+  wakeRejectedTotal,
+} from './metrics.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { ensureStateScope, resolveStateScope } from './state-scope.js';
 import { log } from './log.js';
@@ -74,7 +81,14 @@ import type { AgentGroup, Session } from './types.js';
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
 /** Active containers tracked by session ID. */
-const activeContainers = new Map<string, { process: ChildProcess; containerName: string; agentGroupId: string }>();
+// `spawnedAt` rides on the entry rather than in a parallel map so it cannot
+// outlive the container it belongs to: the exit handlers delete the entry,
+// and `close` + `error` can BOTH fire for one failed spawn — reading the
+// entry before deleting makes the lifetime observation naturally once-only.
+const activeContainers = new Map<
+  string,
+  { process: ChildProcess; containerName: string; agentGroupId: string; spawnedAt: number }
+>();
 
 // Warn-once registry for the role×routing coherence warn in buildMounts
 // (ADR-0056) — per group per host run, so a respawning group doesn't spam.
@@ -174,6 +188,30 @@ export function buildRunnerTracingEnvArgs(carrier: Record<string, string>, env: 
 
 export function getActiveContainerCount(): number {
   return activeContainers.size;
+}
+
+// The cap is static for the process lifetime; publishing it as a gauge lets a
+// dashboard show in-use against the ceiling without the operator hardcoding it.
+containerSlotsMax.set(MAX_CONCURRENT_CONTAINERS);
+
+/**
+ * Record how long a container held its slot.
+ *
+ * Takes the ENTRY rather than a session id so the once-only property is a
+ * property of the argument and can be tested without spawning anything:
+ * `close` and `error` can both fire for a single failed spawn, and each
+ * handler deletes the entry immediately after calling this, so the second call
+ * is handed `undefined` and observes nothing. Returns whether it observed, so
+ * a test can assert that rather than inferring it from a counter.
+ */
+export function observeContainerLifetime(
+  entry: { spawnedAt: number } | undefined,
+  outcome: string,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!entry) return false;
+  containerLifetimeSeconds.labels(outcome).observe((nowMs - entry.spawnedAt) / 1000);
+  return true;
 }
 
 export function isContainerRunning(sessionId: string): boolean {
@@ -365,7 +403,13 @@ async function spawnContainer(session: Session): Promise<void> {
 
       const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-      activeContainers.set(session.id, { process: container, containerName, agentGroupId: agentGroup.id });
+      activeContainers.set(session.id, {
+        process: container,
+        containerName,
+        agentGroupId: agentGroup.id,
+        spawnedAt: Date.now(),
+      });
+      containerSlotsInUse.set(activeContainers.size);
 
       // Slot-handoff gate (ADR-0059 red-team round): drain at most once per
       // container ('error' AND 'close' can both fire for one failed spawn),
@@ -402,7 +446,9 @@ async function spawnContainer(session: Session): Promise<void> {
       container.on('close', (code) => {
         const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
         recentlyKilled.delete(session.id);
+        observeContainerLifetime(activeContainers.get(session.id), outcome);
         activeContainers.delete(session.id);
+        containerSlotsInUse.set(activeContainers.size);
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
         cleanupSigningProxyForSession(session.id, signingProxy);
@@ -416,7 +462,9 @@ async function spawnContainer(session: Session): Promise<void> {
 
       container.on('error', (err) => {
         recentlyKilled.delete(session.id);
+        observeContainerLifetime(activeContainers.get(session.id), 'crash');
         activeContainers.delete(session.id);
+        containerSlotsInUse.set(activeContainers.size);
         markContainerStopped(session.id);
         stopTypingRefresh(session.id);
         cleanupSigningProxyForSession(session.id, signingProxy);

@@ -165,6 +165,61 @@ export const admissionAdmittedTotal = new client.Counter({
   registers: [registry],
 });
 
+/**
+ * How long a session waited in the admission queue before it got a slot.
+ *
+ * Together with `container_lifetime_seconds` this is what makes capacity a
+ * measured quantity instead of a guess: throughput ceiling is
+ * `MAX_CONCURRENT_CONTAINERS / mean(container_lifetime_seconds)` wakes per
+ * second, and this histogram is what that ceiling FEELS like to a user.
+ *
+ * Measured from the session's FIRST enqueue, not from its most recent one — a
+ * failed admission requeues the session, and restarting the clock there would
+ * report a flattering number for exactly the sessions having the worst time.
+ * Only successful admissions are observed; stale skips and evictions are
+ * dropped without an observation, because a session that never took a slot
+ * through this queue has no queue wait to report.
+ */
+export const admissionWaitSeconds = new client.Histogram({
+  name: `${METRIC_PREFIX}_admission_wait_seconds`,
+  help: 'Seconds a session spent in the admission queue before being admitted to a slot',
+  buckets: [0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300],
+  registers: [registry],
+});
+
+/**
+ * How long a container held its slot, spawn to exit.
+ *
+ * The denominator of the throughput ceiling. `outcome` mirrors
+ * `container_exits_total` so a crash loop (short lifetimes, outcome=crash)
+ * reads differently from healthy idle-out (long lifetimes, outcome=idle) —
+ * without the label, a crash loop would look like excellent turnover.
+ */
+export const containerLifetimeSeconds = new client.Histogram({
+  name: `${METRIC_PREFIX}_container_lifetime_seconds`,
+  help: 'Seconds a container held a concurrency slot, from spawn to exit',
+  labelNames: ['outcome'] as const,
+  buckets: [1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600],
+  registers: [registry],
+});
+
+/**
+ * Slots in use, and the cap. Two gauges rather than a ratio so an operator can
+ * see WHICH one moved when saturation changes — raising the cap and shedding
+ * load look identical in a ratio.
+ */
+export const containerSlotsInUse = new client.Gauge({
+  name: `${METRIC_PREFIX}_container_slots_in_use`,
+  help: 'Containers currently holding a concurrency slot',
+  registers: [registry],
+});
+
+export const containerSlotsMax = new client.Gauge({
+  name: `${METRIC_PREFIX}_container_slots_max`,
+  help: 'Configured MAX_CONCURRENT_CONTAINERS',
+  registers: [registry],
+});
+
 export const containerExitsTotal = new client.Counter({
   name: `${METRIC_PREFIX}_container_exits_total`,
   help: 'Container exit events by outcome',

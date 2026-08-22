@@ -25,19 +25,31 @@
  * The drain logic takes its dependencies as a parameter so the queue's
  * behavior is unit-testable without Docker, the central DB, or session dirs.
  */
-import { admissionAdmittedTotal, admissionQueueDepth } from './metrics.js';
+import { admissionAdmittedTotal, admissionQueueDepth, admissionWaitSeconds } from './metrics.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
 
 const queue: string[] = [];
 const queued = new Set<string>();
 const failCounts = new Map<string, number>();
+/**
+ * When each session FIRST entered the queue.
+ *
+ * Deliberately not reset by `requeueFront` / re-enqueue: a session that lost a
+ * slot race and went round again waited the whole time, and restarting its
+ * clock would report the prettiest numbers for exactly the sessions having the
+ * worst experience. Cleared on admission, on stale skip, and on eviction — an
+ * entry that never took a slot through this queue has no queue wait to report,
+ * and leaving it behind would leak.
+ */
+const firstQueuedAt = new Map<string, number>();
 
 /** Consecutive failed admissions before a session is evicted to the sweep. */
 const MAX_ADMISSION_FAILURES = 3;
 
 export function enqueueAdmission(sessionId: string): void {
   if (queued.has(sessionId)) return;
+  if (!firstQueuedAt.has(sessionId)) firstQueuedAt.set(sessionId, Date.now());
   queued.add(sessionId);
   queue.push(sessionId);
   admissionQueueDepth.set(queue.length);
@@ -75,6 +87,7 @@ export function clearAdmissionQueue(): void {
   queue.length = 0;
   queued.clear();
   failCounts.clear();
+  firstQueuedAt.clear();
   admissionQueueDepth.set(0);
 }
 
@@ -87,6 +100,14 @@ export interface AdmissionDeps {
   hasDueWork(session: Session): boolean;
   /** wakeContainer — never throws, false = rejected/failed. */
   wake(session: Session): Promise<boolean>;
+}
+
+/** Observe the total queue wait for a session that actually got a slot. */
+function observeWait(sessionId: string): void {
+  const since = firstQueuedAt.get(sessionId);
+  if (since === undefined) return;
+  firstQueuedAt.delete(sessionId);
+  admissionWaitSeconds.observe((Date.now() - since) / 1000);
 }
 
 function recordFailure(sessionId: string): void {
@@ -108,6 +129,7 @@ function recordFailure(sessionId: string): void {
   // and the operator sees the eviction. Keeping it queued would burn every
   // freed slot's single admission attempt on a session that cannot boot.
   failCounts.delete(sessionId);
+  firstQueuedAt.delete(sessionId);
   log.warn('Admission queue: session evicted after repeated failed admissions — sweep owns its retries now', {
     sessionId,
     failures: n,
@@ -139,10 +161,12 @@ export function drainAdmissionSlot(deps: AdmissionDeps): void {
         err,
       });
       failCounts.delete(nextId);
+      firstQueuedAt.delete(nextId);
       continue; // this slot can still admit the next candidate
     }
     if (!candidate) {
       failCounts.delete(nextId);
+      firstQueuedAt.delete(nextId);
       continue; // stale entry — try the next one
     }
 
@@ -153,6 +177,7 @@ export function drainAdmissionSlot(deps: AdmissionDeps): void {
         if (ok) {
           failCounts.delete(admitted.id);
           admissionAdmittedTotal.inc();
+          observeWait(admitted.id);
         } else {
           recordFailure(admitted.id);
         }
