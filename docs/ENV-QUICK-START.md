@@ -2,8 +2,8 @@
 
 [`.env.example`](../.env.example) is the **authoritative, fully-commented** list
 of every environment variable — but it's 355 lines, and that's a lot to face on
-day one. This page is a navigation layer: it groups the variables by *what you're
-trying to do* and tells you which are actually required. It does not duplicate
+day one. This page is a navigation layer: it groups the variables by _what you're
+trying to do_ and tells you which are actually required. It does not duplicate
 the per-variable annotations — once you know which block you need, read that
 block in `.env.example`.
 
@@ -25,11 +25,11 @@ block in `.env.example`.
 The smallest thing that runs an agent locally. No chat platform, no backend.
 Pick a provider; everything else takes its default.
 
-| Variable | Required? | Why / how to get |
-|---|---|---|
-| `OPENAI_BASE_URL` + `OPENAI_API_KEY` | yes, **if** you use the OpenAI-compatible provider | Your LLM gateway URL + key. The host fails fast if any `OPENAI_*` is set but the key is missing. |
-| `ANTHROPIC_BASE_URL` | no | Only for a custom Anthropic-compatible endpoint. Leave unset for the default Claude path (token rewriting handled by OneCLI, never enters the container). |
-| `BRAND_NAME` / `BRAND_NAMESPACE` | no | Rename the platform. Defaults: `AgentDesk` / `agentdesk`. |
+| Variable                             | Required?                                          | Why / how to get                                                                                                                                          |
+| ------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENAI_BASE_URL` + `OPENAI_API_KEY` | yes, **if** you use the OpenAI-compatible provider | Your LLM gateway URL + key. The host fails fast if any `OPENAI_*` is set but the key is missing.                                                          |
+| `ANTHROPIC_BASE_URL`                 | no                                                 | Only for a custom Anthropic-compatible endpoint. Leave unset for the default Claude path (token rewriting handled by OneCLI, never enters the container). |
+| `BRAND_NAME` / `BRAND_NAMESPACE`     | no                                                 | Rename the platform. Defaults: `AgentDesk` / `agentdesk`.                                                                                                 |
 
 The default provider is **Claude** — with no provider vars at all, you're on the
 standard Claude path. Set the `OPENAI_*` pair only if a group selects the
@@ -48,13 +48,13 @@ limits, and locked-down `/metrics`.
 
 ### B1. Feishu channel (`src/channels/feishu.ts`)
 
-| Variable | Required? | Why / how to get |
-|---|---|---|
-| `FEISHU_APP_ID` + `FEISHU_APP_SECRET` | **yes** (both — half a pair fails fast) | Feishu/Lark app credentials (developer console → your app → Credentials). The secret authenticates your bot; leaking it = impersonation. |
-| `FEISHU_EVENT_MODE` | no (default `long-connection`) | `webhook` \| `long-connection` \| `hybrid`. |
-| `FEISHU_ENCRYPT_KEY` + `FEISHU_VERIFICATION_TOKEN` | **yes, in `webhook`/`hybrid` mode** | Payload decryption + callback verification (app console → Event Subscriptions). Without them every inbound event is rejected. |
-| `FEISHU_BOT_OPEN_ID` | no | Mention / self-message detection. |
-| `WEBHOOK_PORT` | **yes, in webhook mode** (default `3000`) | Shared port serving the webhook **and** `/metrics` `/healthz` `/readyz`. |
+| Variable                                           | Required?                                 | Why / how to get                                                                                                                         |
+| -------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `FEISHU_APP_ID` + `FEISHU_APP_SECRET`              | **yes** (both — half a pair fails fast)   | Feishu/Lark app credentials (developer console → your app → Credentials). The secret authenticates your bot; leaking it = impersonation. |
+| `FEISHU_EVENT_MODE`                                | no (default `long-connection`)            | `webhook` \| `long-connection` \| `hybrid`.                                                                                              |
+| `FEISHU_ENCRYPT_KEY` + `FEISHU_VERIFICATION_TOKEN` | **yes, in `webhook`/`hybrid` mode**       | Payload decryption + callback verification (app console → Event Subscriptions). Without them every inbound event is rejected.            |
+| `FEISHU_BOT_OPEN_ID`                               | no                                        | Mention / self-message detection.                                                                                                        |
+| `WEBHOOK_PORT`                                     | **yes, in webhook mode** (default `3000`) | Shared port serving the webhook **and** `/metrics` `/healthz` `/readyz`.                                                                 |
 
 ### B2. Provider
 
@@ -65,26 +65,27 @@ OpenAI-compatible provider. For key-out-of-container hardening see
 
 ### B3. Backend gateway (the only path to business memory + authorization)
 
-| Variable | Required? | Why / how to get |
-|---|---|---|
-| `GATEWAY_BASE_URL` | recommended | Default base URL `scripts/configure-enterprise-gateway.ts` writes into groups. Your gateway: see [`gateway-kickstart.md`](gateway-kickstart.md). |
-| `GATEWAY_SIGNING_KEY` | **strongly recommended in production** | HMAC key (ADR-0018). Without it, anything that can reach your backend can forge requests — unsigned groups raise the `AgentDeskUnsignedGateways` alert. `openssl rand -hex 32`. |
-| `AGENTDESK_GATEWAY_SIGNING_PROXY*` | no | Host-side signing proxy (ADR-0034) so the key never enters the container. Prefer this over per-container `signingKey`. |
+| Variable                           | Required?                              | Why / how to get                                                                                                                                                                |
+| ---------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GATEWAY_BASE_URL`                 | recommended                            | Default base URL `scripts/configure-enterprise-gateway.ts` writes into groups. Your gateway: see [`gateway-kickstart.md`](gateway-kickstart.md).                                |
+| `GATEWAY_SIGNING_KEY`              | **strongly recommended in production** | HMAC key (ADR-0018). Without it, anything that can reach your backend can forge requests — unsigned groups raise the `AgentDeskUnsignedGateways` alert. `openssl rand -hex 32`. |
+| `AGENTDESK_GATEWAY_SIGNING_PROXY*` | no                                     | Host-side signing proxy (ADR-0034) so the key never enters the container. Prefer this over per-container `signingKey`.                                                          |
 
 ### B4. Capacity & lifecycle (strongly recommended for shared hosts)
 
-| Variable | Default | Why set it |
-|---|---|---|
-| `MAX_CONCURRENT_CONTAINERS` | `10` (on by default) | Global cap on simultaneous agent containers — prevents fork-bombing under an inbound burst. Tune to host capacity. |
-| `AGENTDESK_IDLE_EXIT_MS` | `0` (off) | Idle-exit window so idle containers free memory. Production: set it (e.g. `120000`). |
-| `AGENTDESK_SESSION_TTL_DAYS` | `0` (off) | Session TTL + archival. |
-| `AGENTDESK_SESSION_TOKEN_BUDGET_PER_MIN` | `0` (off) | Per-session token/cost ceiling — a runaway session is killed and counted (roadmap 7.1). |
-| `AGENTDESK_AUDIT_RETAIN_DAYS` | — | Audit retention window (compliance). |
+| Variable                                 | Default              | Why set it                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MAX_CONCURRENT_CONTAINERS`              | `10` (on by default) | Global cap on simultaneous agent containers — prevents fork-bombing under an inbound burst. Tune to host capacity.                                                                                                                                                                                                                  |
+| `AGENTDESK_IDLE_EXIT_MS`                 | `0` (off)            | Idle-exit window so idle containers free memory. Production: set it (e.g. `120000`).                                                                                                                                                                                                                                                |
+| `AGENTDESK_SESSION_TTL_DAYS`             | `0` (off)            | Session TTL + archival.                                                                                                                                                                                                                                                                                                             |
+| `AGENTDESK_SESSION_TOKEN_BUDGET_PER_MIN` | `0` (off)            | Per-session token/cost ceiling — a runaway session is killed and counted (roadmap 7.1).                                                                                                                                                                                                                                             |
+| `AGENTDESK_AUDIT_RETAIN_DAYS`            | —                    | Audit retention window (compliance).                                                                                                                                                                                                                                                                                                |
+| `AGENTDESK_SCOPE_TTL_DAYS`               | `0` (off)            | Per-user state-scope retention (ADR-0061). Expires ABANDONED scopes — the clock is refreshed on every access, so an active person's memory never expires, and a scope backing an active session is never removed. Covers pre-existing data from the first sweep. Expiry ≠ erasure: a GDPR deletion request is a separate operation. |
 
 ### B5. Lock down observability
 
-| Variable | Required? | Why |
-|---|---|---|
+| Variable             | Required?             | Why                                                                                           |
+| -------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
 | `METRICS_AUTH_TOKEN` | **yes in production** | Without it `/metrics` is open. When set, `/metrics` requires `Authorization: Bearer <token>`. |
 
 ### B6. Autowire (optional convenience)
@@ -101,12 +102,12 @@ boot instead of running the bootstrap script by hand. All optional; see the
 Observability is **read-only** — it never mutates the identity trust chain or
 message flow. Layer it on when you want traces in Phoenix/Grafana.
 
-| Variable | Required? | Why / how to get |
-|---|---|---|
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | no | OTLP collector endpoint (e.g. Phoenix). Unset = no trace export. |
-| `OTEL_SERVICE_NAME` | no | Service name in traces. |
-| `OTEL_SDK_DISABLED` | no | Hard kill-switch for all OTEL. |
-| `LOG_LEVEL` | no | `debug` \| `info` \| `warn` \| `error`. |
+| Variable                             | Required? | Why / how to get                                                 |
+| ------------------------------------ | --------- | ---------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | no        | OTLP collector endpoint (e.g. Phoenix). Unset = no trace export. |
+| `OTEL_SERVICE_NAME`                  | no        | Service name in traces.                                          |
+| `OTEL_SDK_DISABLED`                  | no        | Hard kill-switch for all OTEL.                                   |
+| `LOG_LEVEL`                          | no        | `debug` \| `info` \| `warn` \| `error`.                          |
 
 See [`docs/architecture.md`](architecture.md) and the observability stack under
 `infra/observability/`.
@@ -126,5 +127,5 @@ See [`docs/architecture.md`](architecture.md) and the observability stack under
 ## See also
 
 - [`.env.example`](../.env.example) — the authoritative, per-variable reference.
-- [`docs/configuration-reference.md`](configuration-reference.md) — per-group `container.json` fields (the *other* config surface).
+- [`docs/configuration-reference.md`](configuration-reference.md) — per-group `container.json` fields (the _other_ config surface).
 - [`docs/gateway-kickstart.md`](gateway-kickstart.md) — standing up the backend gateway `GATEWAY_BASE_URL` points at.

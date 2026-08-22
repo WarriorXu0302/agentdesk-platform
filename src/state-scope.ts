@@ -40,6 +40,13 @@ export interface StateScope {
   workspaceDir: string;
   /** Backs the RW `/home/node/.claude` mount (settings, skills symlinks, Claude state). */
   claudeDir: string;
+  /**
+   * The scope's own root (`v2-scopes/<agentGroupId>/<userScopeKey>`), parent of
+   * both mounts. Set for user scopes only — it is the unit retention operates
+   * on (ADR-0061). Undefined for group scopes, whose two directories live in
+   * unrelated trees and are governed by the group's own lifecycle.
+   */
+  baseDir?: string;
 }
 
 /**
@@ -57,6 +64,28 @@ export function userScopeKey(userId: string): string {
       .slice(0, 24) || 'user';
   const fingerprint = createHash('sha1').update(userId).digest('hex').slice(0, 8);
   return `u-${slug}-${fingerprint}`;
+}
+
+/**
+ * Marker file whose mtime is the retention clock for a user scope
+ * (ADR-0061). Lives here rather than in scope-retention.ts so the dependency
+ * runs one way: retention knows about scopes, scopes know nothing about
+ * retention policy.
+ */
+export const SCOPE_ACCESS_MARKER = '.last-access';
+
+/**
+ * Stamp a user scope as accessed. Called on every spawn that mounts it, so
+ * the clock measures ABANDONMENT rather than absolute age. Best-effort — a
+ * failed stamp must never block a spawn, and retention's mtime fallback keeps
+ * the scope safe from premature expiry regardless.
+ */
+export function touchScopeAccess(scopeBaseDir: string): void {
+  try {
+    fs.writeFileSync(path.join(scopeBaseDir, SCOPE_ACCESS_MARKER), '');
+  } catch (err) {
+    log.debug('Scope access stamp failed (non-fatal)', { dir: scopeBaseDir, err });
+  }
 }
 
 /** Host directory that holds every user scope of one agent group. */
@@ -82,6 +111,7 @@ export function resolveStateScope(agentGroup: AgentGroup, session: Session): Sta
     kind: 'user',
     workspaceDir: path.join(base, 'workspace'),
     claudeDir: path.join(base, 'claude'),
+    baseDir: base,
   };
 }
 
@@ -134,6 +164,12 @@ export function ensureStateScope(scope: StateScope, opts: { disableAutoMemory: b
   }
 
   initialized.push(...initClaudeStateDir(scope.claudeDir, opts.disableAutoMemory));
+
+  // Retention clock (ADR-0061): this runs on every spawn that mounts the
+  // scope, so the stamp means "the person used their assistant". Retention
+  // then measures ABANDONMENT rather than absolute age — an active user's
+  // memory never expires out from under them.
+  if (scope.baseDir) touchScopeAccess(scope.baseDir);
 
   if (initialized.length > 0) {
     log.info('Initialized user state scope (ADR-0055)', { dir: scope.workspaceDir, steps: initialized });
