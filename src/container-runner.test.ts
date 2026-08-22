@@ -17,6 +17,7 @@ import {
   redactContainerConfigForContainer,
   redactedConfigPathFor,
   resolveContainerNetwork,
+  observeContainerLifetime,
   resolveProviderName,
   resolveRoutingPromptMount,
   routeOpenAiThroughVault,
@@ -646,5 +647,50 @@ describe('buildContainerArgs — real argv assembly (integration-bug class)', ()
     const args = await buildContainerArgs(mounts, 'c-3', agentGroup, containerConfig, 'mock', {}, 'ag1');
     expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_URL')).toBeUndefined();
     expect(findInjectedEnvValue(args, 'AGENTDESK_GATEWAY_PROXY_TOKEN')).toBeUndefined();
+  });
+});
+
+describe('observeContainerLifetime (ADR-0064)', () => {
+  /**
+   * `close` and `error` can BOTH fire for a single failed spawn, and each
+   * handler deletes the container entry right after calling this. So the
+   * once-only property is not a flag anywhere — it is the fact that the second
+   * call is handed nothing. Pinning it here because a double observation would
+   * silently halve the mean slot-hold time, and the throughput ceiling is
+   * computed from that mean.
+   */
+  it('observes once and only for a live entry', async () => {
+    const { containerLifetimeSeconds } = await import('./metrics.js');
+    containerLifetimeSeconds.reset();
+
+    const entry = { spawnedAt: 1_000_000 };
+    expect(observeContainerLifetime(entry, 'idle', 1_090_000)).toBe(true);
+    // Second handler of the pair: the entry is gone by now.
+    expect(observeContainerLifetime(undefined, 'idle', 1_090_000)).toBe(false);
+
+    const v = await containerLifetimeSeconds.get();
+    const count = v.values.find((x) => x.metricName?.endsWith('_count'))?.value ?? 0;
+    const sum = v.values.find((x) => x.metricName?.endsWith('_sum'))?.value ?? 0;
+    expect(count).toBe(1);
+    expect(sum).toBe(90); // seconds, from spawnedAt — not a wall-clock read
+  });
+
+  it('keeps outcomes on separate label sets', async () => {
+    const { containerLifetimeSeconds } = await import('./metrics.js');
+    containerLifetimeSeconds.reset();
+
+    observeContainerLifetime({ spawnedAt: 0 }, 'crash', 2_000);
+    observeContainerLifetime({ spawnedAt: 0 }, 'idle', 600_000);
+
+    const v = await containerLifetimeSeconds.get();
+    const byOutcome = Object.fromEntries(
+      v.values
+        .filter((x) => x.metricName?.endsWith('_sum'))
+        .map((x) => [(x.labels as { outcome?: string }).outcome, x.value]),
+    );
+    // Without the label a 2s crash loop and a 10min healthy session average
+    // into one unremarkable number.
+    expect(byOutcome.crash).toBe(2);
+    expect(byOutcome.idle).toBe(600);
   });
 });

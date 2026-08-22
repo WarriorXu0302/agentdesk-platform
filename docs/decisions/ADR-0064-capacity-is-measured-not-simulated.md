@@ -100,9 +100,16 @@
   随条目一起消失;`close` 与 `error` 都可能为同一次失败 spawn 触发,
   故**先读后删**使观测天然只发生一次)
 - 文档:`docs/capacity.md`
-- 测试:`src/admission-queue.test.ts` 新增 4 项
+- 测试:`src/admission-queue.test.ts` 新增 4 项;
+  `src/container-runner.test.ts` 新增 2 项——**"只观测一次"原本是我口头声称、
+  零测试的**(和"容器侧镜像零测试"是同一类问题,只是这次是我自己)。
+  为此把观测逻辑改成接收**条目**而非 session id 的导出纯函数
+  `observeContainerLifetime(entry, outcome, nowMs)`:once-only 于是成为参数的性质,
+  不用起容器就能测——`close`/`error` 各自调用后立刻删条目,第二次拿到的是
+  `undefined`。双观测会**把平均坑位持有时长直接砍半**,而吞吐上限就是拿它当分母算的。
 - 验收(红先,逐条实测):
-  - 移除跳过清理 → 变红;移除驱逐清理 → 变红。
+  - 移除跳过清理 → 变红;移除驱逐清理 → 变红;
+    移除 once-only 守卫 → 变红;去掉 `outcome` 标签 → 变红。
   - "重排队不重置时钟"这条**头两版测试都是空的**:第一版只驱动了一次失败,
     而第一次失败走 `requeueFront`(根本不碰时间戳),所以改 `enqueueAdmission`
     对它无影响;第二版驱动到了回队尾路径,但把等待放在最后一次入队**之后**,

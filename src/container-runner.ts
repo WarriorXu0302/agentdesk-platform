@@ -195,14 +195,23 @@ export function getActiveContainerCount(): number {
 containerSlotsMax.set(MAX_CONCURRENT_CONTAINERS);
 
 /**
- * Record how long this container held its slot. Reads the entry BEFORE the
- * caller deletes it, so the second of a `close`/`error` pair finds nothing and
- * observes nothing.
+ * Record how long a container held its slot.
+ *
+ * Takes the ENTRY rather than a session id so the once-only property is a
+ * property of the argument and can be tested without spawning anything:
+ * `close` and `error` can both fire for a single failed spawn, and each
+ * handler deletes the entry immediately after calling this, so the second call
+ * is handed `undefined` and observes nothing. Returns whether it observed, so
+ * a test can assert that rather than inferring it from a counter.
  */
-function observeLifetime(sessionId: string, outcome: string): void {
-  const entry = activeContainers.get(sessionId);
-  if (!entry) return;
-  containerLifetimeSeconds.labels(outcome).observe((Date.now() - entry.spawnedAt) / 1000);
+export function observeContainerLifetime(
+  entry: { spawnedAt: number } | undefined,
+  outcome: string,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!entry) return false;
+  containerLifetimeSeconds.labels(outcome).observe((nowMs - entry.spawnedAt) / 1000);
+  return true;
 }
 
 export function isContainerRunning(sessionId: string): boolean {
@@ -437,7 +446,7 @@ async function spawnContainer(session: Session): Promise<void> {
       container.on('close', (code) => {
         const outcome = recentlyKilled.has(session.id) ? 'killed' : code === 0 ? 'idle' : 'crash';
         recentlyKilled.delete(session.id);
-        observeLifetime(session.id, outcome);
+        observeContainerLifetime(activeContainers.get(session.id), outcome);
         activeContainers.delete(session.id);
         containerSlotsInUse.set(activeContainers.size);
         markContainerStopped(session.id);
@@ -453,7 +462,7 @@ async function spawnContainer(session: Session): Promise<void> {
 
       container.on('error', (err) => {
         recentlyKilled.delete(session.id);
-        observeLifetime(session.id, 'crash');
+        observeContainerLifetime(activeContainers.get(session.id), 'crash');
         activeContainers.delete(session.id);
         containerSlotsInUse.set(activeContainers.size);
         markContainerStopped(session.id);
