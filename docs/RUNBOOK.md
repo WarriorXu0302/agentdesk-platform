@@ -16,29 +16,29 @@ host 是裸 Node 进程，由操作员的进程管理器拉起。`deploy/` 提�
 **单元模板**（填 `<PLACEHOLDERS>` 后安装，见 `deploy/README.md`）；若你用的是自己的
 单元名，"进程活着"按你的服务名查，否则一律按 host 健康探针 `/healthz` 查。
 
-| 检查 | 命令 / Panel | 期望 |
-|---|---|---|
-| 进程活着 | `pgrep -f 'node .*dist/index.js' \|\| pgrep -f 'tsx .*src/index.ts'` 有 PID；再探 `curl -fsS localhost:3000/healthz` | 返回 PID + `/healthz` 200 |
-| 就绪态（DB / 容器 runtime 可用） | `curl -fsS localhost:3000/readyz` | 200 |
-| `/metrics` 返回 200 | `curl -s localhost:3000/metrics \| head -3` | `# HELP ...` |
-| 飞书入站速率 | `rate(agentdesk_inbound_total{outcome="accepted"}[5m])` | 与业务时段一致 |
-| 入站去重比例 | `rate(...{outcome="deduped"}) / rate(...{outcome="accepted"})` | < 5%（飞书重投正常） |
-| 路由 P95 延迟 | `histogram_quantile(0.95, rate(agentdesk_route_seconds_bucket{phase="route"}[5m]))` | < 0.5s |
-| 唤醒 P95 延迟 | 同上 phase="wake" | < 2s（冷启动会高） |
-| 活跃 session 数 | `agentdesk_session_count{status="active"}` | 跟工作时间相关，无突刺 |
-| 容器异常退出 | `rate(agentdesk_container_exits_total{outcome=~"crash\|killed"}[15m])` | ≈ 0 |
-| 唤醒拒绝 | `rate(agentdesk_wake_rejected_total[5m])` | 持续 0；瞬时尖峰可接受 |
-| 分类协议绕过 | `rate(agentdesk_classification_bypass_total[15m])` | ≈ 0 |
-| 分类日志写入失败 | `rate(agentdesk_classification_log_failures_total[15m])` | 必须 0 |
-| Provider 错误 | `rate(agentdesk_provider_errors_total[5m])` | ≈ 0 |
-| 入站路由失败（静默丢失） | `rate(agentdesk_inbound_ingress_failed_total[10m])` | 必须 0（→ §3.7） |
-| 入站重试耗尽（死信） | `rate(agentdesk_inbound_processing_permanent_failures_total[15m])` | 必须 0（→ §3.7） |
-| 网关代签冒充 | `rate(agentdesk_gateway_signing_proxy_total{outcome="identity_mismatch"}[15m])` | 必须 0（安全；→ §3.8） |
-| 网关代签审计写失败 | `rate(agentdesk_gateway_signing_proxy_total{outcome="audit_write_failed"}[15m])` | 必须 0（审计留痕在出洞；→ §3.8） |
-| 未签名网关组 | `agentdesk_gateway_unsigned_groups` | 0（生产；→ §3.8） |
-| engage 正则失效 | `rate(agentdesk_engage_pattern_invalid_total[10m])` | 必须 0（→ §3.9） |
-| 审批卡身份拒绝 | `rate(agentdesk_policy_check_failed_total{policy="approval_operator_identity"}[15m])` | 0（安全;→ §3.11） |
-| worker 持续 nack | `sum by (reported_by) (rate(agentdesk_routing_feedback_total{kind="nack"}[30m]))` | 偶发正常;持续 = 配线坏/注入(→ §3.12) |
+| 检查                             | 命令 / Panel                                                                                                         | 期望                                 |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| 进程活着                         | `pgrep -f 'node .*dist/index.js' \|\| pgrep -f 'tsx .*src/index.ts'` 有 PID；再探 `curl -fsS localhost:3000/healthz` | 返回 PID + `/healthz` 200            |
+| 就绪态（DB / 容器 runtime 可用） | `curl -fsS localhost:3000/readyz`                                                                                    | 200                                  |
+| `/metrics` 返回 200              | `curl -s localhost:3000/metrics \| head -3`                                                                          | `# HELP ...`                         |
+| 飞书入站速率                     | `rate(agentdesk_inbound_total{outcome="accepted"}[5m])`                                                              | 与业务时段一致                       |
+| 入站去重比例                     | `rate(...{outcome="deduped"}) / rate(...{outcome="accepted"})`                                                       | < 5%（飞书重投正常）                 |
+| 路由 P95 延迟                    | `histogram_quantile(0.95, rate(agentdesk_route_seconds_bucket{phase="route"}[5m]))`                                  | < 0.5s                               |
+| 唤醒 P95 延迟                    | 同上 phase="wake"                                                                                                    | < 2s（冷启动会高）                   |
+| 活跃 session 数                  | `agentdesk_session_count{status="active"}`                                                                           | 跟工作时间相关，无突刺               |
+| 容器异常退出                     | `rate(agentdesk_container_exits_total{outcome=~"crash\|killed"}[15m])`                                               | ≈ 0                                  |
+| 唤醒拒绝                         | `rate(agentdesk_wake_rejected_total[5m])`                                                                            | 持续 0；瞬时尖峰可接受               |
+| 分类协议绕过                     | `rate(agentdesk_classification_bypass_total[15m])`                                                                   | ≈ 0                                  |
+| 分类日志写入失败                 | `rate(agentdesk_classification_log_failures_total[15m])`                                                             | 必须 0                               |
+| Provider 错误                    | `rate(agentdesk_provider_errors_total[5m])`                                                                          | ≈ 0                                  |
+| 入站路由失败（静默丢失）         | `rate(agentdesk_inbound_ingress_failed_total[10m])`                                                                  | 必须 0（→ §3.7）                     |
+| 入站重试耗尽（死信）             | `rate(agentdesk_inbound_processing_permanent_failures_total[15m])`                                                   | 必须 0（→ §3.7）                     |
+| 网关代签冒充                     | `rate(agentdesk_gateway_signing_proxy_total{outcome="identity_mismatch"}[15m])`                                      | 必须 0（安全；→ §3.8）               |
+| 网关代签审计写失败               | `rate(agentdesk_gateway_signing_proxy_total{outcome="audit_write_failed"}[15m])`                                     | 必须 0（审计留痕在出洞；→ §3.8）     |
+| 未签名网关组                     | `agentdesk_gateway_unsigned_groups`                                                                                  | 0（生产；→ §3.8）                    |
+| engage 正则失效                  | `rate(agentdesk_engage_pattern_invalid_total[10m])`                                                                  | 必须 0（→ §3.9）                     |
+| 审批卡身份拒绝                   | `rate(agentdesk_policy_check_failed_total{policy="approval_operator_identity"}[15m])`                                | 0（安全;→ §3.11）                    |
+| worker 持续 nack                 | `sum by (reported_by) (rate(agentdesk_routing_feedback_total{kind="nack"}[30m]))`                                    | 偶发正常;持续 = 配线坏/注入(→ §3.12) |
 
 ---
 
@@ -107,10 +107,11 @@ host 是裸 Node 进程，由操作员的进程管理器拉起。`deploy/` 提�
 排查顺序：
 
 > 日志：host 把 info 写 stdout、warn/error 写 stderr（见 `src/log.ts`），**不写文件**。日志获取方式取决于你怎么拉起 host：
+>
 > - 进程管理器（pm2 / supervisor / nohup 重定向）→ 看它的日志文件
 > - systemd 单元（如果你自己加了）→ `journalctl --user -u <你的单元名> -n 200`
 > - 前台 / tmux → 直接看终端
-> 下文用 `<host-logs>` 占位代表"你这套部署里 host stdout+stderr 的去处"。
+>   下文用 `<host-logs>` 占位代表"你这套部署里 host stdout+stderr 的去处"。
 
 ```bash
 # 1. 最近 200 行 host 日志（按你的进程管理器取；示例：pm2）
@@ -141,13 +142,13 @@ sqlite3 data/v2-sessions/<agent_group>/<session>/outbound.db \
 
 出站投递状态不在 `messages_out`（容器写、无 status 列），而在 host 写的 `inbound.db.delivered` 表（`status` ∈ delivered/failed）。下表"messages_out status" 的判断实际查 `delivered`。
 
-| 症状 | 含义 | 处置 |
-|---|---|---|
-| `inbound_dedup` 没新行 | 飞书 webhook 没到 | 看飞书开放平台事件投递日志 + WEBHOOK_PORT 是否暴露 |
-| inbound_dedup 有，session.last_active 不更新 | 路由失败 | 在 host stderr 里 grep `routeInbound` 错误 |
-| messages_in 有 status=pending 但 outbound 没新行 | 容器没起来 / 死循环 | 看 `docker ps`，看 host-sweep 是否标 stuck |
-| `delivered.status='failed'`（或 messages_out 有行但 delivered 无对应行） | delivery 失败 | 在 host stderr 里 grep `deliver` 错误 + 飞书 SDK 错误 |
-| `delivered.status='delivered'` 了，用户没看到 | 飞书发送了但用户视角没收到 | 飞书侧面问题（消息撤回 / 群退出 / 卡片渲染失败） |
+| 症状                                                                     | 含义                       | 处置                                                  |
+| ------------------------------------------------------------------------ | -------------------------- | ----------------------------------------------------- |
+| `inbound_dedup` 没新行                                                   | 飞书 webhook 没到          | 看飞书开放平台事件投递日志 + WEBHOOK_PORT 是否暴露    |
+| inbound_dedup 有，session.last_active 不更新                             | 路由失败                   | 在 host stderr 里 grep `routeInbound` 错误            |
+| messages_in 有 status=pending 但 outbound 没新行                         | 容器没起来 / 死循环        | 看 `docker ps`，看 host-sweep 是否标 stuck            |
+| `delivered.status='failed'`（或 messages_out 有行但 delivered 无对应行） | delivery 失败              | 在 host stderr 里 grep `deliver` 错误 + 飞书 SDK 错误 |
+| `delivered.status='delivered'` 了，用户没看到                            | 飞书发送了但用户视角没收到 | 飞书侧面问题（消息撤回 / 群退出 / 卡片渲染失败）      |
 
 ### 3.2 `wake_rejected_total{reason="capacity"}` 持续非 0
 
@@ -163,6 +164,7 @@ sqlite3 data/v2-sessions/<agent_group>/<session>/outbound.db \
 > ```
 
 **短期处置**：
+
 ```bash
 # 看当前在跑多少本平台容器
 docker ps --filter ancestor="$IMG" | wc -l
@@ -176,6 +178,7 @@ echo 'MAX_CONCURRENT_CONTAINERS=20' >> .env
 ```
 
 **根因排查**：
+
 - 是不是某个 agent 卡住没退出？看 `host-sweep` 的 stuck 检测有没有把它干掉。
 - 是不是 `AGENTDESK_IDLE_EXIT_MS` 没开导致容器永不退？建议设 `120000`（2 分钟）。
 - 是不是真的在线人数涨了？开启 idle exit + 调高上限。
@@ -185,11 +188,13 @@ echo 'MAX_CONCURRENT_CONTAINERS=20' >> .env
 **含义**：frontdesk LLM 在跳过 `classify_intent` 工具直接派活，或者派出去的 surface 跟声明的 action 不一致。
 
 **按 reason 标签拆**：
+
 - `no_classification_id`：完全没调工具就发消息。Prompt 漂了，或者模型跨版本回归。
 - `classification_not_found`：调了但 id 找不到（跨 session id 复用）。LLM 在串号。
 - `action_mismatch`：声明 delegate 实际发了 channel reply（或反之）。frontdesk 在"既然 worker 派出去了顺便给用户也回一句"。
 
 **处置**：
+
 ```bash
 # 看具体哪些 turn 在 bypass（classification_log 用 occurred_at）
 sqlite3 data/v2.db \
@@ -227,6 +232,7 @@ sqlite3 data/v2.db \
 ```
 
 **注意**：容器是 `--rm` 跑的，退出后日志全丢。要捞容器内栈，先跑一个不 `--rm` 的复现：
+
 ```bash
 docker run --rm=false --name fl-debug -v ... "$IMG" ...
 # 复现后
@@ -281,6 +287,7 @@ sqlite3 data/v2.db \
 如果 active 里有大量很久没动的 session：检查 `AGENTDESK_SESSION_TTL_DAYS` 是否配置；host-sweep 每 60s 跑一次归档。
 
 物理删归档：手动跑（不会自动跑除非配 `AGENTDESK_ARCHIVE_HARD_DELETE_DAYS`）：
+
 ```bash
 find data/v2-sessions-archive/ -name '*.tar' -mtime +90 -ls
 # 确认无误后再删
@@ -295,18 +302,21 @@ find data/v2-sessions-archive/ -name '*.tar' -mtime +90 -ls
 **(a) 路由前就失败** —— `inbound_ingress_failed_total`。消息已落 ingress 恢复账本（ADR-0022）
 但 `routeInbound` 抛错（session inbound.db 忙 / 附件 IO / 中央 DB 瞬时错误），停在
 `status='failed'`，从未进 session。
+
 ```bash
 # 看积压的失败入站（中央 DB 的 inbound_ingress 账本）
 sqlite3 data/v2.db "select channel_type, count(*) from inbound_ingress where status='failed' group by 1"
 # 操作员显式重放（不会自动重放——避免绕过 adapter 层去重）
 pnpm exec tsx scripts/replay-inbound.ts --help
 ```
+
 > 注意：host 重启时会把账本里的存量 failed 重新计入该指标（`__startup_backlog__` 标签），
 > 所以重启后的一次性 fire 可能是存量再现，不一定是新失败。
 
 **(b) 容器反复崩在某条消息上、重试耗尽** —— `inbound_processing_permanent_failures_total`。
 host-sweep 重置 `MAX_TRIES`(5) 次后把该 `messages_in` 行标 `status='failed'`，不再被 poll
 （出站 DLQ 的入站镜像）。先查是不是某个 group 的容器在崩（→ §3.4），修好后再 requeue：
+
 ```bash
 # 列出所有 session 里 status='failed' 的入站死信
 pnpm exec tsx scripts/requeue-inbound.ts --list
@@ -323,6 +333,7 @@ pnpm exec tsx scripts/requeue-inbound.ts --session <sessionId> --message <messag
   signingKey，其网关调用 fail-closed(502)。
 - `gateway_unsigned_groups > 0`：某 group 有 baseUrl 但无 signingKey，其后端请求**未签名可伪造**
   （ADR-0018）。
+
 ```bash
 # 给相关 group 配/补签名密钥（不会把已签名的降级回未签名）
 pnpm exec tsx scripts/configure-enterprise-gateway.ts --help
@@ -335,6 +346,7 @@ pnpm exec tsx scripts/configure-enterprise-gateway.ts --help
   留痕不完整。根因多为中央 DB 压力（busy_timeout 撑不住 / 磁盘将满 → SQLITE_BUSY/SQLITE_FULL，见 §3.10）。host
   重启时 `reconcileOrphanedProxyAudit` 会把存量 `intent` 行收尾成 error（`error_msg` 带 `[orphaned_intent_reconciled]`），
   所以重启后的一次性尖峰可能是存量再现，不一定是新失败。先看积压的未收尾行，再查 DB 压力 / 磁盘：
+
 ```bash
 # 停在 intent/pending 的代签审计行（finalize 没写上 → 审计留痕有洞）
 sqlite3 data/v2.db \
@@ -355,15 +367,33 @@ sqlite3 data/v2.db \
 `inbox/<msgId>/` 附件目录**只增不减**(整 session 归档默认 OFF),磁盘填满后三个库齐发
 `SQLITE_FULL`,入站/出站全停。host-sweep 每 tick 采样 DATA_DIR 空闲比例到
 `agentdesk_data_dir_free_ratio`(<0.10 告警,<0.05 critical)。处置:
+
 ```bash
 # 看占用大头(会话 DB + 附件)
 du -sh data/v2-sessions/* 2>/dev/null | sort -h | tail -20
 du -sh data/ data/v2.db data/v2-sessions-archive/ 2>/dev/null
 ```
+
 - 开 session 归档:`AGENTDESK_SESSION_TTL_DAYS=N`(把久不活动的 session 打包进归档目录,
   释放其 DB + 附件);久了再物理删归档(见 §3.6 / §5)。
 - 开审计保留:`AGENTDESK_AUDIT_RETAIN_DAYS=N`(host-sweep 修剪 gateway_audit /
   classification_log / enterprise_audit / dm_audit 旧行;默认 0=永不删)。
+- 开 per-user 作用域留存:`AGENTDESK_SCOPE_TTL_DAYS=N`(ADR-0061)。清扫
+  `data/v2-scopes/<ag>/<user>/`——个人记忆 + 逐字转录 + Claude 状态。**时钟按访问续期**:
+  N 天没人用过的作用域才过期,活跃用户的记忆不会被删;**活跃会话指向的作用域无论多老一律跳过**。
+  每次过期落 `enterprise_audit` 的 `scope_retention_expired`。
+  天数按"最长合理离岗期"设,别按活跃度设——长假回来的人不该发现助手失忆。
+  首次见到的作用域会被**收养**(打戳,当次绝不删),戳的时间优先用该用户在
+  `sessions.last_active` 里的真实最后使用时间。
+  **⚠️ 开之前先做两件事**:
+  (1) **备份 `data/v2-scopes/`** —— `scripts/backup.sh` **只覆盖 SQLite 文件,不含作用域树**,
+  TTL 设错了没有恢复路径;
+  (2) **先跑预演**:`AGENTDESK_SCOPE_TTL_DRY_RUN=true` 配上你打算用的天数,看日志里
+  `DRY RUN — would expire user state scope` 的名单确认无误,再关掉预演。
+  预演不产生任何写入(连收养戳都不写)。
+  监控:`agentdesk_scope_retention_total{outcome=adopted|skipped_live|expired|delete_failed}`。
+  注意:这是**过期**不是**擦除**;"删掉某人全部数据"的请求牵涉必须保留的审计行与后端网关里的记忆,
+  需单独处理。
 - 或直接扩卷。
 
 ### 3.11 fail-closed 策略触发（`policy_check_failed_total`）
@@ -423,18 +453,19 @@ SELECT occurred_at, feedback_kind, recommended_worker AS suggested_target,
 
 针对 1 vCPU / 2GB 容器配置：
 
-| 资源维度 | 单 session 占用 | 1000 员工估算 |
-|---|---|---|
-| 容器内存 | ~1GB（worker） / ~768MB（frontdesk） | 峰值 10 容器 ≈ 10GB host RAM |
-| 容器 CPU | 1 core | 峰值 10 容器 ≈ 10 core |
-| Session DB 存储 | ~5MB（一个月对话） | 1000 session × 5MB ≈ 5GB |
-| 中央 DB | 增长慢，主要看 audit 表 | 一年 < 1GB |
+| 资源维度        | 单 session 占用                      | 1000 员工估算                |
+| --------------- | ------------------------------------ | ---------------------------- |
+| 容器内存        | ~1GB（worker） / ~768MB（frontdesk） | 峰值 10 容器 ≈ 10GB host RAM |
+| 容器 CPU        | 1 core                               | 峰值 10 容器 ≈ 10 core       |
+| Session DB 存储 | ~5MB（一个月对话）                   | 1000 session × 5MB ≈ 5GB     |
+| 中央 DB         | 增长慢，主要看 audit 表              | 一年 < 1GB                   |
 
 **结论**：单 host 16C32G 跑 1000 员工 + `MAX_CONCURRENT_CONTAINERS=10` 完全够用，瓶颈是 LLM 调用延迟而不是 host 资源。
 
 ### 4.2 调资源配额
 
 每个 agent_group 的 `groups/<folder>/container.json`：
+
 ```json
 {
   "resources": {
@@ -446,6 +477,7 @@ SELECT occurred_at, feedback_kind, recommended_worker AS suggested_target,
 ```
 
 调高个别 worker（比如做密集数据处理的）：
+
 ```bash
 # 编辑后无需重启 host，下次 wake 容器就生效
 vim groups/agentdesk-finance-worker/container.json
@@ -553,6 +585,7 @@ curl -fsS localhost:3000/readyz && curl -s localhost:3000/metrics | head
 ### 6.3 灰度（暂未支持）
 
 当前是单 host 设计，灰度方案：
+
 - 临时方案：复制一份代码到另一个目录、用不同 `WEBHOOK_PORT`、把部分用户的飞书事件路由到新实例
 - 推荐方案：等多机房支持落地
 
@@ -657,17 +690,17 @@ sqlite3 data/v2.db "delete from user_dms where user_id='feishu:ou_xxx'"
 
 ## 9. 文件位置速查
 
-| 文件 / 目录 | 含义 |
-|---|---|
-| host stdout（`<host-logs>`，由你的进程管理器捕获） | info 日志 |
-| host stderr（同上） | warn + error + fatal |
-| `data/v2.db` | 中央 DB |
-| `data/v2-sessions/<group>/<session>/inbound.db` | session 入站（host 写） |
-| `data/v2-sessions/<group>/<session>/outbound.db` | session 出站（容器写） |
-| `data/v2-sessions-archive/` | TTL 归档的 tar |
-| `groups/<folder>/container.json` | 容器资源配置 |
-| `groups/<folder>/CLAUDE.md` | 该 agent group 的 system prompt |
-| `.env` | 环境变量（FEISHU_*, OPENAI_*, AGENTDESK_*） |
+| 文件 / 目录                                        | 含义                                        |
+| -------------------------------------------------- | ------------------------------------------- |
+| host stdout（`<host-logs>`，由你的进程管理器捕获） | info 日志                                   |
+| host stderr（同上）                                | warn + error + fatal                        |
+| `data/v2.db`                                       | 中央 DB                                     |
+| `data/v2-sessions/<group>/<session>/inbound.db`    | session 入站（host 写）                     |
+| `data/v2-sessions/<group>/<session>/outbound.db`   | session 出站（容器写）                      |
+| `data/v2-sessions-archive/`                        | TTL 归档的 tar                              |
+| `groups/<folder>/container.json`                   | 容器资源配置                                |
+| `groups/<folder>/CLAUDE.md`                        | 该 agent group 的 system prompt             |
+| `.env`                                             | 环境变量（FEISHU__, OPENAI__, AGENTDESK_*） |
 
 ---
 
@@ -683,6 +716,7 @@ sqlite3 data/v2.db "delete from user_dms where user_id='feishu:ou_xxx'"
 6. `sqlite3 data/v2.db ".schema sessions"` + 故障 session 的行
 
 不要把 session DB 整个发出去（含对话内容）。先 `sanitize`：
+
 ```bash
 sqlite3 data/v2-sessions/.../inbound.db \
   "select id, kind, status, tries, length(content) from messages_in"

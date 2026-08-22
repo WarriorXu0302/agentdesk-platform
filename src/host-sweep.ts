@@ -61,6 +61,7 @@ import {
   sessionLifecycleTotal,
 } from './metrics.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
+import { sweepExpiredScopes } from './scope-retention.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import { runSessionLifecycleSweep } from './session-archive.js';
 import { countSessionsByStatus } from './db/sessions.js';
@@ -276,6 +277,24 @@ async function sweep(): Promise<void> {
         log.warn('audit retention purge failed', { table: name, err });
       }
     }
+  }
+
+  // Per-user state-scope retention (ADR-0061). Opt-in via
+  // AGENTDESK_SCOPE_TTL_DAYS; the clock is refreshed on access, so this
+  // expires ABANDONED scopes and never an active user's memory. Piggybacks
+  // this tick on purpose: a separately-configured sweeper is a policy that
+  // silently never runs.
+  try {
+    const swept = sweepExpiredScopes();
+    if (swept.removed > 0) {
+      log.info('Expired abandoned user state scopes', {
+        removed: swept.removed,
+        scanned: swept.scanned,
+        skippedLive: swept.skippedLive,
+      });
+    }
+  } catch (err) {
+    log.warn('scope retention sweep failed', { err });
   }
 
   // Expire dangling agent-initiated approvals (roadmap 5.3) — they set no
