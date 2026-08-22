@@ -5,6 +5,7 @@ import {
   clearAdmissionQueue,
   drainAdmissionSlot,
   enqueueAdmission,
+  sessionFairnessKey,
   type AdmissionDeps,
 } from './admission-queue.js';
 import { admissionWaitSeconds } from './metrics.js';
@@ -25,6 +26,7 @@ function makeDeps(overrides: Partial<AdmissionDeps> = {}): AdmissionDeps & { wok
       woken.push(s.id);
       return Promise.resolve(true);
     },
+    slotsHeldBy: () => 0,
     ...overrides,
   };
 }
@@ -263,5 +265,126 @@ describe('admission wait is measured honestly (capacity observability)', () => {
     const stats = await waitStats();
     expect(stats.count).toBe(1);
     expect(stats.sum).toBeLessThan(0.05);
+  });
+});
+
+describe('sessionFairnessKey', () => {
+  it('buckets by owner when there is one — delegation inherits it, so a fan-out charges the human', () => {
+    expect(sessionFairnessKey({ id: 's1', owner_user_id: 'feishu:ou_a' } as Session)).toBe('user:feishu:ou_a');
+  });
+
+  it('buckets an ownerless session per messaging group, not into one shared pile', () => {
+    const a = sessionFairnessKey({ id: 's1', owner_user_id: null, messaging_group_id: 'mg-1' } as Session);
+    const b = sessionFairnessKey({ id: 's2', owner_user_id: null, messaging_group_id: 'mg-2' } as Session);
+    expect(a).not.toBe(b);
+  });
+
+  it('falls back to the session itself, which can only advantage it', () => {
+    expect(sessionFairnessKey({ id: 's1', owner_user_id: null, messaging_group_id: null } as Session)).toBe(
+      'session:s1',
+    );
+  });
+});
+
+describe('admission fairness — least-loaded bucket first (ADR-0065)', () => {
+  /** Deps whose slot counts come from a mutable map the test drives. */
+  function fairDeps(held: Map<string, number>): AdmissionDeps & { woken: string[] } {
+    const base = makeDeps();
+    return { ...base, slotsHeldBy: (key) => held.get(key) ?? 0 };
+  }
+
+  /**
+   * The case fairness exists for. One user's frontdesk delegates to three
+   * workers, then someone else speaks. Under plain FIFO the newcomer waits for
+   * three whole model turns; the point of this change is that they do not.
+   */
+  it('interleaves a newcomer ahead of a fan-out that queued first', async () => {
+    const held = new Map<string, number>();
+    const deps = fairDeps(held);
+
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('a2', 'user:A');
+    enqueueAdmission('a3', 'user:A');
+    enqueueAdmission('b1', 'user:B'); // arrives LAST
+
+    // Slot 1: nobody holds anything, so FIFO decides -> a1. A now holds one.
+    drainAdmissionSlot(deps);
+    await settle();
+    held.set('user:A', 1);
+
+    // Slot 2: A holds 1, B holds 0 -> B jumps the two remaining A entries.
+    drainAdmissionSlot(deps);
+    await settle();
+
+    expect(deps.woken).toEqual(['a1', 'b1']);
+  });
+
+  it('keeps strict FIFO inside one bucket', async () => {
+    const deps = fairDeps(new Map([['user:A', 5]]));
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('a2', 'user:A');
+    enqueueAdmission('a3', 'user:A');
+
+    for (let i = 0; i < 3; i++) {
+      drainAdmissionSlot(deps);
+      await settle();
+    }
+    expect(deps.woken).toEqual(['a1', 'a2', 'a3']);
+  });
+
+  it('keeps FIFO across buckets that are equally loaded — no reordering without contention', async () => {
+    const deps = fairDeps(new Map());
+    enqueueAdmission('b1', 'user:B');
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('c1', 'user:C');
+
+    for (let i = 0; i < 3; i++) {
+      drainAdmissionSlot(deps);
+      await settle();
+    }
+    expect(deps.woken).toEqual(['b1', 'a1', 'c1']);
+  });
+
+  /**
+   * Least-loaded-first cannot starve: admitting a session raises its own
+   * bucket's count, so the buckets equalise rather than one winning forever.
+   */
+  it('still drains the heavy bucket once the light one is served', async () => {
+    const held = new Map<string, number>();
+    const deps = fairDeps(held);
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('a2', 'user:A');
+    enqueueAdmission('b1', 'user:B');
+
+    for (const [, key] of [
+      [0, 'user:A'],
+      [1, 'user:B'],
+      [2, 'user:A'],
+    ] as const) {
+      drainAdmissionSlot(deps);
+      await settle();
+      held.set(key, (held.get(key) ?? 0) + 1);
+    }
+
+    expect(deps.woken.sort()).toEqual(['a1', 'a2', 'b1']);
+  });
+
+  it('treats an entry with no recorded bucket as unloaded rather than guessing one', async () => {
+    const deps = fairDeps(new Map([['user:A', 9]]));
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('unknown'); // no key supplied
+
+    drainAdmissionSlot(deps);
+    await settle();
+    expect(deps.woken).toEqual(['unknown']);
+  });
+
+  it('is unchanged from FIFO when nothing holds a slot', async () => {
+    const deps = fairDeps(new Map());
+    enqueueAdmission('a1', 'user:A');
+    enqueueAdmission('a2', 'user:A');
+    drainAdmissionSlot(deps);
+    await settle();
+    expect(deps.woken).toEqual(['a1']);
   });
 });

@@ -43,13 +43,39 @@ const failCounts = new Map<string, number>();
  * and leaving it behind would leak.
  */
 const firstQueuedAt = new Map<string, number>();
+/**
+ * Fairness bucket per queued session, captured at first enqueue.
+ *
+ * Kept here rather than recomputed at drain time because the requeue paths
+ * only carry a session id, and because a session's owner should not be able to
+ * change its queue position mid-wait.
+ */
+const fairnessKeyOf = new Map<string, string>();
 
 /** Consecutive failed admissions before a session is evicted to the sweep. */
 const MAX_ADMISSION_FAILURES = 3;
 
-export function enqueueAdmission(sessionId: string): void {
+/**
+ * Which fairness bucket a session competes in.
+ *
+ * `owner_user_id` when the session has one — and delegation inherits it, so a
+ * frontdesk fan-out into eight workers counts against the ONE human who asked,
+ * which is the case fairness has to cover. Group chats have no owner, so they
+ * bucket per messaging group: one busy group must not push another group's
+ * turn back, and lumping every ownerless session together would do exactly
+ * that. A session with neither gets its own bucket, which can only ever
+ * advantage it — the safe direction for a fallback.
+ */
+export function sessionFairnessKey(session: Session): string {
+  if (session.owner_user_id) return `user:${session.owner_user_id}`;
+  if (session.messaging_group_id) return `group:${session.messaging_group_id}`;
+  return `session:${session.id}`;
+}
+
+export function enqueueAdmission(sessionId: string, fairnessKey?: string): void {
   if (queued.has(sessionId)) return;
   if (!firstQueuedAt.has(sessionId)) firstQueuedAt.set(sessionId, Date.now());
+  if (fairnessKey !== undefined && !fairnessKeyOf.has(sessionId)) fairnessKeyOf.set(sessionId, fairnessKey);
   queued.add(sessionId);
   queue.push(sessionId);
   admissionQueueDepth.set(queue.length);
@@ -69,8 +95,46 @@ function requeueFront(sessionId: string): void {
   admissionQueueDepth.set(queue.length);
 }
 
-function pop(): string | undefined {
-  const id = queue.shift();
+/**
+ * Take the next session to admit: the queued entry whose fairness bucket
+ * currently holds the FEWEST slots, ties broken by queue position.
+ *
+ * Plain FIFO was the previous rule, and under a fan-out it is a starvation
+ * machine: one user whose frontdesk delegates to eight workers puts eight
+ * entries in front of the next person to speak, so that person waits for eight
+ * whole model turns to finish. Least-loaded-first interleaves them instead.
+ *
+ * Chosen over a token bucket deliberately: there is no rate to configure, no
+ * refill period to tune, and no way to starve anyone — a bucket holding zero
+ * slots always beats one holding any, and admitting a session immediately
+ * raises its own bucket's count, so the buckets equalise instead of one
+ * winning forever. The FIFO tiebreak keeps ordering exact within a bucket and
+ * between equally-loaded buckets, so nothing about the old behaviour is lost
+ * when there is no contention.
+ *
+ * O(queue) per admission, and the queue is bounded by the session count.
+ */
+function pop(slotsHeldBy?: (key: string) => number): string | undefined {
+  if (queue.length === 0) return undefined;
+
+  let at = 0;
+  if (slotsHeldBy) {
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < queue.length; i++) {
+      const key = fairnessKeyOf.get(queue[i]);
+      // No recorded key means the entry was queued by a path that did not
+      // supply one; treat it as unloaded so it is never pushed behind, rather
+      // than guessing a bucket for it.
+      const held = key === undefined ? 0 : slotsHeldBy(key);
+      if (held < best) {
+        best = held;
+        at = i;
+        if (best === 0) break; // cannot do better, and this is the FIRST such entry
+      }
+    }
+  }
+
+  const [id] = queue.splice(at, 1);
   if (id !== undefined) {
     queued.delete(id);
     admissionQueueDepth.set(queue.length);
@@ -88,6 +152,7 @@ export function clearAdmissionQueue(): void {
   queued.clear();
   failCounts.clear();
   firstQueuedAt.clear();
+  fairnessKeyOf.clear();
   admissionQueueDepth.set(0);
 }
 
@@ -100,6 +165,8 @@ export interface AdmissionDeps {
   hasDueWork(session: Session): boolean;
   /** wakeContainer — never throws, false = rejected/failed. */
   wake(session: Session): Promise<boolean>;
+  /** How many concurrency slots this fairness bucket currently holds. */
+  slotsHeldBy(key: string): number;
 }
 
 /** Observe the total queue wait for a session that actually got a slot. */
@@ -107,6 +174,7 @@ function observeWait(sessionId: string): void {
   const since = firstQueuedAt.get(sessionId);
   if (since === undefined) return;
   firstQueuedAt.delete(sessionId);
+  fairnessKeyOf.delete(sessionId);
   admissionWaitSeconds.observe((Date.now() - since) / 1000);
 }
 
@@ -130,6 +198,7 @@ function recordFailure(sessionId: string): void {
   // freed slot's single admission attempt on a session that cannot boot.
   failCounts.delete(sessionId);
   firstQueuedAt.delete(sessionId);
+  fairnessKeyOf.delete(sessionId);
   log.warn('Admission queue: session evicted after repeated failed admissions — sweep owns its retries now', {
     sessionId,
     failures: n,
@@ -146,7 +215,7 @@ function recordFailure(sessionId: string): void {
  */
 export function drainAdmissionSlot(deps: AdmissionDeps): void {
   for (;;) {
-    const nextId = pop();
+    const nextId = pop(deps.slotsHeldBy);
     if (!nextId) return;
 
     let candidate: Session | undefined;
@@ -162,11 +231,13 @@ export function drainAdmissionSlot(deps: AdmissionDeps): void {
       });
       failCounts.delete(nextId);
       firstQueuedAt.delete(nextId);
+      fairnessKeyOf.delete(nextId);
       continue; // this slot can still admit the next candidate
     }
     if (!candidate) {
       failCounts.delete(nextId);
       firstQueuedAt.delete(nextId);
+      fairnessKeyOf.delete(nextId);
       continue; // stale entry — try the next one
     }
 
