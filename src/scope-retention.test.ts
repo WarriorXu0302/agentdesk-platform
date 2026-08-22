@@ -8,11 +8,11 @@ vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
   return {
     ...actual,
-    DATA_DIR: '/tmp/nanoclaw-test-scope-retention/data',
-    GROUPS_DIR: '/tmp/nanoclaw-test-scope-retention/groups',
+    DATA_DIR: `/tmp/nanoclaw-test-scope-retention-${process.pid}/data`,
+    GROUPS_DIR: `/tmp/nanoclaw-test-scope-retention-${process.pid}/groups`,
   };
 });
-const TEST_DIR = '/tmp/nanoclaw-test-scope-retention';
+const TEST_DIR = `/tmp/nanoclaw-test-scope-retention-${process.pid}`;
 const SCOPES = `${TEST_DIR}/data/v2-scopes`;
 
 const { sweepExpiredScopes, resetScopeRetentionPolicyLog } = await import('./scope-retention.js');

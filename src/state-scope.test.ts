@@ -9,11 +9,11 @@ vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
   return {
     ...actual,
-    GROUPS_DIR: '/tmp/nanoclaw-test-state-scope/groups',
-    DATA_DIR: '/tmp/nanoclaw-test-state-scope/data',
+    GROUPS_DIR: `/tmp/nanoclaw-test-state-scope-${process.pid}/groups`,
+    DATA_DIR: `/tmp/nanoclaw-test-state-scope-${process.pid}/data`,
   };
 });
-const TEST_DIR = '/tmp/nanoclaw-test-state-scope';
+const TEST_DIR = `/tmp/nanoclaw-test-state-scope-${process.pid}`;
 
 const { ensureStateScope, resolveStateScope, userScopeKey } = await import('./state-scope.js');
 const { buildMounts } = await import('./container-runner.js');

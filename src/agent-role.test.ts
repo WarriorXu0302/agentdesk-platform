@@ -8,11 +8,11 @@ vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
   return {
     ...actual,
-    GROUPS_DIR: '/tmp/nanoclaw-test-agent-role/groups',
-    DATA_DIR: '/tmp/nanoclaw-test-agent-role/data',
+    GROUPS_DIR: `/tmp/nanoclaw-test-agent-role-${process.pid}/groups`,
+    DATA_DIR: `/tmp/nanoclaw-test-agent-role-${process.pid}/data`,
   };
 });
-const TEST_DIR = '/tmp/nanoclaw-test-agent-role';
+const TEST_DIR = `/tmp/nanoclaw-test-agent-role-${process.pid}`;
 
 const { buildMounts } = await import('./container-runner.js');
 const { closeDb, initTestDb, runMigrations } = await import('./db/index.js');

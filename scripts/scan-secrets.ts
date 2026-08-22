@@ -167,8 +167,7 @@ function main(): void {
 
 // Only run the CLI when invoked directly (tsx scripts/scan-secrets.ts), not
 // when imported by the test.
-const invokedDirectly =
-  typeof process.argv[1] === 'string' && /scan-secrets\.(ts|js|mjs)$/.test(process.argv[1]);
+const invokedDirectly = typeof process.argv[1] === 'string' && /scan-secrets\.(ts|js|mjs)$/.test(process.argv[1]);
 if (invokedDirectly) {
   main();
 }

@@ -28,7 +28,7 @@ vi.mock('./container-runner.js', () => ({
 
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-roster', DELIVERY_TIMEOUT_MS: 300 };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-roster-${process.pid}`, DELIVERY_TIMEOUT_MS: 300 };
 });
 
 // Control the per-group opt-in flag + a2a session mode without touching the
@@ -53,7 +53,7 @@ vi.mock('./container-config.js', async () => {
   };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-roster';
+const TEST_DIR = `/tmp/nanoclaw-test-roster-${process.pid}`;
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { getDb } from './db/connection.js';

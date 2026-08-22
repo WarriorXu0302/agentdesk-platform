@@ -131,9 +131,7 @@ const REQUIRED_KIND_MARKERS = [
   '[SemanticConventions.OPENINFERENCE_SPAN_KIND]',
 ];
 
-export function collectObservabilityCoverage(
-  options: CollectCoverageOptions = {},
-): ObservabilityCoverageReport {
+export function collectObservabilityCoverage(options: CollectCoverageOptions = {}): ObservabilityCoverageReport {
   const repoRoot = path.resolve(options.repoRoot ?? DEFAULT_REPO_ROOT);
   const schemaPath = path.join(repoRoot, ...SCHEMA_PATH_SEGMENTS);
   const schema = readUtf8(schemaPath);
@@ -173,9 +171,7 @@ export function collectObservabilityCoverage(
   };
 }
 
-export function validateObservabilityCoverage(
-  report: ObservabilityCoverageReport,
-): ObservabilityCoverageValidation {
+export function validateObservabilityCoverage(report: ObservabilityCoverageReport): ObservabilityCoverageValidation {
   const namespaceRegistry = new Set(report.namespaces.map((row) => row.namespace));
 
   const forwardViolations = report.allSpanOccurrences
@@ -190,7 +186,9 @@ export function validateObservabilityCoverage(
   const backwardViolations: BackwardViolation[] = [];
   for (const migration of report.migrations) {
     if (migration.action === 'DELETE') {
-      const deletedOccurrences = report.allSpanOccurrences.filter((occurrence) => occurrence.name === migration.currentName);
+      const deletedOccurrences = report.allSpanOccurrences.filter(
+        (occurrence) => occurrence.name === migration.currentName,
+      );
       if (deletedOccurrences.length > 0) {
         backwardViolations.push({
           requiredTarget: migration.currentName,
@@ -270,7 +268,10 @@ export function formatCoverageGateFailure(validation: ObservabilityCoverageValid
   if (validation.kindViolations.length > 0) {
     lines.push(
       `  Kind violations (${validation.kindViolations.length}): ${validation.kindViolations
-        .map((violation) => `${violation.name} (${violation.relativePath}:${violation.line}) missing openinference.span.kind`)
+        .map(
+          (violation) =>
+            `${violation.name} (${violation.relativePath}:${violation.line}) missing openinference.span.kind`,
+        )
         .join(', ')}`,
     );
   }
@@ -286,10 +287,7 @@ export function formatCoverageGateFailure(validation: ObservabilityCoverageValid
   return lines.join('\n');
 }
 
-function buildNamespaceCoverage(
-  namespaces: NamespaceRow[],
-  occurrences: SpanOccurrence[],
-): NamespaceCoverageRow[] {
+function buildNamespaceCoverage(namespaces: NamespaceRow[], occurrences: SpanOccurrence[]): NamespaceCoverageRow[] {
   return namespaces.map((namespaceRow) => {
     const namespaceOccurrences = occurrences.filter((occurrence) => occurrence.namespace === namespaceRow.namespace);
     return {
@@ -300,10 +298,7 @@ function buildNamespaceCoverage(
   });
 }
 
-function buildMigrationCoverage(
-  migrations: MigrationRow[],
-  occurrences: SpanOccurrence[],
-): MigrationCoverageRow[] {
+function buildMigrationCoverage(migrations: MigrationRow[], occurrences: SpanOccurrence[]): MigrationCoverageRow[] {
   return migrations.map((migration) => {
     if (migration.action === 'DELETE') {
       const deletedOccurrences = occurrences.filter((occurrence) => occurrence.name === migration.currentName);
@@ -335,7 +330,11 @@ function buildMigrationCoverage(
 }
 
 function parseNamespaceRows(schema: string): NamespaceRow[] {
-  const section = sectionBetween(schema, '## §3. Top-Level Namespace Catalog', '## §4. Standard Sub-Operations Within Common Namespaces');
+  const section = sectionBetween(
+    schema,
+    '## §3. Top-Level Namespace Catalog',
+    '## §4. Standard Sub-Operations Within Common Namespaces',
+  );
   const rows = [...section.matchAll(NAMESPACE_ROW_PATTERN)].map((match) => {
     const line = readFullLine(section, match.index ?? 0);
     const cells = parseMarkdownTableCells(line);
@@ -371,7 +370,7 @@ function parseMigrationRows(schema: string): MigrationRow[] {
       newName,
       action,
       notes: cells[3] ?? '',
-      requiredTarget: action === 'DELETE' ? null : action === 'Rename' ? newName : newName ?? currentName,
+      requiredTarget: action === 'DELETE' ? null : action === 'Rename' ? newName : (newName ?? currentName),
     } satisfies MigrationRow;
   });
 
@@ -412,7 +411,12 @@ function listFilesRecursive(dirPath: string): string[] {
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.sisyphus' || entry.name === 'reports') {
+    if (
+      entry.name === 'node_modules' ||
+      entry.name === 'dist' ||
+      entry.name === '.sisyphus' ||
+      entry.name === 'reports'
+    ) {
       continue;
     }
     const entryPath = path.join(dirPath, entry.name);
@@ -510,20 +514,30 @@ function detectAttrCoverage(name: string, callSlice: string, fullSource: string,
   if (hasOutputAttrs) notes.push('outputAttrs() provides output coverage');
   if (hasLiteralKind) notes.push('literal openinference.span.kind key present');
   if (hasSemanticConventionKind) notes.push('SemanticConventions.OPENINFERENCE_SPAN_KIND key present');
-  if (attrsBinding && (hasBoundChainAttrs || hasBoundAgentAttrs || hasBoundRootInputAttrs || hasBoundOutputAttrs || hasBoundLiteralKind)) {
+  if (
+    attrsBinding &&
+    (hasBoundChainAttrs || hasBoundAgentAttrs || hasBoundRootInputAttrs || hasBoundOutputAttrs || hasBoundLiteralKind)
+  ) {
     notes.push(`attrs via nearby binding ${attrsBinding.name}`);
   }
 
   const preSessionSpan = name === 'router.route' || /^channel\.[a-z_]+\.receive$/.test(name);
 
-  let sessionId = containsAttrKey(callSlice, 'session.id') || containsAttrKey(bindingSlice, 'session.id') ? 'present' : 'absent';
+  let sessionId =
+    containsAttrKey(callSlice, 'session.id') || containsAttrKey(bindingSlice, 'session.id') ? 'present' : 'absent';
   let userId = containsAttrKey(callSlice, 'user.id') || containsAttrKey(bindingSlice, 'user.id') ? 'present' : 'absent';
-  let inputValue = containsAttrKey(callSlice, 'input.value') || containsAttrKey(bindingSlice, 'input.value') ? 'present' : 'absent';
+  let inputValue =
+    containsAttrKey(callSlice, 'input.value') || containsAttrKey(bindingSlice, 'input.value') ? 'present' : 'absent';
   let inputMimeType =
-    containsAttrKey(callSlice, 'input.mime_type') || containsAttrKey(bindingSlice, 'input.mime_type') ? 'present' : 'absent';
-  let outputValue = containsAttrKey(callSlice, 'output.value') || containsAttrKey(bindingSlice, 'output.value') ? 'present' : 'absent';
+    containsAttrKey(callSlice, 'input.mime_type') || containsAttrKey(bindingSlice, 'input.mime_type')
+      ? 'present'
+      : 'absent';
+  let outputValue =
+    containsAttrKey(callSlice, 'output.value') || containsAttrKey(bindingSlice, 'output.value') ? 'present' : 'absent';
   let outputMimeType =
-    containsAttrKey(callSlice, 'output.mime_type') || containsAttrKey(bindingSlice, 'output.mime_type') ? 'present' : 'absent';
+    containsAttrKey(callSlice, 'output.mime_type') || containsAttrKey(bindingSlice, 'output.mime_type')
+      ? 'present'
+      : 'absent';
 
   if (hasRootInputAttrs || hasBoundRootInputAttrs) {
     sessionId = 'present';
@@ -640,7 +654,7 @@ function findMatchingParenIndex(source: string, openParenIndex: number): number 
     }
 
     if (inSingleQuote) {
-      if (current === '\'' && previous !== '\\') inSingleQuote = false;
+      if (current === "'" && previous !== '\\') inSingleQuote = false;
       continue;
     }
 
@@ -666,7 +680,7 @@ function findMatchingParenIndex(source: string, openParenIndex: number): number 
       continue;
     }
 
-    if (current === '\'') {
+    if (current === "'") {
       inSingleQuote = true;
       continue;
     }

@@ -161,9 +161,7 @@ async function main(): Promise<void> {
 
   console.log('');
   console.log('Init complete.');
-  console.log(
-    `  owner:   ${CLI_SYNTHETIC_USER_ID}${promotedToOwner ? ' (promoted on first owner)' : ''}`,
-  );
+  console.log(`  owner:   ${CLI_SYNTHETIC_USER_ID}${promotedToOwner ? ' (promoted on first owner)' : ''}`);
   console.log(`  agent:   ${ag.name} [${ag.id}] @ groups/${folder}`);
   console.log(`  channel: cli/${CLI_PLATFORM_ID}`);
   console.log('');

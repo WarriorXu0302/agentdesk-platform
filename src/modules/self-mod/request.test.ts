@@ -17,11 +17,15 @@ import fs from 'fs';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const TEST_DIR = '/tmp/nanoclaw-test-self-mod';
+const TEST_DIR = `/tmp/nanoclaw-test-self-mod-${process.pid}`;
 
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual<typeof import('../../config.js')>('../../config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-self-mod/data', GROUPS_DIR: '/tmp/nanoclaw-test-self-mod/groups' };
+  return {
+    ...actual,
+    DATA_DIR: `/tmp/nanoclaw-test-self-mod-${process.pid}/data`,
+    GROUPS_DIR: `/tmp/nanoclaw-test-self-mod-${process.pid}/groups`,
+  };
 });
 
 vi.mock('../../container-runner.js', () => ({

@@ -16,7 +16,7 @@ vi.mock('./container-runner.js', () => ({
 
 vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-roster-bypass', DELIVERY_TIMEOUT_MS: 300 };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-roster-bypass-${process.pid}`, DELIVERY_TIMEOUT_MS: 300 };
 });
 
 let mockRosterEnabled = true;
@@ -36,7 +36,7 @@ vi.mock('./container-config.js', async () => {
   };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-roster-bypass';
+const TEST_DIR = `/tmp/nanoclaw-test-roster-bypass-${process.pid}`;
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { resolveSession, outboundDbPath, inboundDbPath } from './session-manager.js';

@@ -4,7 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { TEST_ROOT } = vi.hoisted(() => ({
-  TEST_ROOT: '/tmp/nanoclaw-test-gateway-signing-check',
+  TEST_ROOT: `/tmp/nanoclaw-test-gateway-signing-check-${process.pid}`,
 }));
 
 vi.mock('./config.js', async () => {

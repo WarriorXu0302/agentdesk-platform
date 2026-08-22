@@ -24,10 +24,10 @@ vi.mock('./config.js', async () => {
   const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
   // Short delivery timeout so the hung-adapter test completes quickly.
   // Kept well above the 100ms adapter hold used by the race test.
-  return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-delivery', DELIVERY_TIMEOUT_MS: 300 };
+  return { ...actual, DATA_DIR: `/tmp/nanoclaw-test-delivery-${process.pid}`, DELIVERY_TIMEOUT_MS: 300 };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-delivery';
+const TEST_DIR = `/tmp/nanoclaw-test-delivery-${process.pid}`;
 
 import { initTestDb, closeDb, runMigrations, createAgentGroup, createMessagingGroup } from './db/index.js';
 import { migrateDeliveredTable } from './db/session-db.js';

@@ -29,12 +29,12 @@ vi.mock('../../config.js', async () => {
   const actual = await vi.importActual('../../config.js');
   return {
     ...actual,
-    DATA_DIR: '/tmp/nanoclaw-test-a2a-route',
-    GROUPS_DIR: '/tmp/nanoclaw-test-a2a-route/groups',
+    DATA_DIR: `/tmp/nanoclaw-test-a2a-route-${process.pid}`,
+    GROUPS_DIR: `/tmp/nanoclaw-test-a2a-route-${process.pid}/groups`,
   };
 });
 
-const TEST_DIR = '/tmp/nanoclaw-test-a2a-route';
+const TEST_DIR = `/tmp/nanoclaw-test-a2a-route-${process.pid}`;
 
 function now(): string {
   return new Date().toISOString();

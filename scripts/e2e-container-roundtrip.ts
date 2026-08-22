@@ -165,8 +165,7 @@ async function main(): Promise<void> {
     try {
       const outDb = new Database(outboundPath, { readonly: true });
       const row = outDb.prepare("SELECT id, content FROM messages_out WHERE kind != 'llm-usage' LIMIT 1").get() as
-        | { id: string; content: string }
-        | undefined;
+        { id: string; content: string } | undefined;
       outDb.close();
       if (row) {
         console.log(

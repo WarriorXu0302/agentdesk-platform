@@ -77,15 +77,15 @@ describe('scripts/q.ts', () => {
     expect(r.status).toBe(0);
 
     const db = new Database(dbPath, { readonly: true });
-    const ids = (db.prepare('SELECT id FROM t ORDER BY id').all() as { id: number }[]).map(
-      (r) => r.id,
-    );
+    const ids = (db.prepare('SELECT id FROM t ORDER BY id').all() as { id: number }[]).map((r) => r.id);
     db.close();
     expect(ids).toEqual([2, 9]);
   });
 
   it('WITH...DELETE is treated as a mutation, not a query', () => {
-    const r = run("WITH stale AS (SELECT id FROM t WHERE name = 'alice') DELETE FROM t WHERE id IN (SELECT id FROM stale)");
+    const r = run(
+      "WITH stale AS (SELECT id FROM t WHERE name = 'alice') DELETE FROM t WHERE id IN (SELECT id FROM stale)",
+    );
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
 
