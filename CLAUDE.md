@@ -146,6 +146,15 @@ context in **≤3 hops**.
   the same order every tick: an unisolated failure starves the same sessions
   behind it forever, not occasionally.
 
+### An ADR's index row is part of the ADR
+
+`docs/decisions/README.md` is what a new agent skims first, so a stale row
+teaches the wrong thing to exactly the reader who has no way to know better.
+**When you correct an ADR body, correct its row in the same edit.** This has
+been violated three times in a single day — the ADR was fixed, the row kept
+teaching the retracted version. If the correction is too long for a row, say
+"superseded by the ADR's own correction section" and link it.
+
 ### Decision logging is non-optional
 
 If you find yourself thinking *"this is just a small architectural choice, no
