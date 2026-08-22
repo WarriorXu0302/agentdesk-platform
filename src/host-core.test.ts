@@ -510,6 +510,59 @@ describe('router', () => {
    * the agent group's session directory a FILE means `initSessionFolder`'s
    * `mkdirSync` throws ENOTDIR for that agent and only that agent.
    */
+  /**
+   * An interceptor runs before ANY routing, so a throw there drops the message
+   * for every agent on the channel — not just for the module that failed. The
+   * channel-registration interceptor has no outer catch of its own (its two
+   * `try`s wrap JSON.parse only) and calls createNewAgentGroup, which writes
+   * rows and creates directories, so this is a reachable path rather than a
+   * theoretical one.
+   */
+  it('still routes the message when an interceptor throws', async () => {
+    const { routeInbound, setMessageInterceptor, clearMessageInterceptorsForTests } = await import('./router.js');
+    const { messageInterceptorFailuresTotal } = await import('./metrics.js');
+    messageInterceptorFailuresTotal.reset();
+
+    let secondRan = false;
+    setMessageInterceptor(async () => {
+      throw new Error('interceptor blew up');
+    });
+    setMessageInterceptor(async () => {
+      // Proves the chain continues past the thrower rather than stopping.
+      secondRan = true;
+      return false;
+    });
+
+    try {
+      await routeInbound({
+        channelType: 'discord',
+        platformId: 'chan-123',
+        threadId: null,
+        message: {
+          id: 'msg-interceptor-1',
+          kind: 'chat',
+          content: JSON.stringify({ sender: 'User', text: 'survives a broken interceptor' }),
+          timestamp: now(),
+        },
+      });
+    } finally {
+      clearMessageInterceptorsForTests();
+    }
+
+    expect(secondRan).toBe(true);
+
+    const { getSessionsByAgentGroup } = await import('./db/sessions.js');
+    const sessions = getSessionsByAgentGroup('ag-1');
+    expect(sessions).toHaveLength(1);
+    const db = new Database(inboundDbPath('ag-1', sessions[0].id));
+    const rows = db.prepare('SELECT content FROM messages_in').all() as Array<{ content: string }>;
+    db.close();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0].content).text).toBe('survives a broken interceptor');
+
+    expect((await messageInterceptorFailuresTotal.get()).values[0]?.value).toBe(1);
+  });
+
   it('keeps routing to the remaining agents when one agent throws', async () => {
     const { routeInbound } = await import('./router.js');
     const { routeAgentFailuresTotal } = await import('./metrics.js');

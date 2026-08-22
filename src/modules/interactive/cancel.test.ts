@@ -11,7 +11,13 @@ import type { Session } from '../../types.js';
 let captured: MessageInterceptorFn | undefined;
 const senderSpy = vi.fn((_e: InboundEvent): string | null => null);
 const resolveSpy = vi.fn(async (..._args: unknown[]): Promise<void> => {});
-const deliverSpy = vi.fn(() => Promise.resolve());
+// Typed with the adapter's real parameter list so a test can assert on the
+// CONTENT argument; an untyped `vi.fn(() => …)` gives an empty call tuple and
+// indexing it is a compile error, not a test failure.
+const deliverSpy = vi.fn(
+  (_channelType: string, _platformId: string, _threadId: string | null, _kind: string, _content: string) =>
+    Promise.resolve(),
+);
 
 vi.mock('../../router.js', () => ({
   setMessageInterceptor: (fn: MessageInterceptorFn) => {
@@ -80,8 +86,13 @@ beforeEach(() => {
   });
   senderSpy.mockReset();
   senderSpy.mockReturnValue(null);
-  resolveSpy.mockClear();
-  deliverSpy.mockClear();
+  // mockReset, not mockClear: clear wipes the CALLS but keeps the
+  // implementation, so a test that installs a throwing resolver would leak it
+  // into every test after it in this file and silently weaken them.
+  resolveSpy.mockReset();
+  resolveSpy.mockImplementation(async () => {});
+  deliverSpy.mockReset();
+  deliverSpy.mockImplementation(() => Promise.resolve());
 });
 
 afterEach(() => closeDb());
@@ -105,6 +116,53 @@ describe('out-of-band cancel interceptor (ADR-0042, roadmap 6.6)', () => {
     expect(resolveSpy.mock.calls[0][3]).toBe('feishu:ou_alice');
     expect(resolveSpy.mock.calls[0][4]).toEqual({ cancelled: true });
     expect(deliverSpy).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * One question failing must not swallow the rest of the user's.
+   *
+   * Without per-question isolation the throw reaches this interceptor's outer
+   * catch, which returns false — so the user's LATER questions stay pending,
+   * the word "cancel" routes to the agent as ordinary chat, and they get no
+   * acknowledgement at all, having asked to cancel and seen nothing happen.
+   * The list order is fixed, so it is the same question failing every time.
+   */
+  it("keeps cancelling the user's other questions when one of them throws", async () => {
+    createSession(session('s-alice', 'feishu:ou_alice'));
+    seedQuestion('q-bad', 's-alice');
+    seedQuestion('q-good', 's-alice');
+    senderSpy.mockReturnValue('feishu:ou_alice');
+
+    let call = 0;
+    resolveSpy.mockImplementation(async () => {
+      if (call++ === 0) throw new Error('resolve failed for this one');
+    });
+
+    const consumed = await captured!(event('/cancel'));
+
+    expect(consumed).toBe(true); // still claimed — the user did ask to cancel
+    expect(resolveSpy).toHaveBeenCalledTimes(2); // the second was attempted
+    expect(deliverSpy).toHaveBeenCalledTimes(1);
+
+    // The acknowledgement reports what actually got cancelled, not what was
+    // attempted — telling the user a larger number is worse than a smaller one.
+    const sent = JSON.parse(String(deliverSpy.mock.calls[0][4])) as { text: string };
+    expect(sent.text).toContain('Cancelled 1 pending request.');
+  });
+
+  it('says nothing at all when every cancellation fails', async () => {
+    createSession(session('s-alice', 'feishu:ou_alice'));
+    seedQuestion('q1', 's-alice');
+    senderSpy.mockReturnValue('feishu:ou_alice');
+    resolveSpy.mockImplementation(async () => {
+      throw new Error('all broken');
+    });
+
+    const consumed = await captured!(event('/cancel'));
+
+    expect(consumed).toBe(true);
+    // A "Cancelled 0 pending requests." ack would be worse than silence.
+    expect(deliverSpy).not.toHaveBeenCalled();
   });
 
   it('is a structural no-op in a shared session (owner_user_id NULL) — cross-user safe', async () => {
