@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,7 +18,8 @@ import {
   redactedConfigPathFor,
   resolveContainerNetwork,
   countSlotsHeldBy,
-  observeContainerLifetime,
+  registerContainer,
+  releaseContainer,
   resolveProviderName,
   resolveRoutingPromptMount,
   routeOpenAiThroughVault,
@@ -651,48 +652,101 @@ describe('buildContainerArgs — real argv assembly (integration-bug class)', ()
   });
 });
 
-describe('observeContainerLifetime (ADR-0064)', () => {
+describe('registerContainer / releaseContainer — slot bookkeeping (ADR-0064, ADR-0065)', () => {
   /**
-   * `close` and `error` can BOTH fire for a single failed spawn, and each
-   * handler deletes the container entry right after calling this. So the
-   * once-only property is not a flag anywhere — it is the fact that the second
-   * call is handed nothing. Pinning it here because a double observation would
-   * silently halve the mean slot-hold time, and the throughput ceiling is
-   * computed from that mean.
+   * This bookkeeping lives inside `spawnContainer`, which no test executes —
+   * every suite mocks this module. Both ADR-0064 and ADR-0065 recorded that as
+   * a known gap; extracting the two operations is what closes it. The registry
+   * is a parameter and the entry is generic, so a bare `{ spawnedAt }` is
+   * enough to drive it.
    */
-  it('observes once and only for a live entry', async () => {
+  type Entry = { spawnedAt: number; fairnessKey?: string };
+
+  async function slots(): Promise<number> {
+    const { containerSlotsInUse } = await import('./metrics.js');
+    return (await containerSlotsInUse.get()).values[0]?.value ?? 0;
+  }
+
+  async function lifetime(): Promise<{ count: number; sum: number; byOutcome: Record<string, number> }> {
     const { containerLifetimeSeconds } = await import('./metrics.js');
-    containerLifetimeSeconds.reset();
-
-    const entry = { spawnedAt: 1_000_000 };
-    expect(observeContainerLifetime(entry, 'idle', 1_090_000)).toBe(true);
-    // Second handler of the pair: the entry is gone by now.
-    expect(observeContainerLifetime(undefined, 'idle', 1_090_000)).toBe(false);
-
     const v = await containerLifetimeSeconds.get();
-    const count = v.values.find((x) => x.metricName?.endsWith('_count'))?.value ?? 0;
-    const sum = v.values.find((x) => x.metricName?.endsWith('_sum'))?.value ?? 0;
-    expect(count).toBe(1);
-    expect(sum).toBe(90); // seconds, from spawnedAt — not a wall-clock read
-  });
-
-  it('keeps outcomes on separate label sets', async () => {
-    const { containerLifetimeSeconds } = await import('./metrics.js');
-    containerLifetimeSeconds.reset();
-
-    observeContainerLifetime({ spawnedAt: 0 }, 'crash', 2_000);
-    observeContainerLifetime({ spawnedAt: 0 }, 'idle', 600_000);
-
-    const v = await containerLifetimeSeconds.get();
+    const pick = (suffix: string) => v.values.find((x) => x.metricName?.endsWith(suffix))?.value ?? 0;
     const byOutcome = Object.fromEntries(
       v.values
         .filter((x) => x.metricName?.endsWith('_sum'))
-        .map((x) => [(x.labels as { outcome?: string }).outcome, x.value]),
+        .map((x) => [(x.labels as { outcome?: string }).outcome ?? '', x.value]),
     );
+    return { count: pick('_count'), sum: pick('_sum'), byOutcome };
+  }
+
+  beforeEach(async () => {
+    const { containerLifetimeSeconds, containerSlotsInUse } = await import('./metrics.js');
+    containerLifetimeSeconds.reset();
+    containerSlotsInUse.set(0);
+  });
+
+  it('moves the slot gauge with the registry, in both directions', async () => {
+    const reg = new Map<string, Entry>();
+    registerContainer(reg, 's1', { spawnedAt: 0 });
+    registerContainer(reg, 's2', { spawnedAt: 0 });
+    expect(await slots()).toBe(2);
+
+    releaseContainer(reg, 's1', 'idle', 1_000);
+    expect(await slots()).toBe(1);
+    releaseContainer(reg, 's2', 'idle', 1_000);
+    expect(await slots()).toBe(0);
+  });
+
+  /**
+   * `close` and `error` can both fire for one failed spawn. A double
+   * observation would halve the mean slot-hold time — the denominator of the
+   * throughput ceiling in docs/capacity.md.
+   */
+  it('observes exactly once even when both exit handlers fire', async () => {
+    const reg = new Map<string, Entry>();
+    registerContainer(reg, 's1', { spawnedAt: 1_000_000 });
+
+    expect(releaseContainer(reg, 's1', 'crash', 1_090_000)).toBe(true);
+    expect(releaseContainer(reg, 's1', 'crash', 1_090_000)).toBe(false);
+
+    const l = await lifetime();
+    expect(l.count).toBe(1);
+    expect(l.sum).toBe(90); // seconds, from spawnedAt — not a wall-clock read
+  });
+
+  it('does not move the gauge for a release that found nothing', async () => {
+    const reg = new Map<string, Entry>();
+    registerContainer(reg, 's1', { spawnedAt: 0 });
+    expect(await slots()).toBe(1);
+
+    expect(releaseContainer(reg, 'never-registered', 'idle', 1_000)).toBe(false);
+    expect(await slots()).toBe(1);
+    expect((await lifetime()).count).toBe(0);
+  });
+
+  it('keeps outcomes on separate label sets', async () => {
+    const reg = new Map<string, Entry>();
+    registerContainer(reg, 'a', { spawnedAt: 0 });
+    registerContainer(reg, 'b', { spawnedAt: 0 });
+    releaseContainer(reg, 'a', 'crash', 2_000);
+    releaseContainer(reg, 'b', 'idle', 600_000);
+
     // Without the label a 2s crash loop and a 10min healthy session average
     // into one unremarkable number.
+    const { byOutcome } = await lifetime();
     expect(byOutcome.crash).toBe(2);
     expect(byOutcome.idle).toBe(600);
+  });
+
+  it('keeps the fairness bucket on the entry, so slot counting sees it', () => {
+    const reg = new Map<string, Entry>();
+    registerContainer(reg, 's1', { spawnedAt: 0, fairnessKey: 'user:A' });
+    registerContainer(reg, 's2', { spawnedAt: 0, fairnessKey: 'user:A' });
+    registerContainer(reg, 's3', { spawnedAt: 0, fairnessKey: 'user:B' });
+
+    expect(countSlotsHeldBy([...reg.values()] as Array<{ fairnessKey: string }>, 'user:A')).toBe(2);
+    releaseContainer(reg, 's1', 'idle', 1);
+    expect(countSlotsHeldBy([...reg.values()] as Array<{ fairnessKey: string }>, 'user:A')).toBe(1);
   });
 });
 
