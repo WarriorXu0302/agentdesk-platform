@@ -40,8 +40,8 @@
     "audit": "pnpm audit --prod --audit-level high"
   },
   "dependencies": {
-    "@arizeai/openinference-core": "^2.5.2",
-    "@arizeai/openinference-semantic-conventions": "^2.6.0",
+    "@arizeai/openinference-core": "^2.5.3",
+    "@arizeai/openinference-semantic-conventions": "^2.8.0",
     "@larksuiteoapi/node-sdk": "1.73.0",
     "@onecli-sh/sdk": "^2.4.0",
     "@opentelemetry/api": "^1.9.0",
@@ -58,14 +58,14 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.2.0",
-    "eslint": "^10.6.0",
+    "@types/node": "^26.3.0",
+    "eslint": "^10.9.1",
     "eslint-plugin-no-catch-all": "^1.1.0",
     "globals": "^17.11.0",
     "prettier": "^3.9.6",
     "tsx": "^4.23.9",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.66.0",
+    "typescript-eslint": "^8.68.0",
     "vitest": "^4.1.11"
   },
   "engines": {
