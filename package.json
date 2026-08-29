@@ -43,7 +43,7 @@
     "@arizeai/openinference-core": "^2.5.2",
     "@arizeai/openinference-semantic-conventions": "^2.6.0",
     "@larksuiteoapi/node-sdk": "1.73.0",
-    "@onecli-sh/sdk": "^2.4.0",
+    "@onecli-sh/sdk": "^3.1.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.77.0",
     "@opentelemetry/exporter-trace-otlp-proto": "0.221.0",
